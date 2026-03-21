@@ -1,5 +1,9 @@
 use log::{error, info, warn};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::core::{Error as WindowsError, Result as WindowsResult, HRESULT};
@@ -11,9 +15,9 @@ use windows::Win32::System::Shutdown::AbortSystemShutdownW;
 const LAYER4_THREAD_NAME: &str = "wardoff-layer4-remote-shutdown";
 
 /// Coordinates Layer 4 remote shutdown abort polling.
-#[derive(Default)]
 pub struct RemoteShutdownBlocker {
     worker: Option<RemoteShutdownWorker>,
+    active_state: Arc<AtomicBool>,
 }
 
 impl RemoteShutdownBlocker {
@@ -33,10 +37,11 @@ impl RemoteShutdownBlocker {
         }
 
         let (stop_tx, stop_rx) = mpsc::channel();
+        let active_state = Arc::clone(&self.active_state);
 
         match thread::Builder::new()
             .name(LAYER4_THREAD_NAME.to_string())
-            .spawn(move || run_worker(stop_rx))
+            .spawn(move || run_worker(active_state, stop_rx))
         {
             Ok(join_handle) => {
                 self.worker = Some(RemoteShutdownWorker {
@@ -57,6 +62,7 @@ impl RemoteShutdownBlocker {
             return;
         };
 
+        self.active_state.store(false, Ordering::Release);
         let _ = worker.stop_tx.send(());
 
         if let Some(join_handle) = worker.join_handle.take() {
@@ -68,13 +74,22 @@ impl RemoteShutdownBlocker {
 
     /// Returns whether Layer 4 is currently polling for remote shutdowns.
     pub fn is_active(&self) -> bool {
-        self.worker.is_some()
+        self.active_state.load(Ordering::Acquire)
     }
 }
 
 impl Drop for RemoteShutdownBlocker {
     fn drop(&mut self) {
         self.deactivate();
+    }
+}
+
+impl Default for RemoteShutdownBlocker {
+    fn default() -> Self {
+        Self {
+            worker: None,
+            active_state: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -93,11 +108,27 @@ struct RemoteShutdownWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
-fn run_worker(stop_rx: Receiver<()>) {
+struct ActiveStateGuard(Arc<AtomicBool>);
+
+impl ActiveStateGuard {
+    fn activate(active_state: Arc<AtomicBool>) -> Self {
+        active_state.store(true, Ordering::Release);
+        Self(active_state)
+    }
+}
+
+impl Drop for ActiveStateGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     if !poll_remote_shutdown() {
         return;
     }
 
+    let _active_guard = ActiveStateGuard::activate(active_state);
     info!(
         "Layer 4 remote shutdown polling is active and will call AbortSystemShutdownW(None) every {} ms while Block mode is active.",
         remote_abort_interval().as_millis()
@@ -118,6 +149,7 @@ fn run_worker(stop_rx: Receiver<()>) {
 fn poll_remote_shutdown() -> bool {
     match abort_remote_shutdown() {
         Ok(()) => {
+            super::record_blocked_event();
             info!("Layer 4 intercepted and aborted a pending remote shutdown.");
             true
         }

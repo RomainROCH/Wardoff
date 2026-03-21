@@ -2,7 +2,11 @@
 
 use log::{error, info, warn};
 use std::mem::size_of;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::core::{Error as WindowsError, Result as WindowsResult, BSTR, HRESULT};
@@ -27,9 +31,9 @@ const UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH: &str =
 const LAYER3_THREAD_NAME: &str = "wardoff-layer3-update-reboot";
 
 /// Coordinates Layer 3 protection for the UpdateOrchestrator reboot task.
-#[derive(Default)]
 pub struct UpdateRebootBlocker {
     worker: Option<UpdateRebootWorker>,
+    active_state: Arc<AtomicBool>,
 }
 
 impl UpdateRebootBlocker {
@@ -65,10 +69,11 @@ impl UpdateRebootBlocker {
         }
 
         let (stop_tx, stop_rx) = mpsc::channel();
+        let active_state = Arc::clone(&self.active_state);
 
         match thread::Builder::new()
             .name(LAYER3_THREAD_NAME.to_string())
-            .spawn(move || run_worker(stop_rx))
+            .spawn(move || run_worker(active_state, stop_rx))
         {
             Ok(join_handle) => {
                 self.worker = Some(UpdateRebootWorker {
@@ -89,6 +94,7 @@ impl UpdateRebootBlocker {
             return;
         };
 
+        self.active_state.store(false, Ordering::Release);
         let _ = worker.stop_tx.send(());
 
         if let Some(join_handle) = worker.join_handle.take() {
@@ -100,13 +106,22 @@ impl UpdateRebootBlocker {
 
     /// Returns whether Layer 3 is currently monitoring UpdateOrchestrator.
     pub fn is_active(&self) -> bool {
-        self.worker.is_some()
+        self.active_state.load(Ordering::Acquire)
     }
 }
 
 impl Drop for UpdateRebootBlocker {
     fn drop(&mut self) {
         self.deactivate();
+    }
+}
+
+impl Default for UpdateRebootBlocker {
+    fn default() -> Self {
+        Self {
+            worker: None,
+            active_state: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -141,6 +156,21 @@ pub fn recheck_interval() -> Duration {
 struct UpdateRebootWorker {
     stop_tx: Sender<()>,
     join_handle: Option<JoinHandle<()>>,
+}
+
+struct ActiveStateGuard(Arc<AtomicBool>);
+
+impl ActiveStateGuard {
+    fn activate(active_state: Arc<AtomicBool>) -> Self {
+        active_state.store(true, Ordering::Release);
+        Self(active_state)
+    }
+}
+
+impl Drop for ActiveStateGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -184,7 +214,7 @@ impl Drop for HandleGuard {
     }
 }
 
-fn run_worker(stop_rx: Receiver<()>) {
+fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     let _com_apartment = match ComApartmentGuard::initialize() {
         Ok(guard) => guard,
         Err(error) => {
@@ -217,6 +247,7 @@ fn run_worker(stop_rx: Receiver<()>) {
         }
     }
 
+    let active_guard = ActiveStateGuard::activate(active_state);
     loop {
         match stop_rx.recv_timeout(recheck_interval()) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
@@ -241,6 +272,7 @@ fn run_worker(stop_rx: Receiver<()>) {
         }
     }
 
+    drop(active_guard);
     restore_task_if_needed(&restore_state);
 }
 
