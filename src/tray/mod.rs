@@ -3,8 +3,9 @@
 use crate::blocker::BlockerMode;
 use crate::logger::{self, EventSource};
 use log::info;
+use std::cell::Cell;
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
 
@@ -27,6 +28,8 @@ pub enum TrayAction {
     Block,
     /// Switches the application into allow mode.
     Allow,
+    /// Changes whether Wardoff starts automatically at current-user logon.
+    SetAutostart(bool),
     /// Starts a standard shutdown flow from the tray.
     Shutdown,
     /// Starts a standard reboot flow from the tray.
@@ -45,11 +48,13 @@ pub struct TrayController {
     visibility: TrayVisibility,
     block_item: MenuItem,
     allow_item: MenuItem,
+    autostart_item: CheckMenuItem,
     shutdown_item: MenuItem,
     reboot_item: MenuItem,
     sleep_item: MenuItem,
     hibernate_item: MenuItem,
     quit_item: MenuItem,
+    autostart_enabled: Cell<bool>,
 }
 
 /// Creates the tray controller used by the background application surface.
@@ -62,6 +67,7 @@ pub fn default_actions() -> Vec<TrayAction> {
     vec![
         TrayAction::Block,
         TrayAction::Allow,
+        TrayAction::SetAutostart(true),
         TrayAction::Shutdown,
         TrayAction::Reboot,
         TrayAction::Sleep,
@@ -77,6 +83,8 @@ impl TrayController {
 
         let block_item = MenuItem::with_id("wardoff.block", "Block", true, None);
         let allow_item = MenuItem::with_id("wardoff.allow", "Allow", true, None);
+        let autostart_item =
+            CheckMenuItem::with_id("wardoff.autostart", "Start with Windows", true, false, None);
         let shutdown_item = MenuItem::with_id("wardoff.shutdown", "Shutdown", true, None);
         let reboot_item = MenuItem::with_id("wardoff.reboot", "Reboot", true, None);
         let sleep_item = MenuItem::with_id("wardoff.sleep", "Sleep", true, None);
@@ -89,6 +97,7 @@ impl TrayController {
             .append_items(&[
                 &block_item,
                 &allow_item,
+                &autostart_item,
                 &separator_one,
                 &shutdown_item,
                 &reboot_item,
@@ -114,11 +123,13 @@ impl TrayController {
             visibility,
             block_item,
             allow_item,
+            autostart_item,
             shutdown_item,
             reboot_item,
             sleep_item,
             hibernate_item,
             quit_item,
+            autostart_enabled: Cell::new(false),
         };
         controller.set_mode(BlockerMode::Block)?;
 
@@ -167,6 +178,15 @@ impl TrayController {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn autostart_enabled(&self) -> bool {
+        self.autostart_enabled.get()
+    }
+
+    pub(crate) fn set_autostart_enabled(&self, enabled: bool) {
+        self.autostart_enabled.set(enabled);
+        self.autostart_item.set_checked(enabled);
     }
 
     /// Drains all pending tray menu activations received since the last message dispatch.
@@ -222,6 +242,8 @@ impl TrayController {
             Some(TrayAction::Block)
         } else if id == self.allow_item.id() {
             Some(TrayAction::Allow)
+        } else if id == self.autostart_item.id() {
+            Some(TrayAction::SetAutostart(!self.autostart_enabled.get()))
         } else if id == self.shutdown_item.id() {
             Some(TrayAction::Shutdown)
         } else if id == self.reboot_item.id() {
