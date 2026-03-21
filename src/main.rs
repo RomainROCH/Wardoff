@@ -4,7 +4,9 @@ mod config;
 mod logger;
 mod tray;
 
+use crate::blocker::remote::RemoteShutdownBlocker;
 use crate::blocker::shutdown::{run_message_loop, ShutdownBlocker};
+use crate::blocker::sleep::SleepBlocker;
 use crate::blocker::update::UpdateRebootBlocker;
 use env_logger::{Builder, Env};
 use log::{error, info, LevelFilter};
@@ -17,9 +19,11 @@ const DEFAULT_SHUTDOWN_BLOCK_REASON: &str =
 pub struct Application {
     shutdown_blocker: ShutdownBlocker,
     update_reboot_blocker: UpdateRebootBlocker,
+    remote_shutdown_blocker: RemoteShutdownBlocker,
+    sleep_blocker: SleepBlocker,
 }
 
-/// Bootstraps logging and activates Layers 1 and 3 for the process.
+/// Bootstraps logging and activates Layers 1, 3, 4, and sleep blocking for the process.
 pub fn bootstrap() -> Result<Application, Box<dyn Error>> {
     initialize_logging()?;
 
@@ -27,21 +31,29 @@ pub fn bootstrap() -> Result<Application, Box<dyn Error>> {
     info!("Wardoff Layer 1 shutdown blocking is active at startup");
 
     let update_reboot_blocker = UpdateRebootBlocker::start_blocking();
+    let remote_shutdown_blocker = RemoteShutdownBlocker::start_blocking();
+    let sleep_blocker = SleepBlocker::start_blocking();
 
     Ok(Application {
         shutdown_blocker,
         update_reboot_blocker,
+        remote_shutdown_blocker,
+        sleep_blocker,
     })
 }
 
-/// Runs the Wardoff MVP message loop with Layers 1 and 3 protection enabled.
+/// Runs the Wardoff MVP message loop with Layers 1, 3, 4, and sleep blocking enabled.
 pub fn run(application: Application) -> Result<(), Box<dyn Error>> {
     let Application {
         shutdown_blocker,
         update_reboot_blocker,
+        remote_shutdown_blocker,
+        sleep_blocker,
     } = application;
     let _shutdown_blocker = shutdown_blocker;
     let _update_reboot_blocker = update_reboot_blocker;
+    let _remote_shutdown_blocker = remote_shutdown_blocker;
+    let _sleep_blocker = sleep_blocker;
     run_message_loop()?;
     Ok(())
 }
