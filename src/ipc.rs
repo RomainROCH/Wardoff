@@ -45,6 +45,8 @@ pub(crate) enum PipeMode {
 pub(crate) enum IpcRequest {
     /// Switches the runtime into the requested blocker mode.
     SetMode { mode: PipeMode },
+    /// Creates, updates, or removes the current-user autostart task.
+    SetAutostart { enabled: bool },
     /// Returns the current runtime status snapshot.
     Status,
     /// Stops the background named-pipe server during orderly shutdown.
