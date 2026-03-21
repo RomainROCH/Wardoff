@@ -1,3 +1,4 @@
+use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -67,6 +68,12 @@ impl SleepBlocker {
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
                 error!("Sleep-blocking worker thread panicked while stopping");
+                logger::log_event(
+                    "sleep_unblocked",
+                    EventSource::Sleep,
+                    "Sleep-blocking worker thread panicked while stopping.",
+                    false,
+                );
             }
         }
     }
@@ -142,6 +149,14 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
         warn!(
             "Sleep blocking could not activate SetThreadExecutionState; skipping sleep, hibernate, and display-idle protection: {error}"
         );
+        logger::log_event(
+            "sleep_blocked",
+            EventSource::Sleep,
+            format!(
+                "Wardoff could not activate SetThreadExecutionState and skipped sleep, hibernate, and display-idle blocking: {error}"
+            ),
+            false,
+        );
         return;
     }
 
@@ -150,6 +165,16 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
         "Sleep, hibernate, and display-idle blocking are active and will refresh SetThreadExecutionState every {} seconds while Block mode is active.",
         refresh_interval().as_secs()
     );
+    logger::log_event(
+        "sleep_blocked",
+        EventSource::Sleep,
+        format!(
+            "Wardoff activated SetThreadExecutionState refresh every {} seconds to block sleep, hibernate, and display idle.",
+            refresh_interval().as_secs()
+        ),
+        true,
+    );
+    let mut stopped_cleanly = true;
 
     loop {
         match stop_rx.recv_timeout(refresh_interval()) {
@@ -159,6 +184,15 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
                     warn!(
                         "Sleep blocking stopped after its SetThreadExecutionState refresh failed: {error}"
                     );
+                    logger::log_event(
+                        "sleep_blocked",
+                        EventSource::Sleep,
+                        format!(
+                            "Wardoff stopped refreshing SetThreadExecutionState after an error: {error}"
+                        ),
+                        false,
+                    );
+                    stopped_cleanly = false;
                     break;
                 }
             }
@@ -168,6 +202,19 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     if let Err(error) = disable_sleep_block() {
         warn!(
             "Sleep blocking could not clear its SetThreadExecutionState request during shutdown: {error}"
+        );
+        logger::log_event(
+            "sleep_unblocked",
+            EventSource::Sleep,
+            format!("Wardoff could not clear SetThreadExecutionState during shutdown: {error}"),
+            false,
+        );
+    } else if stopped_cleanly {
+        logger::log_event(
+            "sleep_unblocked",
+            EventSource::Sleep,
+            "Wardoff cleared SetThreadExecutionState as Block mode ended.",
+            true,
         );
     }
 }
