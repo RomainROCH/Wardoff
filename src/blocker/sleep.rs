@@ -1,5 +1,9 @@
 use log::{error, info, warn};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::core::{Error as WindowsError, Result as WindowsResult};
@@ -10,9 +14,9 @@ use windows::Win32::System::Power::{
 const SLEEP_BLOCKER_THREAD_NAME: &str = "wardoff-sleep-blocker";
 
 /// Coordinates SetThreadExecutionState-based sleep and hibernate blocking.
-#[derive(Default)]
 pub struct SleepBlocker {
     worker: Option<SleepWorker>,
+    active_state: Arc<AtomicBool>,
 }
 
 impl SleepBlocker {
@@ -32,10 +36,11 @@ impl SleepBlocker {
         }
 
         let (stop_tx, stop_rx) = mpsc::channel();
+        let active_state = Arc::clone(&self.active_state);
 
         match thread::Builder::new()
             .name(SLEEP_BLOCKER_THREAD_NAME.to_string())
-            .spawn(move || run_worker(stop_rx))
+            .spawn(move || run_worker(active_state, stop_rx))
         {
             Ok(join_handle) => {
                 self.worker = Some(SleepWorker {
@@ -56,6 +61,7 @@ impl SleepBlocker {
             return;
         };
 
+        self.active_state.store(false, Ordering::Release);
         let _ = worker.stop_tx.send(());
 
         if let Some(join_handle) = worker.join_handle.take() {
@@ -67,13 +73,22 @@ impl SleepBlocker {
 
     /// Returns whether the sleep-blocking worker thread is currently active.
     pub fn is_active(&self) -> bool {
-        self.worker.is_some()
+        self.active_state.load(Ordering::Acquire)
     }
 }
 
 impl Drop for SleepBlocker {
     fn drop(&mut self) {
         self.deactivate();
+    }
+}
+
+impl Default for SleepBlocker {
+    fn default() -> Self {
+        Self {
+            worker: None,
+            active_state: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -107,7 +122,22 @@ struct SleepWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
-fn run_worker(stop_rx: Receiver<()>) {
+struct ActiveStateGuard(Arc<AtomicBool>);
+
+impl ActiveStateGuard {
+    fn activate(active_state: Arc<AtomicBool>) -> Self {
+        active_state.store(true, Ordering::Release);
+        Self(active_state)
+    }
+}
+
+impl Drop for ActiveStateGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     if let Err(error) = enable_sleep_block() {
         warn!(
             "Sleep blocking could not activate SetThreadExecutionState; skipping sleep, hibernate, and display-idle protection: {error}"
@@ -115,6 +145,7 @@ fn run_worker(stop_rx: Receiver<()>) {
         return;
     }
 
+    let _active_guard = ActiveStateGuard::activate(active_state);
     info!(
         "Sleep, hibernate, and display-idle blocking are active and will refresh SetThreadExecutionState every {} seconds while Block mode is active.",
         refresh_interval().as_secs()
