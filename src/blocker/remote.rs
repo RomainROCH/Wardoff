@@ -19,24 +19,35 @@ pub struct RemoteShutdownBlocker {
 impl RemoteShutdownBlocker {
     /// Starts Layer 4 remote-shutdown polling while Wardoff remains in Block mode.
     pub fn start_blocking() -> Self {
+        let mut blocker = Self::default();
+        if let Err(error) = blocker.activate() {
+            warn!("{error}");
+        }
+        blocker
+    }
+
+    /// Starts Layer 4 remote-shutdown polling if it is not already active.
+    pub fn activate(&mut self) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Ok(());
+        }
+
         let (stop_tx, stop_rx) = mpsc::channel();
 
         match thread::Builder::new()
             .name(LAYER4_THREAD_NAME.to_string())
             .spawn(move || run_worker(stop_rx))
         {
-            Ok(join_handle) => Self {
-                worker: Some(RemoteShutdownWorker {
+            Ok(join_handle) => {
+                self.worker = Some(RemoteShutdownWorker {
                     stop_tx,
                     join_handle: Some(join_handle),
-                }),
-            },
-            Err(error) => {
-                warn!(
-                    "Layer 4 could not start its polling thread: {error}. Skipping Layer 4 remote shutdown protection."
-                );
-                Self::default()
+                });
+                Ok(())
             }
+            Err(error) => Err(format!(
+                "Layer 4 could not start its polling thread: {error}"
+            )),
         }
     }
 
@@ -53,6 +64,11 @@ impl RemoteShutdownBlocker {
                 error!("Layer 4 worker thread panicked while stopping");
             }
         }
+    }
+
+    /// Returns whether Layer 4 is currently polling for remote shutdowns.
+    pub fn is_active(&self) -> bool {
+        self.worker.is_some()
     }
 }
 
