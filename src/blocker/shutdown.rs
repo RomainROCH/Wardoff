@@ -15,16 +15,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use log::warn;
-use windows::core::{w, Error as WindowsError, HSTRING, Result as WindowsResult};
+use windows::core::{w, Error as WindowsError, Result as WindowsResult, HSTRING};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockReasonDestroy};
 use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE,
-    IsWindow, MSG, PostQuitMessage, RegisterClassW, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROY, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IsWindow,
+    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
+    WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -36,11 +36,14 @@ const SHUTDOWN_PRIORITY: u32 = 0x3FF;
 pub struct ShutdownBlocker {
     message_window: HWND,
     session_window: HWND,
+    reason: HSTRING,
+    reason_registered: bool,
 }
 
 impl ShutdownBlocker {
     /// Creates the Layer 1 blocker, including the requested message-only window
     /// and the hidden top-level window that actually receives shutdown queries.
+    /// The blocker starts in Allow mode until `activate` is called.
     pub fn new(reason: &str) -> WindowsResult<Self> {
         let hinstance = current_instance()?;
         register_window_class(hinstance)?;
@@ -54,38 +57,56 @@ impl ShutdownBlocker {
             }
         };
 
-        if let Err(error) = unsafe {
-            SetProcessShutdownParameters(SHUTDOWN_PRIORITY, SHUTDOWN_NORETRY)
-        } {
+        if let Err(error) =
+            unsafe { SetProcessShutdownParameters(SHUTDOWN_PRIORITY, SHUTDOWN_NORETRY) }
+        {
             destroy_window(session_window);
             destroy_window(message_window);
             return Err(error);
         }
-
-        let reason = HSTRING::from(reason);
-        if let Err(error) = unsafe { ShutdownBlockReasonCreate(session_window, &reason) } {
-            destroy_window(session_window);
-            destroy_window(message_window);
-            return Err(error);
-        }
-
-        BLOCKER_ACTIVE.store(true, Ordering::Release);
 
         Ok(Self {
             message_window,
             session_window,
+            reason: HSTRING::from(reason),
+            reason_registered: false,
         })
+    }
+
+    /// Enables Layer 1 shutdown blocking without destroying the UI thread windows.
+    pub fn activate(&mut self) -> WindowsResult<()> {
+        if self.reason_registered {
+            return Ok(());
+        }
+
+        unsafe { ShutdownBlockReasonCreate(self.session_window, &self.reason)? };
+        self.reason_registered = true;
+        BLOCKER_ACTIVE.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Disables Layer 1 shutdown blocking while keeping the UI thread windows alive.
+    pub fn deactivate(&mut self) -> WindowsResult<()> {
+        if !self.reason_registered {
+            BLOCKER_ACTIVE.store(false, Ordering::Release);
+            return Ok(());
+        }
+
+        unsafe { ShutdownBlockReasonDestroy(self.session_window)? };
+        self.reason_registered = false;
+        BLOCKER_ACTIVE.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Returns whether Layer 1 is currently blocking shutdown.
+    pub fn is_active(&self) -> bool {
+        self.reason_registered
     }
 }
 
 impl Drop for ShutdownBlocker {
     fn drop(&mut self) {
-        if self.session_window != HWND::default() {
-            unsafe {
-                let _ = ShutdownBlockReasonDestroy(self.session_window);
-            }
-        }
-
+        let _ = self.deactivate();
         destroy_window(self.session_window);
         destroy_window(self.message_window);
         BLOCKER_ACTIVE.store(false, Ordering::Release);
@@ -217,10 +238,7 @@ unsafe extern "system" fn shutdown_window_proc(
 ) -> LRESULT {
     match message {
         WM_QUERYENDSESSION => handle_query_end_session(wparam, lparam),
-        WM_DESTROY => {
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
+        WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }
