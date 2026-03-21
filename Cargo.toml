@@ -1,0 +1,33 @@
+[package]
+name = "wardoff"
+version = "0.1.0"
+edition = "2021"
+authors = ["Romain ROCH"]
+description = "Open-source Windows shutdown/reboot/sleep blocker"
+license = "MIT"
+repository = "https://github.com/RomainROCH/Wardoff"
+keywords = ["windows", "shutdown", "blocker", "system", "tray"]
+categories = ["os::windows-apis", "command-line-utilities"]
+
+[dependencies]
+chrono = "0.4.44"
+clap = { version = "4.6.0", features = ["derive"] }
+env_logger = "0.11.9"
+log = "0.4.29"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tray-icon = "0.21.3"
+windows = { version = "0.62.2", features = [
+    "Win32_System_Shutdown",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_System_TaskScheduler",
+    "Win32_System_Com",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
