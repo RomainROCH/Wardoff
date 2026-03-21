@@ -1,6 +1,7 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 use windows::core::Result as WindowsResult;
-use windows::Win32::System::Shutdown::AbortSystemShutdownW;
 
 /// Coordinates Layer 4 remote shutdown abort polling.
 pub struct RemoteShutdownBlocker;
