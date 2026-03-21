@@ -1,6 +1,7 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 use windows::core::Result as WindowsResult;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::TaskScheduler::{ITaskFolder, ITaskService};
 
 /// Coordinates Layer 3 protection for the UpdateOrchestrator reboot task.

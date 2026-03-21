@@ -93,6 +93,7 @@ impl Drop for ShutdownBlocker {
 }
 
 /// Creates the Layer 1 message-only companion window requested by the MVP plan.
+#[allow(dead_code)]
 pub fn create_shutdown_blocker_window() -> WindowsResult<HWND> {
     let hinstance = current_instance()?;
     register_window_class(hinstance)?;
@@ -110,6 +111,7 @@ pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
 }
 
 /// Returns the Windows message identifier used for interactive shutdown negotiation.
+#[allow(dead_code)]
 pub fn query_end_session_message() -> u32 {
     WM_QUERYENDSESSION
 }
