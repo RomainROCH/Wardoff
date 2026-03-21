@@ -1,4 +1,5 @@
 use crate::blocker::{BlockerMode, LayerStatus};
+use crate::logger;
 use clap::{ArgGroup, Parser};
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,8 @@ pub enum RequestedAction {
     Status,
     /// Starts the primary runtime in Block mode with the tray icon hidden.
     Hide,
+    /// Prints the newest structured log lines without starting the runtime.
+    Log { tail: usize },
 }
 
 /// Defines the MVP command-line switches supported by Wardoff.
@@ -26,7 +29,7 @@ pub enum RequestedAction {
 )]
 #[command(group(
     ArgGroup::new("requested-action")
-        .args(["block", "allow", "status", "hide"])
+        .args(["block", "allow", "status", "hide", "log"])
         .multiple(false)
 ))]
 pub struct WardoffCli {
@@ -42,6 +45,12 @@ pub struct WardoffCli {
     /// Starts the application with a hidden tray icon.
     #[arg(long, group = "requested-action")]
     hide: bool,
+    /// Prints the newest structured Wardoff JSON log lines.
+    #[arg(long, group = "requested-action")]
+    log: bool,
+    /// Overrides the default number of structured log lines shown by `--log`.
+    #[arg(long, value_name = "N", requires = "log")]
+    tail: Option<usize>,
 }
 
 /// Represents the serialized state string returned by `wardoff --status`.
@@ -84,6 +93,10 @@ impl WardoffCli {
             RequestedAction::Status
         } else if self.hide {
             RequestedAction::Hide
+        } else if self.log {
+            RequestedAction::Log {
+                tail: self.tail.unwrap_or_else(logger::default_tail_line_count),
+            }
         } else {
             RequestedAction::Default
         }
