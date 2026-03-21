@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::mem::size_of;
 use std::sync::{
@@ -58,11 +59,27 @@ impl UpdateRebootBlocker {
                 warn!(
                     "Layer 3 requires administrator rights; skipping UpdateOrchestrator reboot-task protection."
                 );
+                logger::log_event(
+                    "update_monitoring_started",
+                    EventSource::UpdateOrchestrator,
+                    format!(
+                        "Layer 3 skipped scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because administrator rights are required."
+                    ),
+                    false,
+                );
                 return Ok(());
             }
             Err(error) => {
                 warn!(
                     "Layer 3 could not determine whether the process is elevated: {error}. Skipping UpdateOrchestrator reboot-task protection."
+                );
+                logger::log_event(
+                    "update_monitoring_started",
+                    EventSource::UpdateOrchestrator,
+                    format!(
+                        "Layer 3 could not determine whether administrator rights are available before monitoring {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                    ),
+                    false,
                 );
                 return Ok(());
             }
@@ -100,6 +117,12 @@ impl UpdateRebootBlocker {
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
                 error!("Layer 3 worker thread panicked while stopping");
+                logger::log_event(
+                    "update_monitoring_stopped",
+                    EventSource::UpdateOrchestrator,
+                    "Layer 3 worker thread panicked while stopping.",
+                    false,
+                );
             }
         }
     }
@@ -221,6 +244,14 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
             warn!(
                 "Layer 3 could not initialize the COM apartment for Task Scheduler access: {error}. Skipping UpdateOrchestrator reboot-task protection."
             );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not initialize the COM apartment before monitoring {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                ),
+                false,
+            );
             return;
         }
     };
@@ -231,11 +262,28 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
             info!(
                 "Layer 3 will re-check scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} every 5 minutes while Block mode is active."
             );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 started monitoring scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} every {} seconds while Block mode is active.",
+                    recheck_interval().as_secs()
+                ),
+                true,
+            );
         }
         Ok(false) => return,
         Err(error) if is_access_denied_error(&error) => {
             warn!(
                 "Layer 3 could not access scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Skipping UpdateOrchestrator reboot-task protection."
+            );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not access scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                ),
+                false,
             );
             return;
         }
@@ -243,11 +291,20 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
             warn!(
                 "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Skipping UpdateOrchestrator reboot-task protection."
             );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                ),
+                false,
+            );
             return;
         }
     }
 
     let active_guard = ActiveStateGuard::activate(active_state);
+    let mut stopped_cleanly = true;
     loop {
         match stop_rx.recv_timeout(recheck_interval()) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
@@ -259,12 +316,30 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
                         warn!(
                             "Layer 3 lost access to scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Stopping Layer 3 polling."
                         );
+                        logger::log_event(
+                            "update_monitoring_stopped",
+                            EventSource::UpdateOrchestrator,
+                            format!(
+                                "Layer 3 lost access to scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                            ),
+                            false,
+                        );
+                        stopped_cleanly = false;
                         break;
                     }
                     Err(error) => {
                         warn!(
                             "Layer 3 polling stopped after a Task Scheduler error for {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
                         );
+                        logger::log_event(
+                            "update_monitoring_stopped",
+                            EventSource::UpdateOrchestrator,
+                            format!(
+                                "Layer 3 polling stopped after a Task Scheduler error for {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                            ),
+                            false,
+                        );
+                        stopped_cleanly = false;
                         break;
                     }
                 }
@@ -274,6 +349,17 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
 
     drop(active_guard);
     restore_task_if_needed(&restore_state);
+
+    if stopped_cleanly {
+        logger::log_event(
+            "update_monitoring_stopped",
+            EventSource::UpdateOrchestrator,
+            format!(
+                "Layer 3 stopped monitoring scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} as Block mode ended."
+            ),
+            true,
+        );
+    }
 }
 
 fn ensure_reboot_task_disabled(restore_state: &mut RestoreState) -> WindowsResult<bool> {
@@ -290,9 +376,25 @@ fn ensure_reboot_task_disabled(restore_state: &mut RestoreState) -> WindowsResul
                     info!(
                         "Layer 3 disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} while Block mode is active."
                     );
+                    logger::log_event(
+                        "update_task_disabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} while Block mode is active."
+                        ),
+                        true,
+                    );
                 } else {
                     info!(
                         "Layer 3 found scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} already disabled; monitoring it without changing its original state."
+                    );
+                    logger::log_event(
+                        "update_task_disabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 found scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} already disabled and is only monitoring it."
+                        ),
+                        true,
                     );
                 }
 
@@ -305,9 +407,25 @@ fn ensure_reboot_task_disabled(restore_state: &mut RestoreState) -> WindowsResul
                     info!(
                         "Layer 3 re-disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} after Windows re-enabled it."
                     );
+                    logger::log_event(
+                        "update_task_disabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 re-disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} after Windows re-enabled it."
+                        ),
+                        true,
+                    );
                 } else {
                     info!(
                         "Layer 3 disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} after it was re-enabled during Block mode; the task will remain disabled when this process exits because it was already disabled before Layer 3 started."
+                    );
+                    logger::log_event(
+                        "update_task_disabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 disabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} after it was re-enabled during Block mode; it will remain disabled on exit because it was already disabled before Layer 3 started."
+                        ),
+                        true,
                     );
                 }
             }
@@ -318,11 +436,27 @@ fn ensure_reboot_task_disabled(restore_state: &mut RestoreState) -> WindowsResul
             info!(
                 "Layer 3 skipped because the Task Scheduler folder {UPDATE_ORCHESTRATOR_FOLDER_PATH} does not exist on this machine."
             );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 skipped because the Task Scheduler folder {UPDATE_ORCHESTRATOR_FOLDER_PATH} does not exist on this machine."
+                ),
+                false,
+            );
             Ok(false)
         }
         RebootTaskLookup::MissingTask => {
             info!(
                 "Layer 3 skipped because the scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} does not exist on this machine."
+            );
+            logger::log_event(
+                "update_monitoring_started",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 skipped because the scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} does not exist on this machine."
+                ),
+                false,
             );
             Ok(false)
         }
@@ -340,31 +474,95 @@ fn restore_task_if_needed(restore_state: &RestoreState) {
                 info!(
                     "Layer 3 left scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} enabled as Block mode ended."
                 );
+                logger::log_event(
+                    "update_task_enabled",
+                    EventSource::UpdateOrchestrator,
+                    format!(
+                        "Layer 3 left scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} enabled as Block mode ended."
+                    ),
+                    true,
+                );
             }
             Ok(false) => {
                 if let Err(error) = set_task_enabled(&task, true) {
                     warn!(
                         "Layer 3 could not re-enable scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
                     );
+                    logger::log_event(
+                        "update_task_enabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 could not re-enable scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                        ),
+                        false,
+                    );
                 } else {
                     info!(
                         "Layer 3 re-enabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} as Block mode ended."
                     );
+                    logger::log_event(
+                        "update_task_enabled",
+                        EventSource::UpdateOrchestrator,
+                        format!(
+                            "Layer 3 re-enabled scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} as Block mode ended."
+                        ),
+                        true,
+                    );
                 }
             }
-            Err(error) => warn!(
-                "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} during restore: {error}"
-            ),
+            Err(error) => {
+                warn!(
+                    "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} during restore: {error}"
+                );
+                logger::log_event(
+                    "update_task_enabled",
+                    EventSource::UpdateOrchestrator,
+                    format!(
+                        "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} during restore: {error}"
+                    ),
+                    false,
+                );
+            }
         },
-        Ok(RebootTaskLookup::MissingFolder) => info!(
-            "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the folder {UPDATE_ORCHESTRATOR_FOLDER_PATH} is not present."
-        ),
-        Ok(RebootTaskLookup::MissingTask) => info!(
-            "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the task is not present."
-        ),
-        Err(error) => warn!(
-            "Layer 3 could not restore scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
-        ),
+        Ok(RebootTaskLookup::MissingFolder) => {
+            info!(
+                "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the folder {UPDATE_ORCHESTRATOR_FOLDER_PATH} is not present."
+            );
+            logger::log_event(
+                "update_task_enabled",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the folder {UPDATE_ORCHESTRATOR_FOLDER_PATH} is not present."
+                ),
+                false,
+            );
+        }
+        Ok(RebootTaskLookup::MissingTask) => {
+            info!(
+                "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the task is not present."
+            );
+            logger::log_event(
+                "update_task_enabled",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not restore {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} because the task is not present."
+                ),
+                false,
+            );
+        }
+        Err(error) => {
+            warn!(
+                "Layer 3 could not restore scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+            );
+            logger::log_event(
+                "update_task_enabled",
+                EventSource::UpdateOrchestrator,
+                format!(
+                    "Layer 3 could not restore scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
+                ),
+                false,
+            );
+        }
     }
 }
 
