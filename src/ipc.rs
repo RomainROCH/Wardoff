@@ -1,5 +1,6 @@
 use crate::blocker::BlockerMode;
 use crate::cli::StatusOutput;
+use crate::logger::{self, EventSource};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -95,6 +96,12 @@ impl IpcServer {
             .map_err(|error| format!("Wardoff could not start its IPC server thread: {error}"))?;
 
         info!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}.");
+        logger::log_event(
+            "ipc_server_started",
+            EventSource::Ipc,
+            format!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}."),
+            true,
+        );
 
         Ok(Self {
             join_handle: Some(join_handle),
@@ -216,6 +223,14 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
+                logger::log_event(
+                    "ipc_server_stopped",
+                    EventSource::Ipc,
+                    format!(
+                        "Wardoff stopped its named-pipe control server after an IPC error: {error}"
+                    ),
+                    false,
+                );
                 break;
             }
         };
@@ -251,6 +266,12 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
                         },
                     );
                     warn!("{error}");
+                    logger::log_event(
+                        "ipc_request_rejected",
+                        EventSource::Ipc,
+                        format!("Wardoff could not wake its UI thread for IPC: {error}"),
+                        false,
+                    );
                     continue;
                 }
 
@@ -279,11 +300,23 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
                     },
                 );
                 warn!("Wardoff rejected an IPC request: {error}");
+                logger::log_event(
+                    "ipc_request_rejected",
+                    EventSource::Ipc,
+                    format!("Wardoff rejected an IPC request: {error}"),
+                    false,
+                );
             }
         }
     }
 
     info!("Wardoff stopped its named-pipe control server.");
+    logger::log_event(
+        "ipc_server_stopped",
+        EventSource::Ipc,
+        format!("Wardoff stopped its named-pipe control server on {CONTROL_PIPE_PATH}."),
+        true,
+    );
 }
 
 fn accept_client() -> Result<File, String> {

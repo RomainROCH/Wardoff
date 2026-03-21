@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::blocker::BlockerMode;
+use crate::logger::{self, EventSource};
 use log::info;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
@@ -125,6 +126,16 @@ impl TrayController {
             controller.hide_tray_icon()?;
         }
 
+        logger::log_event(
+            "tray_initialized",
+            EventSource::Tray,
+            format!(
+                "Wardoff created a {} tray icon.",
+                visibility_label(visibility)
+            ),
+            true,
+        );
+
         Ok(controller)
     }
 
@@ -175,6 +186,12 @@ impl TrayController {
     pub fn shutdown(&mut self) {
         if self.tray_icon.take().is_some() {
             info!("Wardoff removed its tray icon during shutdown.");
+            logger::log_event(
+                "tray_shutdown",
+                EventSource::Tray,
+                "Wardoff removed its tray icon during shutdown.",
+                true,
+            );
         }
     }
 
@@ -184,6 +201,13 @@ impl TrayController {
                 .set_visible(false)
                 .map_err(|error| format!("Wardoff could not hide the tray icon: {error}"))?;
         }
+
+        logger::log_event(
+            "tray_visibility_changed",
+            EventSource::Tray,
+            "Wardoff hid the tray icon.",
+            true,
+        );
 
         Ok(())
     }
@@ -218,5 +242,12 @@ fn tooltip_for_mode(mode: BlockerMode) -> &'static str {
     match mode {
         BlockerMode::Block => "Wardoff - Block mode",
         BlockerMode::Allow => "Wardoff - Allow mode",
+    }
+}
+
+fn visibility_label(visibility: TrayVisibility) -> &'static str {
+    match visibility {
+        TrayVisibility::Visible => "visible",
+        TrayVisibility::Hidden => "hidden",
     }
 }
