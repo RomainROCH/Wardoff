@@ -1,3 +1,4 @@
+mod autostart;
 mod blocker;
 mod cli;
 mod config;
@@ -17,7 +18,7 @@ use crate::ipc::{
 };
 use crate::logger::EventSource;
 use crate::tray::{create_tray_controller, TrayAction, TrayController, TrayVisibility};
-use log::{error, info};
+use log::{error, info, warn};
 use std::error::Error;
 use std::io;
 use std::sync::mpsc::{self, Receiver};
@@ -101,14 +102,17 @@ fn bootstrap(
         true,
     );
 
-    Ok(Application {
+    let mut application = Application {
         blocker_coordinator,
         tray_controller,
         ipc_requests,
         ipc_server,
         started_at: Instant::now(),
         _primary_instance: primary_instance,
-    })
+    };
+    application.refresh_autostart_tray_state();
+
+    Ok(application)
 }
 
 /// Runs the shared Win32 event loop for the hidden Layer 1 windows and the tray icon.
@@ -174,6 +178,7 @@ fn run_main() -> Result<i32, Box<dyn Error>> {
     let cli = parse_cli();
 
     match cli.requested_action() {
+        RequestedAction::Autostart { enabled } => handle_autostart_request(enabled),
         RequestedAction::Status => handle_status_request(),
         RequestedAction::Log { tail } => handle_log_request(tail),
         action @ (RequestedAction::Default
@@ -216,6 +221,36 @@ fn handle_log_request(tail: usize) -> Result<i32, Box<dyn Error>> {
     Ok(0)
 }
 
+fn handle_autostart_request(enabled: bool) -> Result<i32, Box<dyn Error>> {
+    match claim_primary_instance().map_err(other_error)? {
+        InstanceClaim::Primary(primary_instance) => {
+            drop(primary_instance);
+
+            let mut structured_logging_started = false;
+            match logger::initialize_structured_logging() {
+                Ok(()) => structured_logging_started = true,
+                Err(error) => {
+                    error!(
+                        "Wardoff could not initialize structured logging for --autostart: {error}"
+                    );
+                }
+            }
+
+            let result = autostart::set_enabled(enabled)
+                .map_err(other_error)
+                .map(|_| 0);
+            if structured_logging_started {
+                logger::shutdown_structured_logging();
+            }
+
+            Ok(result?)
+        }
+        InstanceClaim::Secondary => {
+            forward_request_to_primary(IpcRequest::SetAutostart { enabled })
+        }
+    }
+}
+
 fn forward_request_to_primary(request: IpcRequest) -> Result<i32, Box<dyn Error>> {
     match send_request(&request) {
         Ok(IpcResponse::Ok) => Ok(0),
@@ -248,6 +283,9 @@ fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
             initial_mode: BlockerMode::Block,
             tray_surface: TraySurface::Hidden,
         },
+        RequestedAction::Autostart { .. } => {
+            unreachable!("autostart changes do not start the primary runtime")
+        }
         RequestedAction::Status | RequestedAction::Log { .. } => RuntimeOptions {
             initial_mode: BlockerMode::Block,
             tray_surface: TraySurface::Visible,
@@ -265,6 +303,7 @@ fn ipc_request_for(action: RequestedAction) -> IpcRequest {
         RequestedAction::Allow => IpcRequest::SetMode {
             mode: PipeMode::Allow,
         },
+        RequestedAction::Autostart { enabled } => IpcRequest::SetAutostart { enabled },
         RequestedAction::Status | RequestedAction::Log { .. } => IpcRequest::Status,
     }
 }
@@ -326,6 +365,34 @@ impl Application {
                             ),
                             false,
                         );
+                        IpcResponse::Error { message }
+                    }
+                }
+            }
+            IpcRequest::SetAutostart { enabled } => {
+                match self.set_autostart_enabled(enabled, EventSource::Ipc) {
+                    Ok(()) => {
+                        logger::log_event(
+                            "autostart_request_processed",
+                            EventSource::Ipc,
+                            format!(
+                            "Wardoff applied a named-pipe request to turn Start with Windows {}.",
+                            on_off_label(enabled)
+                        ),
+                            true,
+                        );
+                        IpcResponse::Ok
+                    }
+                    Err(message) => {
+                        logger::log_event(
+                        "autostart_request_processed",
+                        EventSource::Ipc,
+                        format!(
+                            "Wardoff could not apply a named-pipe request to turn Start with Windows {}: {message}",
+                            on_off_label(enabled)
+                        ),
+                        false,
+                    );
                         IpcResponse::Error { message }
                     }
                 }
@@ -399,6 +466,19 @@ impl Application {
                     "tray_action",
                     EventSource::Tray,
                     "Wardoff processed an Allow request from the tray menu.",
+                    true,
+                );
+                Ok(false)
+            }
+            TrayAction::SetAutostart(enabled) => {
+                self.set_autostart_enabled(enabled, EventSource::Tray)?;
+                logger::log_event(
+                    "tray_action",
+                    EventSource::Tray,
+                    format!(
+                        "Wardoff processed a Start with Windows request to turn autostart {}.",
+                        on_off_label(enabled)
+                    ),
                     true,
                 );
                 Ok(false)
@@ -555,10 +635,71 @@ impl Application {
         Ok(())
     }
 
+    fn set_autostart_enabled(&mut self, enabled: bool, source: EventSource) -> Result<(), String> {
+        let previous_state = self
+            .tray_controller
+            .as_ref()
+            .map(TrayController::autostart_enabled)
+            .unwrap_or(false);
+
+        match autostart::set_enabled(enabled) {
+            Ok(()) => {
+                self.sync_tray_autostart(enabled);
+                logger::log_event(
+                    "autostart_changed",
+                    source,
+                    format!(
+                        "Wardoff turned Start with Windows {}.",
+                        on_off_label(enabled)
+                    ),
+                    true,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                match autostart::is_enabled() {
+                    Ok(actual_state) => self.sync_tray_autostart(actual_state),
+                    Err(_) => self.sync_tray_autostart(previous_state),
+                }
+
+                let error_message = format!(
+                    "Wardoff could not turn Start with Windows {}: {error}",
+                    on_off_label(enabled)
+                );
+                logger::log_event("autostart_changed", source, error_message.clone(), false);
+                Err(error_message)
+            }
+        }
+    }
+
     fn sync_tray(&mut self, mode: BlockerMode) -> Result<(), String> {
         match self.tray_controller.as_mut() {
             Some(tray_controller) => tray_controller.set_mode(mode),
             None => Ok(()),
+        }
+    }
+
+    fn refresh_autostart_tray_state(&mut self) {
+        match autostart::is_enabled() {
+            Ok(enabled) => self.sync_tray_autostart(enabled),
+            Err(message) => {
+                self.sync_tray_autostart(false);
+                warn!("Wardoff could not query its Start with Windows state: {message}");
+                logger::log_event(
+                    "autostart_state_read",
+                    EventSource::Application,
+                    format!(
+                        "Wardoff could not query scheduled task \\Wardoff while initializing the tray checkbox: {message}"
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+
+    fn sync_tray_autostart(&self, enabled: bool) {
+        if let Some(tray_controller) = self.tray_controller.as_ref() {
+            tray_controller.set_autostart_enabled(enabled);
         }
     }
 
@@ -625,5 +766,13 @@ fn power_action_label(action: PowerAction) -> &'static str {
         PowerAction::Reboot => "reboot",
         PowerAction::Sleep => "sleep",
         PowerAction::Hibernate => "hibernate",
+    }
+}
+
+fn on_off_label(enabled: bool) -> &'static str {
+    if enabled {
+        "on"
+    } else {
+        "off"
     }
 }
