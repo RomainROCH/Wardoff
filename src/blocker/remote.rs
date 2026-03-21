@@ -1,3 +1,4 @@
+use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -68,6 +69,12 @@ impl RemoteShutdownBlocker {
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
                 error!("Layer 4 worker thread panicked while stopping");
+                logger::log_event(
+                    "remote_layer_disabled",
+                    EventSource::Remote,
+                    "Layer 4 worker thread panicked while stopping.",
+                    false,
+                );
             }
         }
     }
@@ -133,16 +140,36 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
         "Layer 4 remote shutdown polling is active and will call AbortSystemShutdownW(None) every {} ms while Block mode is active.",
         remote_abort_interval().as_millis()
     );
+    logger::log_event(
+        "remote_layer_enabled",
+        EventSource::Remote,
+        format!(
+            "Layer 4 started polling AbortSystemShutdownW(None) every {} ms.",
+            remote_abort_interval().as_millis()
+        ),
+        true,
+    );
+    let mut stopped_cleanly = true;
 
     loop {
         match stop_rx.recv_timeout(remote_abort_interval()) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
                 if !poll_remote_shutdown() {
+                    stopped_cleanly = false;
                     break;
                 }
             }
         }
+    }
+
+    if stopped_cleanly {
+        logger::log_event(
+            "remote_layer_disabled",
+            EventSource::Remote,
+            "Layer 4 stopped remote shutdown polling as Block mode ended.",
+            true,
+        );
     }
 }
 
@@ -151,6 +178,12 @@ fn poll_remote_shutdown() -> bool {
         Ok(()) => {
             super::record_blocked_event();
             info!("Layer 4 intercepted and aborted a pending remote shutdown.");
+            logger::log_event(
+                "remote_shutdown_intercepted",
+                EventSource::Remote,
+                "Layer 4 called AbortSystemShutdownW(None) and aborted a pending remote shutdown.",
+                true,
+            );
             true
         }
         Err(error) if is_no_shutdown_in_progress_error(&error) => true,
@@ -158,11 +191,27 @@ fn poll_remote_shutdown() -> bool {
             warn!(
                 "Layer 4 could not call AbortSystemShutdownW(None) because this process lacks the required shutdown privilege; skipping Layer 4 remote shutdown protection: {error}"
             );
+            logger::log_event(
+                "remote_layer_enabled",
+                EventSource::Remote,
+                format!(
+                    "Layer 4 could not call AbortSystemShutdownW(None) because the required shutdown privilege is missing: {error}"
+                ),
+                false,
+            );
             false
         }
         Err(error) => {
             warn!(
                 "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {error}"
+            );
+            logger::log_event(
+                "remote_layer_disabled",
+                EventSource::Remote,
+                format!(
+                    "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {error}"
+                ),
+                false,
             );
             false
         }

@@ -11,6 +11,7 @@
 //! companion window. The hidden top-level window owns the actual shutdown block
 //! reason and receives the broadcast shutdown query.
 
+use crate::logger::{self, EventSource};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
@@ -82,6 +83,12 @@ impl ShutdownBlocker {
         unsafe { ShutdownBlockReasonCreate(self.session_window, &self.reason)? };
         self.reason_registered = true;
         BLOCKER_ACTIVE.store(true, Ordering::Release);
+        logger::log_event(
+            "shutdown_layer_enabled",
+            EventSource::Shutdown,
+            "Layer 1 registered its shutdown block reason and will reject WM_QUERYENDSESSION.",
+            true,
+        );
         Ok(())
     }
 
@@ -95,6 +102,12 @@ impl ShutdownBlocker {
         unsafe { ShutdownBlockReasonDestroy(self.session_window)? };
         self.reason_registered = false;
         BLOCKER_ACTIVE.store(false, Ordering::Release);
+        logger::log_event(
+            "shutdown_layer_disabled",
+            EventSource::Shutdown,
+            "Layer 1 removed its shutdown block reason and returned to Allow mode.",
+            true,
+        );
         Ok(())
     }
 
@@ -126,6 +139,12 @@ pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     if BLOCKER_ACTIVE.load(Ordering::Acquire) {
         super::record_blocked_event();
         warn!("Blocking WM_QUERYENDSESSION while Layer 1 protection is active");
+        logger::log_event(
+            "shutdown_blocked",
+            EventSource::Shutdown,
+            "Layer 1 blocked WM_QUERYENDSESSION and returned FALSE to Windows.",
+            true,
+        );
         return LRESULT(0);
     }
 
