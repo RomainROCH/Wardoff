@@ -19,6 +19,7 @@ serde_json = "1.0.149"
 tray-icon = "0.21.3"
 windows = { version = "0.62.2", features = [
     "Win32_System_Shutdown",
+    "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Security",
     "Win32_System_Threading",
