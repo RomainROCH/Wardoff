@@ -1,4 +1,5 @@
-use log::{error, info, warn};
+#![allow(dead_code)]
+
 use tray_icon as _;
 
 /// Scaffolding for tray icon asset selection.
