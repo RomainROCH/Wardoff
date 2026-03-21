@@ -27,6 +27,8 @@ static WRITER_HANDLE: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventSource {
+    /// The Task Scheduler autostart layer emitted the event.
+    Autostart,
     /// The main application runtime emitted the event.
     Application,
     /// The command-line interface emitted the event.
@@ -197,6 +199,7 @@ pub(crate) fn read_recent_lines(limit: usize) -> Result<Vec<String>, String> {
 impl EventSource {
     fn label(self) -> &'static str {
         match self {
+            EventSource::Autostart => "autostart",
             EventSource::Application => "application",
             EventSource::Cli => "cli",
             EventSource::Ipc => "ipc",
