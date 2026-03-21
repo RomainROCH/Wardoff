@@ -124,6 +124,7 @@ pub fn create_shutdown_blocker_window() -> WindowsResult<HWND> {
 /// Handles `WM_QUERYENDSESSION` while Wardoff is in blocking mode.
 pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     if BLOCKER_ACTIVE.load(Ordering::Acquire) {
+        super::record_blocked_event();
         warn!("Blocking WM_QUERYENDSESSION while Layer 1 protection is active");
         return LRESULT(0);
     }
