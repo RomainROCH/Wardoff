@@ -35,19 +35,32 @@ pub struct UpdateRebootBlocker {
 impl UpdateRebootBlocker {
     /// Starts Layer 3 protection while Wardoff remains in Block mode.
     pub fn start_blocking() -> Self {
+        let mut blocker = Self::default();
+        if let Err(error) = blocker.activate() {
+            warn!("{error}");
+        }
+        blocker
+    }
+
+    /// Starts Layer 3 protection if it is not already active.
+    pub fn activate(&mut self) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Ok(());
+        }
+
         match is_process_elevated() {
             Ok(true) => {}
             Ok(false) => {
                 warn!(
                     "Layer 3 requires administrator rights; skipping UpdateOrchestrator reboot-task protection."
                 );
-                return Self::default();
+                return Ok(());
             }
             Err(error) => {
                 warn!(
                     "Layer 3 could not determine whether the process is elevated: {error}. Skipping UpdateOrchestrator reboot-task protection."
                 );
-                return Self::default();
+                return Ok(());
             }
         }
 
@@ -57,18 +70,16 @@ impl UpdateRebootBlocker {
             .name(LAYER3_THREAD_NAME.to_string())
             .spawn(move || run_worker(stop_rx))
         {
-            Ok(join_handle) => Self {
-                worker: Some(UpdateRebootWorker {
+            Ok(join_handle) => {
+                self.worker = Some(UpdateRebootWorker {
                     stop_tx,
                     join_handle: Some(join_handle),
-                }),
-            },
-            Err(error) => {
-                warn!(
-                    "Layer 3 could not start its polling thread: {error}. Skipping UpdateOrchestrator reboot protection."
-                );
-                Self::default()
+                });
+                Ok(())
             }
+            Err(error) => Err(format!(
+                "Layer 3 could not start its polling thread: {error}"
+            )),
         }
     }
 
@@ -85,6 +96,11 @@ impl UpdateRebootBlocker {
                 error!("Layer 3 worker thread panicked while stopping");
             }
         }
+    }
+
+    /// Returns whether Layer 3 is currently monitoring UpdateOrchestrator.
+    pub fn is_active(&self) -> bool {
+        self.worker.is_some()
     }
 }
 
