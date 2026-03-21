@@ -18,24 +18,35 @@ pub struct SleepBlocker {
 impl SleepBlocker {
     /// Starts the dedicated worker thread that owns the execution-state request.
     pub fn start_blocking() -> Self {
+        let mut blocker = Self::default();
+        if let Err(error) = blocker.activate() {
+            warn!("{error}");
+        }
+        blocker
+    }
+
+    /// Starts sleep, hibernate, and display-idle blocking if it is not already active.
+    pub fn activate(&mut self) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Ok(());
+        }
+
         let (stop_tx, stop_rx) = mpsc::channel();
 
         match thread::Builder::new()
             .name(SLEEP_BLOCKER_THREAD_NAME.to_string())
             .spawn(move || run_worker(stop_rx))
         {
-            Ok(join_handle) => Self {
-                worker: Some(SleepWorker {
+            Ok(join_handle) => {
+                self.worker = Some(SleepWorker {
                     stop_tx,
                     join_handle: Some(join_handle),
-                }),
-            },
-            Err(error) => {
-                warn!(
-                    "Sleep blocking could not start its worker thread: {error}. Skipping sleep, hibernate, and display-idle protection."
-                );
-                Self::default()
+                });
+                Ok(())
             }
+            Err(error) => Err(format!(
+                "Sleep blocking could not start its worker thread: {error}"
+            )),
         }
     }
 
@@ -52,6 +63,11 @@ impl SleepBlocker {
                 error!("Sleep-blocking worker thread panicked while stopping");
             }
         }
+    }
+
+    /// Returns whether the sleep-blocking worker thread is currently active.
+    pub fn is_active(&self) -> bool {
+        self.worker.is_some()
     }
 }
 
