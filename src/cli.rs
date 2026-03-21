@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clap::Parser;
 use serde::Serialize;
 use serde_json::Value;
