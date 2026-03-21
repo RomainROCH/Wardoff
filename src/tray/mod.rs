@@ -10,6 +10,15 @@ use tray_icon::{
 /// Scaffolding for tray icon asset selection.
 pub mod icon;
 
+/// Controls whether the primary runtime shows or hides its tray icon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayVisibility {
+    /// Creates the tray icon in its normal visible state.
+    Visible,
+    /// Creates the tray icon but immediately hides it.
+    Hidden,
+}
+
 /// Represents the actions available from the MVP tray menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
@@ -32,6 +41,7 @@ pub enum TrayAction {
 /// Coordinates tray creation and menu event dispatch.
 pub struct TrayController {
     tray_icon: Option<TrayIcon>,
+    visibility: TrayVisibility,
     block_item: MenuItem,
     allow_item: MenuItem,
     shutdown_item: MenuItem,
@@ -42,8 +52,8 @@ pub struct TrayController {
 }
 
 /// Creates the tray controller used by the background application surface.
-pub fn create_tray_controller() -> Result<TrayController, String> {
-    TrayController::new()
+pub fn create_tray_controller(visibility: TrayVisibility) -> Result<TrayController, String> {
+    TrayController::new(visibility)
 }
 
 /// Returns the default set of tray actions exposed by the MVP menu.
@@ -61,7 +71,7 @@ pub fn default_actions() -> Vec<TrayAction> {
 
 impl TrayController {
     /// Creates the MVP tray icon with the required right-click menu actions.
-    pub fn new() -> Result<Self, String> {
+    pub fn new(visibility: TrayVisibility) -> Result<Self, String> {
         let tray_menu = Menu::new();
 
         let block_item = MenuItem::with_id("wardoff.block", "Block", true, None);
@@ -100,6 +110,7 @@ impl TrayController {
 
         let mut controller = Self {
             tray_icon: Some(tray_icon),
+            visibility,
             block_item,
             allow_item,
             shutdown_item,
@@ -109,11 +120,23 @@ impl TrayController {
             quit_item,
         };
         controller.set_mode(BlockerMode::Block)?;
+
+        if visibility == TrayVisibility::Hidden {
+            controller.hide_tray_icon()?;
+        }
+
         Ok(controller)
     }
 
     /// Applies the current blocker mode to the tray icon, tooltip, and menu state.
     pub fn set_mode(&mut self, mode: BlockerMode) -> Result<(), String> {
+        self.sync_menu_state(mode);
+
+        if self.visibility == TrayVisibility::Hidden {
+            // Windows can return E_FAIL when mutating icon metadata after the tray icon is hidden.
+            return Ok(());
+        }
+
         let icon = match mode {
             BlockerMode::Block => icon::blocked_icon().map_err(|error| {
                 format!("Wardoff could not render the blocked tray icon: {error}")
@@ -132,8 +155,6 @@ impl TrayController {
                 .map_err(|error| format!("Wardoff could not update the tray tooltip: {error}"))?;
         }
 
-        self.block_item.set_enabled(mode != BlockerMode::Block);
-        self.allow_item.set_enabled(mode != BlockerMode::Allow);
         Ok(())
     }
 
@@ -155,6 +176,21 @@ impl TrayController {
         if self.tray_icon.take().is_some() {
             info!("Wardoff removed its tray icon during shutdown.");
         }
+    }
+
+    fn hide_tray_icon(&self) -> Result<(), String> {
+        if let Some(tray_icon) = self.tray_icon.as_ref() {
+            tray_icon
+                .set_visible(false)
+                .map_err(|error| format!("Wardoff could not hide the tray icon: {error}"))?;
+        }
+
+        Ok(())
+    }
+
+    fn sync_menu_state(&self, mode: BlockerMode) {
+        self.block_item.set_enabled(mode != BlockerMode::Block);
+        self.allow_item.set_enabled(mode != BlockerMode::Allow);
     }
 
     fn action_for_menu_id(&self, id: &MenuId) -> Option<TrayAction> {
