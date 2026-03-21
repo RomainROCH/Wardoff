@@ -15,9 +15,9 @@ use crate::ipc::{
     send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest, PipeMode,
     IPC_WAKE_MESSAGE,
 };
+use crate::logger::EventSource;
 use crate::tray::{create_tray_controller, TrayAction, TrayController, TrayVisibility};
-use env_logger::{Builder, Env};
-use log::{error, info, LevelFilter};
+use log::{error, info};
 use std::error::Error;
 use std::io;
 use std::sync::mpsc::{self, Receiver};
@@ -56,7 +56,7 @@ fn bootstrap(
     primary_instance: InstanceGuard,
     options: RuntimeOptions,
 ) -> Result<Application, Box<dyn Error>> {
-    initialize_logging()?;
+    logger::initialize_structured_logging().map_err(other_error)?;
 
     let blocker_coordinator =
         create_blocker_coordinator(options.initial_mode).map_err(other_error)?;
@@ -83,7 +83,23 @@ fn bootstrap(
     let ipc_server =
         IpcServer::start(ipc_request_tx, unsafe { GetCurrentThreadId() }).map_err(other_error)?;
 
-    info!("{}", application_start_message(options));
+    let start_message = application_start_message(options);
+    info!("{start_message}");
+    logger::log_event(
+        "application_started",
+        EventSource::Application,
+        start_message,
+        true,
+    );
+    logger::log_event(
+        "state_changed",
+        EventSource::Application,
+        format!(
+            "Wardoff transitioned from inactive to {} mode during startup.",
+            mode_label(options.initial_mode)
+        ),
+        true,
+    );
 
     Ok(Application {
         blocker_coordinator,
@@ -137,6 +153,15 @@ fn main() {
     match run_main() {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(error) => {
+            if logger::structured_logging_initialized() {
+                logger::log_event(
+                    "application_start_failed",
+                    EventSource::Application,
+                    format!("Wardoff failed to start: {error}"),
+                    false,
+                );
+                logger::shutdown_structured_logging();
+            }
             error!("Wardoff failed to start: {error}");
             eprintln!("wardoff failed: {error}");
             std::process::exit(1);
@@ -145,11 +170,16 @@ fn main() {
 }
 
 fn run_main() -> Result<i32, Box<dyn Error>> {
+    logger::initialize_human_logging()?;
     let cli = parse_cli();
 
     match cli.requested_action() {
         RequestedAction::Status => handle_status_request(),
-        action => match claim_primary_instance().map_err(other_error)? {
+        RequestedAction::Log { tail } => handle_log_request(tail),
+        action @ (RequestedAction::Default
+        | RequestedAction::Block
+        | RequestedAction::Allow
+        | RequestedAction::Hide) => match claim_primary_instance().map_err(other_error)? {
             InstanceClaim::Primary(primary_instance) => {
                 let application = bootstrap(primary_instance, runtime_options_for(action))?;
                 run(application)?;
@@ -176,6 +206,14 @@ fn handle_status_request() -> Result<i32, Box<dyn Error>> {
         }
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
     }
+}
+
+fn handle_log_request(tail: usize) -> Result<i32, Box<dyn Error>> {
+    for line in logger::read_recent_lines(tail).map_err(other_error)? {
+        println!("{line}");
+    }
+
+    Ok(0)
 }
 
 fn forward_request_to_primary(request: IpcRequest) -> Result<i32, Box<dyn Error>> {
@@ -210,7 +248,7 @@ fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
             initial_mode: BlockerMode::Block,
             tray_surface: TraySurface::Hidden,
         },
-        RequestedAction::Status => RuntimeOptions {
+        RequestedAction::Status | RequestedAction::Log { .. } => RuntimeOptions {
             initial_mode: BlockerMode::Block,
             tray_surface: TraySurface::Visible,
         },
@@ -227,7 +265,7 @@ fn ipc_request_for(action: RequestedAction) -> IpcRequest {
         RequestedAction::Allow => IpcRequest::SetMode {
             mode: PipeMode::Allow,
         },
-        RequestedAction::Status => IpcRequest::Status,
+        RequestedAction::Status | RequestedAction::Log { .. } => IpcRequest::Status,
     }
 }
 
@@ -252,15 +290,6 @@ fn tray_surface_label(surface: TraySurface) -> &'static str {
     }
 }
 
-fn initialize_logging() -> Result<(), Box<dyn Error>> {
-    let mut builder = Builder::from_env(Env::default().default_filter_or("info"));
-    builder
-        .format_timestamp_secs()
-        .filter_level(LevelFilter::Info);
-    builder.try_init()?;
-    Ok(())
-}
-
 impl Application {
     fn process_ipc_requests(&mut self) {
         while let Ok(pending_request) = self.ipc_requests.try_recv() {
@@ -271,10 +300,36 @@ impl Application {
 
     fn handle_ipc_request(&mut self, request: IpcRequest) -> IpcResponse {
         match request {
-            IpcRequest::SetMode { mode } => match self.set_mode(mode.into()) {
-                Ok(()) => IpcResponse::Ok,
-                Err(message) => IpcResponse::Error { message },
-            },
+            IpcRequest::SetMode { mode } => {
+                let requested_mode: BlockerMode = mode.into();
+
+                match self.set_mode(requested_mode, EventSource::Ipc) {
+                    Ok(()) => {
+                        logger::log_event(
+                            "mode_request_processed",
+                            EventSource::Ipc,
+                            format!(
+                                "Wardoff applied a named-pipe request for {} mode.",
+                                mode_label(requested_mode)
+                            ),
+                            true,
+                        );
+                        IpcResponse::Ok
+                    }
+                    Err(message) => {
+                        logger::log_event(
+                            "mode_request_processed",
+                            EventSource::Ipc,
+                            format!(
+                                "Wardoff could not apply a named-pipe request for {} mode: {message}",
+                                mode_label(requested_mode)
+                            ),
+                            false,
+                        );
+                        IpcResponse::Error { message }
+                    }
+                }
+            }
             IpcRequest::Status => IpcResponse::Status {
                 status: self.status_output(),
             },
@@ -305,10 +360,21 @@ impl Application {
             match self.handle_tray_action(action) {
                 Ok(true) => return true,
                 Ok(false) => {}
-                Err(message) => error!(
-                    "Wardoff could not process tray action {:?}: {message}",
-                    action
-                ),
+                Err(message) => {
+                    logger::log_event(
+                        "tray_action",
+                        EventSource::Tray,
+                        format!(
+                            "Wardoff could not process the {:?} tray action: {message}",
+                            action
+                        ),
+                        false,
+                    );
+                    error!(
+                        "Wardoff could not process tray action {:?}: {message}",
+                        action
+                    );
+                }
             }
         }
 
@@ -318,11 +384,23 @@ impl Application {
     fn handle_tray_action(&mut self, action: TrayAction) -> Result<bool, String> {
         match action {
             TrayAction::Block => {
-                self.set_mode(BlockerMode::Block)?;
+                self.set_mode(BlockerMode::Block, EventSource::Tray)?;
+                logger::log_event(
+                    "tray_action",
+                    EventSource::Tray,
+                    "Wardoff processed a Block request from the tray menu.",
+                    true,
+                );
                 Ok(false)
             }
             TrayAction::Allow => {
-                self.set_mode(BlockerMode::Allow)?;
+                self.set_mode(BlockerMode::Allow, EventSource::Tray)?;
+                logger::log_event(
+                    "tray_action",
+                    EventSource::Tray,
+                    "Wardoff processed an Allow request from the tray menu.",
+                    true,
+                );
                 Ok(false)
             }
             TrayAction::Shutdown => {
@@ -341,19 +419,36 @@ impl Application {
                 self.run_power_action(PowerAction::Hibernate)?;
                 Ok(false)
             }
-            TrayAction::Quit => Ok(true),
+            TrayAction::Quit => {
+                logger::log_event(
+                    "quit_requested",
+                    EventSource::Tray,
+                    "Wardoff received a Quit request from the tray menu.",
+                    true,
+                );
+                Ok(true)
+            }
         }
     }
 
     fn run_power_action(&mut self, action: PowerAction) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
-        self.set_mode(BlockerMode::Allow)?;
+        self.set_mode(BlockerMode::Allow, EventSource::Tray)?;
 
         match execute_power_action(action) {
             Ok(()) => {
                 info!(
                     "Wardoff switched to Allow mode and issued the requested {:?} power action.",
                     action
+                );
+                logger::log_event(
+                    "power_action_issued",
+                    EventSource::Tray,
+                    format!(
+                        "Wardoff issued the requested {} power action after switching to Allow mode.",
+                        power_action_label(action)
+                    ),
+                    true,
                 );
                 if matches!(action, PowerAction::Sleep | PowerAction::Hibernate)
                     && previous_mode == BlockerMode::Block
@@ -365,8 +460,17 @@ impl Application {
                 Ok(())
             }
             Err(message) => {
+                logger::log_event(
+                    "power_action_issued",
+                    EventSource::Tray,
+                    format!(
+                        "Wardoff could not issue the requested {} power action: {message}",
+                        power_action_label(action)
+                    ),
+                    false,
+                );
                 if previous_mode == BlockerMode::Block {
-                    return match self.set_mode(BlockerMode::Block) {
+                    return match self.set_mode(BlockerMode::Block, EventSource::Tray) {
                         Ok(()) => Err(format!(
                             "{message} Wardoff restored Block mode after the failed {:?} request.",
                             action
@@ -387,14 +491,22 @@ impl Application {
         }
     }
 
-    fn set_mode(&mut self, mode: BlockerMode) -> Result<(), String> {
+    fn set_mode(&mut self, mode: BlockerMode, source: EventSource) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
 
         if previous_mode == mode {
             return self.sync_tray(previous_mode);
         }
 
-        self.blocker_coordinator.set_mode(mode)?;
+        if let Err(error) = self.blocker_coordinator.set_mode(mode) {
+            let error_message = format!(
+                "Wardoff could not switch from {} mode to {} mode: {error}",
+                mode_label(previous_mode),
+                mode_label(mode)
+            );
+            logger::log_event("state_changed", source, error_message.clone(), false);
+            return Err(error_message);
+        }
 
         if let Err(tray_error) = self.sync_tray(self.blocker_coordinator.mode()) {
             let rollback_result = self.blocker_coordinator.set_mode(previous_mode);
@@ -425,8 +537,20 @@ impl Application {
                 ));
             }
 
+            logger::log_event("state_changed", source, error_message.clone(), false);
             return Err(error_message);
         }
+
+        logger::log_event(
+            "state_changed",
+            source,
+            format!(
+                "Wardoff switched from {} mode to {} mode.",
+                mode_label(previous_mode),
+                mode_label(mode)
+            ),
+            true,
+        );
 
         Ok(())
     }
@@ -455,8 +579,32 @@ impl Application {
             tray_controller.shutdown();
         }
 
-        ipc_shutdown?;
-        blocker_shutdown.map_err(|error| Box::new(error) as Box<dyn Error>)
+        let shutdown_result: Result<(), Box<dyn Error>> = match (ipc_shutdown, blocker_shutdown) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(ipc_error), Ok(())) => Err(Box::new(ipc_error) as Box<dyn Error>),
+            (Ok(()), Err(blocker_error)) => Err(Box::new(blocker_error) as Box<dyn Error>),
+            (Err(ipc_error), Err(blocker_error)) => Err(Box::new(other_error(format!(
+                "Wardoff encountered shutdown errors in both the IPC server and blocker coordinator: {ipc_error}; {blocker_error}"
+            ))) as Box<dyn Error>),
+        };
+
+        match &shutdown_result {
+            Ok(()) => logger::log_event(
+                "application_stopped",
+                EventSource::Application,
+                "Wardoff shut down cleanly.",
+                true,
+            ),
+            Err(error) => logger::log_event(
+                "application_stopped",
+                EventSource::Application,
+                format!("Wardoff shut down with an error: {error}"),
+                false,
+            ),
+        }
+
+        logger::shutdown_structured_logging();
+        shutdown_result
     }
 }
 
@@ -468,5 +616,14 @@ fn mode_label(mode: BlockerMode) -> &'static str {
     match mode {
         BlockerMode::Block => "Block",
         BlockerMode::Allow => "Allow",
+    }
+}
+
+fn power_action_label(action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::Shutdown => "shutdown",
+        PowerAction::Reboot => "reboot",
+        PowerAction::Sleep => "sleep",
+        PowerAction::Hibernate => "hibernate",
     }
 }
