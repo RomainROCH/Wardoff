@@ -2,7 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use log::info;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::core::{Error as WindowsError, Result as WindowsResult};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, HANDLE, LUID};
 use windows::Win32::Security::{
@@ -29,6 +30,8 @@ pub mod update;
 pub const DEFAULT_SHUTDOWN_BLOCK_REASON: &str =
     "Wardoff is blocking shutdown while Layer 1 protection is active.";
 
+static BLOCKED_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Represents the global blocker mode exposed by the Wardoff core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum BlockerMode {
@@ -36,6 +39,15 @@ pub enum BlockerMode {
     Block,
     /// Allows supported shutdown, reboot, and sleep paths to proceed.
     Allow,
+}
+
+/// Represents whether each MVP blocker layer is currently active.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LayerStatus {
+    shutdown: bool,
+    update: bool,
+    remote: bool,
+    sleep: bool,
 }
 
 /// Represents the system power actions exposed by the MVP tray menu.
@@ -61,8 +73,8 @@ pub struct BlockerCoordinator {
 }
 
 /// Creates the blocker coordinator that owns the layered shutdown guards.
-pub fn create_blocker_coordinator() -> Result<BlockerCoordinator, String> {
-    BlockerCoordinator::new(DEFAULT_SHUTDOWN_BLOCK_REASON)
+pub fn create_blocker_coordinator(initial_mode: BlockerMode) -> Result<BlockerCoordinator, String> {
+    BlockerCoordinator::new(DEFAULT_SHUTDOWN_BLOCK_REASON, initial_mode)
 }
 
 /// Returns the timestamp associated with the next blocker state transition.
@@ -90,7 +102,7 @@ pub fn execute_power_action(action: PowerAction) -> Result<(), String> {
 
 impl BlockerCoordinator {
     /// Creates the blocker coordinator and starts Wardoff in Block mode.
-    pub fn new(reason: &str) -> Result<Self, String> {
+    pub fn new(reason: &str, initial_mode: BlockerMode) -> Result<Self, String> {
         let shutdown_blocker = shutdown::ShutdownBlocker::new(reason)
             .map_err(|error| format!("Layer 1 could not create its shutdown windows: {error}"))?;
 
@@ -102,13 +114,28 @@ impl BlockerCoordinator {
             sleep_blocker: sleep::SleepBlocker::default(),
         };
 
-        coordinator.set_mode(BlockerMode::Block)?;
+        coordinator.set_mode(initial_mode)?;
         Ok(coordinator)
     }
 
     /// Returns the current application-wide blocker mode.
     pub fn mode(&self) -> BlockerMode {
         self.mode
+    }
+
+    /// Returns whether each MVP blocker layer is currently active.
+    pub fn layer_status(&self) -> LayerStatus {
+        LayerStatus {
+            shutdown: self.shutdown_blocker.is_active(),
+            update: self.update_reboot_blocker.is_active(),
+            remote: self.remote_shutdown_blocker.is_active(),
+            sleep: self.sleep_blocker.is_active(),
+        }
+    }
+
+    /// Returns the number of shutdown attempts this runtime has actively blocked.
+    pub fn blocked_count(&self) -> u64 {
+        BLOCKED_EVENT_COUNT.load(Ordering::Relaxed)
     }
 
     /// Enables the layered shutdown and sleep blocking scaffolding.
@@ -257,4 +284,8 @@ fn mode_label(mode: BlockerMode) -> &'static str {
         BlockerMode::Block => "Block",
         BlockerMode::Allow => "Allow",
     }
+}
+
+fn record_blocked_event() {
+    BLOCKED_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
