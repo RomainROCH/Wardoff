@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod autostart;
 mod blocker;
 mod cli;
@@ -6,28 +8,38 @@ mod instance;
 mod ipc;
 mod logger;
 mod tray;
+mod windows_util;
 
 use crate::blocker::{
     create_blocker_coordinator, execute_power_action, BlockerCoordinator, BlockerMode, PowerAction,
 };
 use crate::cli::{parse_cli, RequestedAction, StatusOutput};
-use crate::instance::{claim_primary_instance, InstanceClaim, InstanceGuard};
+use crate::instance::{
+    claim_primary_instance, claim_primary_instance_with_retry, InstanceClaim, InstanceGuard,
+};
 use crate::ipc::{
     send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest, PipeMode,
     IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
 use crate::tray::{create_tray_controller, TrayAction, TrayController, TrayVisibility};
+use crate::windows_util::{
+    show_fatal_error_dialog, ElevationLaunchResult, INTERNAL_ELEVATED_RELAUNCH_ARG,
+};
 use log::{error, info, warn};
 use std::error::Error;
+use std::ffi::OsStr;
 use std::io;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, WaitMessage, MSG, PM_NOREMOVE, PM_REMOVE,
     WM_QUIT,
 };
+
+const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
+const ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Coordinates CLI, tray, and blocker scaffolding for the Wardoff binary.
 struct Application {
@@ -157,6 +169,12 @@ fn main() {
     match run_main() {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(error) => {
+            if should_show_graphical_startup_error() {
+                show_fatal_error_dialog(
+                    "Wardoff failed to start",
+                    &format!("Wardoff failed to start:\n\n{error}"),
+                );
+            }
             if logger::structured_logging_initialized() {
                 logger::log_event(
                     "application_start_failed",
@@ -176,22 +194,52 @@ fn main() {
 fn run_main() -> Result<i32, Box<dyn Error>> {
     logger::initialize_human_logging()?;
     let cli = parse_cli();
+    let action = cli.requested_action();
 
-    match cli.requested_action() {
+    match action {
         RequestedAction::Autostart { enabled } => handle_autostart_request(enabled),
         RequestedAction::Status => handle_status_request(),
         RequestedAction::Log { tail } => handle_log_request(tail),
         action @ (RequestedAction::Default
         | RequestedAction::Block
         | RequestedAction::Allow
-        | RequestedAction::Hide) => match claim_primary_instance().map_err(other_error)? {
-            InstanceClaim::Primary(primary_instance) => {
-                let application = bootstrap(primary_instance, runtime_options_for(action))?;
-                run(application)?;
-                Ok(0)
-            }
-            InstanceClaim::Secondary => forward_request_to_primary(ipc_request_for(action)),
-        },
+        | RequestedAction::Hide) => {
+            handle_runtime_request(action, cli.is_internal_elevated_relaunch())
+        }
+    }
+}
+
+fn handle_runtime_request(
+    action: RequestedAction,
+    internal_elevated_relaunch: bool,
+) -> Result<i32, Box<dyn Error>> {
+    let instance_claim = if action == RequestedAction::Default && internal_elevated_relaunch {
+        claim_primary_instance_with_retry(
+            ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS,
+            ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY,
+        )
+        .map_err(other_error)?
+    } else {
+        claim_primary_instance().map_err(other_error)?
+    };
+
+    match instance_claim {
+        InstanceClaim::Primary(primary_instance) => {
+            let primary_instance = match action {
+                RequestedAction::Default => {
+                    match prepare_default_launch(primary_instance, internal_elevated_relaunch)? {
+                        DefaultLaunchDisposition::Bootstrap(primary_instance) => primary_instance,
+                        DefaultLaunchDisposition::Exit(exit_code) => return Ok(exit_code),
+                    }
+                }
+                _ => primary_instance,
+            };
+
+            let application = bootstrap(primary_instance, runtime_options_for(action))?;
+            run(application)?;
+            Ok(0)
+        }
+        InstanceClaim::Secondary => forward_request_to_primary(ipc_request_for(action)),
     }
 }
 
@@ -247,6 +295,47 @@ fn handle_autostart_request(enabled: bool) -> Result<i32, Box<dyn Error>> {
         }
         InstanceClaim::Secondary => {
             forward_request_to_primary(IpcRequest::SetAutostart { enabled })
+        }
+    }
+}
+
+enum DefaultLaunchDisposition {
+    Bootstrap(InstanceGuard),
+    Exit(i32),
+}
+
+fn prepare_default_launch(
+    primary_instance: InstanceGuard,
+    internal_elevated_relaunch: bool,
+) -> Result<DefaultLaunchDisposition, Box<dyn Error>> {
+    let is_elevated = windows_util::is_process_elevated().map_err(|error| {
+        other_error(format!(
+            "Wardoff could not determine whether administrator rights are available before default startup: {error}"
+        ))
+    })?;
+
+    if internal_elevated_relaunch {
+        if is_elevated {
+            return Ok(DefaultLaunchDisposition::Bootstrap(primary_instance));
+        }
+
+        return Err(Box::new(other_error(
+            "Wardoff relaunched its default startup path without administrator rights.".to_string(),
+        )));
+    }
+
+    if is_elevated {
+        return Ok(DefaultLaunchDisposition::Bootstrap(primary_instance));
+    }
+
+    match windows_util::relaunch_self_elevated().map_err(other_error)? {
+        ElevationLaunchResult::Launched => {
+            info!("Wardoff requested administrator rights for its default startup path.");
+            Ok(DefaultLaunchDisposition::Exit(0))
+        }
+        ElevationLaunchResult::Cancelled => {
+            info!("Wardoff default startup was canceled at the UAC prompt.");
+            Ok(DefaultLaunchDisposition::Exit(1))
         }
     }
 }
@@ -751,6 +840,19 @@ impl Application {
 
 fn other_error(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::Other, message)
+}
+
+fn should_show_graphical_startup_error() -> bool {
+    if cfg!(debug_assertions) {
+        return false;
+    }
+
+    let mut args = std::env::args_os().skip(1);
+    match (args.next(), args.next()) {
+        (None, None) => true,
+        (Some(arg), None) => arg == OsStr::new(INTERNAL_ELEVATED_RELAUNCH_ARG),
+        _ => false,
+    }
 }
 
 fn mode_label(mode: BlockerMode) -> &'static str {
