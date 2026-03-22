@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -136,11 +134,6 @@ impl BlockerCoordinator {
     /// Returns the number of shutdown attempts this runtime has actively blocked.
     pub fn blocked_count(&self) -> u64 {
         BLOCKED_EVENT_COUNT.load(Ordering::Relaxed)
-    }
-
-    /// Enables the layered shutdown and sleep blocking scaffolding.
-    pub fn activate(&mut self) -> Result<(), String> {
-        self.set_mode(BlockerMode::Block).map(|_| ())
     }
 
     /// Disables the layered shutdown and sleep blocking scaffolding.

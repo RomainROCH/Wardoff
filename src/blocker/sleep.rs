@@ -21,15 +21,6 @@ pub struct SleepBlocker {
 }
 
 impl SleepBlocker {
-    /// Starts the dedicated worker thread that owns the execution-state request.
-    pub fn start_blocking() -> Self {
-        let mut blocker = Self::default();
-        if let Err(error) = blocker.activate() {
-            warn!("{error}");
-        }
-        blocker
-    }
-
     /// Starts sleep, hibernate, and display-idle blocking if it is not already active.
     pub fn activate(&mut self) -> Result<(), String> {
         if self.worker.is_some() {
