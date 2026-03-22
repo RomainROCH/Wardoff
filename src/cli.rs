@@ -68,6 +68,9 @@ pub struct WardoffCli {
     /// Overrides the default number of structured log lines shown by `--log`.
     #[arg(long, value_name = "N", requires = "log")]
     tail: Option<usize>,
+    /// Internal marker used to prevent default-launch elevation loops.
+    #[arg(long = "wardoff-elevated-relaunch", hide = true)]
+    elevated_relaunch: bool,
 }
 
 /// Represents the serialized state string returned by `wardoff --status`.
@@ -122,6 +125,11 @@ impl WardoffCli {
             RequestedAction::Default
         }
     }
+
+    /// Returns whether the current process was started by Wardoff's internal elevation relaunch.
+    pub fn is_internal_elevated_relaunch(&self) -> bool {
+        self.elevated_relaunch
+    }
 }
 
 impl StatusOutput {
@@ -162,5 +170,27 @@ impl From<BlockerMode> for StatusState {
             BlockerMode::Block => StatusState::Block,
             BlockerMode::Allow => StatusState::Allow,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RequestedAction, WardoffCli};
+    use clap::Parser;
+
+    #[test]
+    fn default_launch_remains_default_when_relaunched_internally() {
+        let cli = WardoffCli::parse_from(["wardoff", "--wardoff-elevated-relaunch"]);
+
+        assert_eq!(cli.requested_action(), RequestedAction::Default);
+        assert!(cli.is_internal_elevated_relaunch());
+    }
+
+    #[test]
+    fn explicit_commands_are_not_reclassified_as_default_launches() {
+        let cli = WardoffCli::parse_from(["wardoff", "--hide"]);
+
+        assert_eq!(cli.requested_action(), RequestedAction::Hide);
+        assert!(!cli.is_internal_elevated_relaunch());
     }
 }

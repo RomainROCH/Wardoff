@@ -1,8 +1,14 @@
 # IFEO Warning
 
-> **PLANNED — NOT YET IMPLEMENTED**
+> **LATER-PHASE DESIGN NOTE — NOT IMPLEMENTED IN CURRENT BUILDS**
 
 This document describes a future aggressive mode for Wardoff. It is not enabled, shipped, or implemented in the current repository.
+
+Current reality:
+
+- Wardoff currently ships only the safe MVP layers
+- Wardoff does **not** currently implement any local `shutdown.exe` interception
+- Wardoff therefore does **not** block local `shutdown /t 0 /f` in the current shipped implementation
 
 ## What IFEO is
 
@@ -84,6 +90,6 @@ According to the current plan:
 
 - IFEO is **not** part of the safe MVP
 - it belongs to a later phase as an aggressive, opt-in mode
-- it exists specifically because `shutdown /t 0 /f` is otherwise beyond what the planned user-space layers can stop reliably
+- it exists specifically because `shutdown /t 0 /f` is otherwise beyond what the current and planned safe user-space layers can stop reliably
 
 That roadmap placement is intentional. The project prefers transparent limitations over pretending that a risky feature is harmless.
