@@ -2,7 +2,7 @@
 
 Thanks for helping shape Wardoff.
 
-This repository is currently in a planning and documentation phase. `PLAN.md` is the technical source of truth, and `.github/copilot-instructions.md` defines scope guardrails. Before changing anything, read both files and keep the distinction between the MVP and later phases. A minimal Rust scaffold may also be present, but placeholder code should not be described as implemented shutdown functionality.
+This repository now contains a working MVP-level Windows runtime in addition to the planning documents. `PLAN.md` remains the product and architecture source of truth for scope, but documentation and code changes should describe the current implementation accurately: the safe MVP layers are present, while Layer 2 / ETW / IFEO / Event Log / toast / timer / profile / settings work is still future scope.
 
 ## Development prerequisites
 
@@ -13,20 +13,22 @@ For code work on Windows, use:
 - Visual Studio Build Tools 2022 or equivalent MSVC C/C++ build tools
 - Git
 
-Administrator rights are expected for any future work that touches Windows Update task control or other elevation-boundary features. Do not hide missing elevation; surface it clearly.
+Administrator rights are required for some current functionality as well, especially Layer 3 Update Orchestrator task control and autostart task changes. Do not hide missing elevation; surface it clearly and document the degraded behavior honestly.
 
 ## Building
 
-At the time of writing, this repository may contain planning documents and a minimal Rust scaffold.
-
-When the Rust workspace is present, the expected local workflow is:
+The expected local workflow is:
 
 ```powershell
 cargo build
 cargo check
 ```
 
-If no `Cargo.toml` is checked in yet, there is nothing to compile. If a placeholder workspace is present, treat successful compilation as a scaffold check, not proof that shutdown-blocking behavior exists.
+For a release-style local build:
+
+```powershell
+cargo build --release
+```
 
 ## Testing
 
@@ -38,7 +40,7 @@ For documentation-only changes:
 - verify links and file paths
 - keep claims aligned with the current repository state
 
-For code changes once the workspace exists:
+For code changes:
 
 ```powershell
 cargo fmt --check
@@ -53,6 +55,9 @@ Add manual Windows notes for anything that cannot be meaningfully covered by aut
 - remote shutdown behavior when a timeout is present
 - non-admin versus admin behavior
 - sleep, hibernate, and display-idle prevention
+- tray behavior, including hidden versus visible startup
+- CLI interactions with the primary instance over named-pipe IPC
+- Task Scheduler autostart behavior
 
 Do not test disruptive shutdown scenarios on a machine you cannot afford to interrupt.
 
@@ -60,8 +65,9 @@ Do not test disruptive shutdown scenarios on a machine you cannot afford to inte
 
 - Keep all documentation in English.
 - Treat `PLAN.md` as the product and architecture source of truth.
-- Keep MVP work limited to the safe, official-API scope currently described in the plan.
+- Keep MVP work limited to the safe, official-API scope currently described in the plan unless the plan is deliberately updated.
 - Document limitations honestly, especially around `shutdown /t 0 /f` and administrator boundaries.
+- Do not describe Layer 2 local `shutdown.exe` interception, ETW, IFEO, Windows Event Log, toast notifications, timers, profiles, or a settings window as implemented unless you actually add them.
 - Use `rustfmt` and `clippy` for Rust code.
 - Avoid `unwrap()` and `expect()` in production paths.
 - Add `///` doc comments to public Rust items.
@@ -74,6 +80,6 @@ Do not test disruptive shutdown scenarios on a machine you cannot afford to inte
 3. Use branch names such as `feat/description` or `fix/description`.
 4. Explain what changed, what was tested, and what remains planned.
 5. Call out admin requirements, platform limits, and any manual verification steps.
-6. Do not mix MVP work with v1.0 or later features unless the plan is explicitly updated.
+6. Do not mix the current safe MVP with v1.0-or-later features unless the plan is explicitly updated.
 
 Small, focused pull requests are easier to review and safer for a Windows system utility.

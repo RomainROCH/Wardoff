@@ -1,6 +1,6 @@
 use crate::logger::{self, EventSource};
+use crate::windows_util::is_process_elevated;
 use log::{error, info, warn};
-use std::mem::size_of;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -10,17 +10,15 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::core::{Error as WindowsError, Result as WindowsResult, BSTR, HRESULT};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-    E_ACCESSDENIED, HANDLE, VARIANT_FALSE, VARIANT_TRUE,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+    E_ACCESSDENIED, VARIANT_FALSE, VARIANT_TRUE,
 };
-use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::TaskScheduler::{
     IRegisteredTask, ITaskFolder, ITaskService, TaskScheduler as TASK_SCHEDULER_CLSID,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::Variant::VARIANT;
 
 const UPDATE_ORCHESTRATOR_FOLDER_PATH: &str = "\\Microsoft\\Windows\\UpdateOrchestrator";
@@ -210,18 +208,6 @@ impl Drop for ComApartmentGuard {
     fn drop(&mut self) {
         unsafe {
             CoUninitialize();
-        }
-    }
-}
-
-struct HandleGuard(HANDLE);
-
-impl Drop for HandleGuard {
-    fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            unsafe {
-                let _ = CloseHandle(self.0);
-            }
         }
     }
 }
@@ -578,26 +564,6 @@ fn set_task_enabled(task: &IRegisteredTask, enabled: bool) -> WindowsResult<()> 
 
 fn task_is_enabled(task: &IRegisteredTask) -> WindowsResult<bool> {
     unsafe { Ok(task.Enabled()? != VARIANT_FALSE) }
-}
-
-fn is_process_elevated() -> WindowsResult<bool> {
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
-        let token = HandleGuard(token);
-
-        let mut elevation = TOKEN_ELEVATION::default();
-        let mut returned_size = 0u32;
-        GetTokenInformation(
-            token.0,
-            TokenElevation,
-            Some(&mut elevation as *mut _ as *mut _),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned_size,
-        )?;
-
-        Ok(elevation.TokenIsElevated != 0)
-    }
 }
 
 fn is_not_found_error(error: &WindowsError) -> bool {
