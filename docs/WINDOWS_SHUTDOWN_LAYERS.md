@@ -1,19 +1,19 @@
 # Windows Shutdown Layers
 
-> Status note: this document describes Wardoff's planned architecture. The current repository does not yet ship a working runtime blocker.
+> Status note: this document reflects the current implementation. Wardoff now ships Layer 1, Layer 3, Layer 4, and sleep/display blocking in the current branch. Layer 2 is still future work.
 
 Wardoff is designed around multiple layers because Windows does not expose one universal user-space hook that covers every shutdown path. An interactive shutdown, a local `shutdown.exe` call, a Windows Update reboot, and a remote shutdown request do not all travel through the same mechanism.
 
 ## Layer summary
 
-| Layer | Target | Planned phase | Core mechanism | Admin boundary | Key limitation |
+| Layer | Target | Current status | Core mechanism | Admin boundary | Key limitation |
 | --- | --- | --- | --- | --- | --- |
-| Layer 1 | Standard interactive shutdown/logoff | MVP | `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate`, `SetProcessShutdownParameters` | No | Only covers the normal interactive shutdown path |
-| Layer 2 | Local `shutdown.exe` | v1.0 | ETW detection plus `AbortSystemShutdown`, with optional future IFEO mode | IFEO mode requires admin | `shutdown /t 0 /f` is too fast for ETW plus abort once the process is already running |
-| Layer 3 | Windows Update reboot scheduling | MVP | Disable and re-check `Microsoft\Windows\UpdateOrchestrator\Reboot` through Task Scheduler COM | Yes | Windows may re-enable the task, so the app must re-check it periodically |
-| Layer 4 | Remote shutdown | MVP | Poll `AbortSystemShutdown(NULL)` approximately every 900 ms | Windows permission failures must be surfaced clearly | Only works when the shutdown still has a timeout window |
+| Layer 1 | Standard interactive shutdown/logoff | Implemented | `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate`, `SetProcessShutdownParameters` | No | Only covers the normal interactive shutdown path |
+| Layer 2 | Local `shutdown.exe` | Not implemented yet | Planned ETW detection plus `AbortSystemShutdown`, with optional future IFEO mode | IFEO mode requires admin | Current builds do **not** intercept local `shutdown.exe`; `shutdown /t 0 /f` is not blocked |
+| Layer 3 | Windows Update reboot scheduling | Implemented | Disable and re-check `Microsoft\Windows\UpdateOrchestrator\Reboot` through Task Scheduler COM | Yes | Windows may re-enable the task, so Wardoff must re-check it periodically |
+| Layer 4 | Remote shutdown | Implemented | Poll `AbortSystemShutdownW(None)` approximately every 900 ms | Required privileges must be available | Only works when the shutdown still has a timeout window |
 
-Wardoff also plans a separate sleep/hibernate/display-idle blocker via `SetThreadExecutionState(...)`. That is not a shutdown layer, but it is part of the MVP surface.
+Wardoff also implements a separate sleep/hibernate/display-idle blocker via `SetThreadExecutionState(...)`. That is not a shutdown layer, but it is part of the current MVP surface.
 
 ## Why a layered design is necessary
 
@@ -28,35 +28,20 @@ If a project only handles one of these paths, users will still hit shutdowns tha
 
 ## Layer 1 — Standard interactive shutdown blocking
 
-This is the cleanest and most official path. A process creates a message-only window (`HWND_MESSAGE`), registers a visible blocker reason, and responds to the shutdown query message.
+This is the cleanest and most official path, and it is implemented today.
 
-Planned ingredients:
+Current implementation details:
 
-- message-only window to receive `WM_QUERYENDSESSION`
-- `ShutdownBlockReasonCreate()` so Windows can show a user-readable reason
-- `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` to request very high shutdown priority
-- return `FALSE` when `WM_QUERYENDSESSION` is received
-
-Conceptual flow:
-
-```rust
-// Conceptual example only, not current repository code.
-let hwnd = create_message_only_window();
-ShutdownBlockReasonCreate(hwnd, w!("Wardoff is blocking shutdown"));
-SetProcessShutdownParameters(0x03FF, SHUTDOWN_NORETRY);
-
-match msg {
-    WM_QUERYENDSESSION => {
-        // Record the attempt and refuse the shutdown.
-        return FALSE;
-    }
-    _ => {}
-}
-```
+- Wardoff creates both a message-only window and a hidden top-level companion window
+- the hidden top-level window owns the actual shutdown block reason because Windows does not broadcast `WM_QUERYENDSESSION` to `HWND_MESSAGE` windows
+- `ShutdownBlockReasonCreate()` registers a visible reason string
+- `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` requests very high shutdown priority
+- while Block mode is active, Wardoff returns `FALSE` from `WM_QUERYENDSESSION`
+- blocked attempts are counted and logged to the structured JSONL sink
 
 Expected user experience:
 
-- Windows shows the standard "this app is preventing shutdown" style screen
+- Windows shows the standard "this app is preventing shutdown" style flow
 - the blocker reason is visible
 - the process remains alive long enough to refuse the interactive request
 
@@ -68,11 +53,23 @@ What Layer 1 does not solve:
 
 ## Layer 2 — Local `shutdown.exe`
 
-This is the hardest user-space problem and is intentionally not part of the safe MVP.
+This is still the hardest user-space problem, and it is intentionally **not** part of the current safe MVP.
 
-### Planned standard mode (v1.0): ETW plus abort
+Current state:
 
-The future standard approach is to observe process start events from the ETW provider:
+- no ETW process-start monitoring is implemented yet
+- no IFEO mode is implemented yet
+- no local `shutdown.exe` interception ships in the current branch
+
+That means:
+
+- Wardoff currently does **not** stop local `shutdown.exe` launches directly
+- Wardoff currently does **not** block local `shutdown /t 0 /f`
+- the limitation is real and should be communicated clearly
+
+### Planned standard mode (later): ETW plus abort
+
+The future standard approach remains to observe process start events from the ETW provider:
 
 - provider: `Microsoft-Windows-Kernel-Process`
 - provider GUID: `22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716`
@@ -87,17 +84,15 @@ Observe ETW ProcessStart events
 → log the source, action, and result
 ```
 
-This approach can help when `shutdown.exe` started a shutdown with a timeout such as `/t 30`, because Windows still has a grace window in which `AbortSystemShutdown(...)` can win the race.
+This future approach can help when `shutdown.exe` started a shutdown with a timeout such as `/t 30`, because Windows still has a grace window in which `AbortSystemShutdown(...)` can win the race.
 
 ### Hard limit: `shutdown /t 0 /f`
 
-If the local command is `shutdown /t 0 /f`, user-space observation is too late once the process has already entered the fast, forced path. In other words:
+Even with the future ETW layer, local `shutdown /t 0 /f` remains too fast once the process has already entered the forced path. In other words:
 
-- ETW can still see that the event happened
-- the application can still log it honestly
-- but it cannot promise to stop it after the fact
-
-That limitation must be documented, not hidden.
+- ETW could still observe that the event happened
+- the application could still log it honestly
+- but it still could not promise to stop it after the fact
 
 ### Planned aggressive mode (later): IFEO
 
@@ -109,71 +104,49 @@ That mode is documented separately in [IFEO_WARNING.md](IFEO_WARNING.md) because
 
 ## Layer 3 — Windows Update reboot protection
 
-Windows Update deserves its own layer because a scheduled reboot is not the same thing as an interactive shutdown request.
+Windows Update deserves its own layer because a scheduled reboot is not the same thing as an interactive shutdown request. This layer is implemented today.
 
-The technical target from the plan is the Task Scheduler entry:
+Current implementation details:
 
-- task path: `Microsoft\Windows\UpdateOrchestrator\Reboot`
-
-Planned API surface:
-
-- COM Task Scheduler interfaces such as `ITaskService` and `ITaskFolder`
-- connect to the scheduler service
-- open `\Microsoft\Windows\UpdateOrchestrator`
-- fetch the `Reboot` task
-- disable it while Block mode is active
-- re-check every 5 minutes because Windows may turn it back on
-
-Conceptual flow:
-
-```text
-CoInitializeEx(...)
-→ ITaskService::Connect(...)
-→ GetFolder("\\Microsoft\\Windows\\UpdateOrchestrator")
-→ GetTask("Reboot")
-→ put_Enabled(VARIANT_FALSE)
-→ re-check every 5 minutes while Block mode is active
-```
+- uses Task Scheduler COM interfaces such as `ITaskService` and `ITaskFolder`
+- connects to the scheduler service on a dedicated worker thread with its own COM apartment
+- opens `\Microsoft\Windows\UpdateOrchestrator`
+- fetches the `Reboot` task
+- disables it while Block mode is active
+- re-checks every 5 minutes because Windows may turn it back on
+- records the original enabled state and restores it on exit if Wardoff was the component that disabled it
 
 Important boundaries:
 
 - this is an administrator feature
-- failure must be explicit and logged
+- if the process is not elevated, Layer 3 is skipped and the reason is logged
 - the project specifically targets `UpdateOrchestrator\Reboot`, not the older `MusNotification` approach
 
-The broader plan also mentions future monitoring of `usoclient.exe`, but the current MVP documentation stays focused on Task Scheduler control and periodic re-disable behavior.
+The broader plan still mentions future ETW monitoring of `usoclient.exe`, but that is not part of the current shipped implementation.
 
 ## Layer 4 — Remote shutdown
 
-Remote shutdown requests can still provide a grace period. When that happens, Wardoff plans to keep polling `AbortSystemShutdown(NULL)` on the local machine.
+Remote shutdown requests can still provide a grace period. When that happens, Wardoff keeps polling `AbortSystemShutdownW(None)` on the local machine.
 
-Planned behavior:
+Current behavior:
 
-- run a loop every approximately 900 ms
-- call `AbortSystemShutdown(NULL)`
-- record when the call succeeds or fails
-- keep the cadence short enough to win against ordinary delayed remote shutdowns
-
-Conceptual flow:
-
-```rust
-loop {
-    let _ = AbortSystemShutdown(NULL);
-    sleep(Duration::from_millis(900));
-}
-```
+- runs a worker loop approximately every 900 ms
+- calls `AbortSystemShutdownW(None)`
+- counts and logs successful interceptions
+- keeps the cadence short enough to win against ordinary delayed remote shutdowns
+- stops and logs clearly if Windows denies the required permission or another unexpected error occurs
 
 What this layer can and cannot do:
 
 - it can help when the remote shutdown still has a timeout window
 - it cannot reverse a shutdown that has already crossed the no-return point
-- it should log the outcome instead of pretending success
+- it depends on the process having the rights Windows requires for `AbortSystemShutdownW(None)`
 
 ## Related MVP surface — Sleep, hibernate, and display idle
 
-This is not one of the four shutdown layers, but it is part of the planned MVP because users often want to prevent more than just shutdown.
+This is not one of the four shutdown layers, but it is part of the current MVP because users often want to prevent more than just shutdown.
 
-Planned API call:
+Current API call:
 
 ```text
 SetThreadExecutionState(
@@ -181,24 +154,32 @@ SetThreadExecutionState(
 )
 ```
 
-This is the planned mechanism for:
+Current behavior:
+
+- a dedicated worker thread enables the execution-state request when Block mode starts
+- the request is refreshed every 30 seconds
+- the request is cleared when Block mode ends
+- success and failure are written to the structured JSONL log
+
+This currently covers:
 
 - sleep blocking
 - hibernate blocking
 - display idle prevention
-- the broader "don't go away while I am busy" experience
-
-It should remain independently controllable from shutdown blocking because the user may want one without the other.
 
 ## MVP versus later phases
 
-Planned MVP scope:
+Implemented in the current branch:
 
 - Layer 1
 - Layer 3
 - Layer 4
 - sleep/hibernate/display blocking
-- tray toggle, basic CLI, Task Scheduler autostart, and file logging
+- tray toggle and tray power actions
+- CLI surface for `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, and `--autostart`
+- Task Scheduler autostart
+- rotating structured JSONL file logging
+- single-instance runtime coordination plus named-pipe IPC
 
 Planned later scope:
 
@@ -207,5 +188,6 @@ Planned later scope:
 - Windows Event Log integration
 - toast notifications
 - timer-based behavior
+- profiles and settings UI
 
 The architecture is intentionally transparent about these boundaries so users know what exists, what is planned, and what remains impossible from ordinary user space.
