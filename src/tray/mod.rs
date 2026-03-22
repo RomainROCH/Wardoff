@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::blocker::BlockerMode;
 use crate::logger::{self, EventSource};
 use log::info;
@@ -60,20 +58,6 @@ pub struct TrayController {
 /// Creates the tray controller used by the background application surface.
 pub fn create_tray_controller(visibility: TrayVisibility) -> Result<TrayController, String> {
     TrayController::new(visibility)
-}
-
-/// Returns the default set of tray actions exposed by the MVP menu.
-pub fn default_actions() -> Vec<TrayAction> {
-    vec![
-        TrayAction::Block,
-        TrayAction::Allow,
-        TrayAction::SetAutostart(true),
-        TrayAction::Shutdown,
-        TrayAction::Reboot,
-        TrayAction::Sleep,
-        TrayAction::Hibernate,
-        TrayAction::Quit,
-    ]
 }
 
 impl TrayController {
