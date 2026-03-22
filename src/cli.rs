@@ -1,6 +1,6 @@
 use crate::blocker::{BlockerMode, LayerStatus};
 use crate::logger;
-use clap::{ArgGroup, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 /// Describes the high-level action requested through the Wardoff CLI.
@@ -35,29 +35,35 @@ enum CliAutostartState {
     version,
     about = "Open-source Windows shutdown/reboot/sleep blocker"
 )]
-#[command(group(
-    ArgGroup::new("requested-action")
-        .args(["block", "allow", "status", "hide", "autostart", "log"])
-        .multiple(false)
-))]
 pub struct WardoffCli {
     /// Enables blocking mode for the current session without showing a tray icon.
-    #[arg(long, group = "requested-action")]
+    #[arg(long, conflicts_with_all = ["allow", "status", "autostart", "log"])]
     block: bool,
     /// Disables blocking mode for the current session.
-    #[arg(long, group = "requested-action")]
+    #[arg(
+        long,
+        conflicts_with_all = ["block", "status", "hide", "autostart", "log"]
+    )]
     allow: bool,
     /// Prints the current state as JSON.
-    #[arg(long, group = "requested-action")]
+    #[arg(
+        long,
+        conflicts_with_all = ["block", "allow", "hide", "autostart", "log"]
+    )]
     status: bool,
-    /// Starts the application with a hidden tray icon.
-    #[arg(long, group = "requested-action")]
+    /// Starts the application in Block mode with a hidden tray icon.
+    #[arg(long, conflicts_with_all = ["allow", "status", "autostart", "log"])]
     hide: bool,
     /// Creates or removes the current-user autostart scheduled task.
-    #[arg(long, value_enum, value_name = "on|off", group = "requested-action")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "on|off",
+        conflicts_with_all = ["block", "allow", "status", "hide", "log"]
+    )]
     autostart: Option<CliAutostartState>,
     /// Prints the newest structured Wardoff JSON log lines.
-    #[arg(long, group = "requested-action")]
+    #[arg(long, conflicts_with_all = ["block", "allow", "status", "hide", "autostart"])]
     log: bool,
     /// Overrides the default number of structured log lines shown by `--log`.
     #[arg(long, value_name = "N", requires = "log")]
@@ -96,14 +102,14 @@ pub fn parse_cli() -> WardoffCli {
 impl WardoffCli {
     /// Resolves the requested action from the parsed MVP CLI flags.
     pub fn requested_action(&self) -> RequestedAction {
-        if self.block {
-            RequestedAction::Block
-        } else if self.allow {
+        if self.allow {
             RequestedAction::Allow
         } else if self.status {
             RequestedAction::Status
         } else if self.hide {
             RequestedAction::Hide
+        } else if self.block {
+            RequestedAction::Block
         } else if let Some(autostart) = self.autostart {
             RequestedAction::Autostart {
                 enabled: matches!(autostart, CliAutostartState::On),
