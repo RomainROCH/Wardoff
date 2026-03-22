@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::mem::size_of;
@@ -38,15 +36,6 @@ pub struct UpdateRebootBlocker {
 }
 
 impl UpdateRebootBlocker {
-    /// Starts Layer 3 protection while Wardoff remains in Block mode.
-    pub fn start_blocking() -> Self {
-        let mut blocker = Self::default();
-        if let Err(error) = blocker.activate() {
-            warn!("{error}");
-        }
-        blocker
-    }
-
     /// Starts Layer 3 protection if it is not already active.
     pub fn activate(&mut self) -> Result<(), String> {
         if self.worker.is_some() {
@@ -618,7 +607,6 @@ fn is_not_found_error(error: &WindowsError) -> bool {
         || code == HRESULT::from_win32(ERROR_NOT_FOUND.0)
 }
 
-#[allow(dead_code)]
 fn is_access_denied_error(error: &WindowsError) -> bool {
     let code = error.code();
     code == E_ACCESSDENIED || code == HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
