@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use tray_icon::{BadIcon, Icon};
 
 /// Represents the visual states supported by the tray icon assets.

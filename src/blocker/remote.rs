@@ -22,15 +22,6 @@ pub struct RemoteShutdownBlocker {
 }
 
 impl RemoteShutdownBlocker {
-    /// Starts Layer 4 remote-shutdown polling while Wardoff remains in Block mode.
-    pub fn start_blocking() -> Self {
-        let mut blocker = Self::default();
-        if let Err(error) = blocker.activate() {
-            warn!("{error}");
-        }
-        blocker
-    }
-
     /// Starts Layer 4 remote-shutdown polling if it is not already active.
     pub fn activate(&mut self) -> Result<(), String> {
         if self.worker.is_some() {

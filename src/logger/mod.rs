@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use env_logger::{Builder, Env};
 use log::{error, LevelFilter};
 use serde::{Deserialize, Serialize};
@@ -84,11 +82,6 @@ pub fn default_log_path() -> PathBuf {
         .join("Wardoff")
         .join("logs")
         .join(DEFAULT_LOG_FILE_NAME)
-}
-
-/// Returns the timestamp used for the next on-write log rotation check.
-pub fn next_rotation_check() -> DateTime<Utc> {
-    Utc::now()
 }
 
 /// Initializes human-readable stderr logging exactly once for the current process.

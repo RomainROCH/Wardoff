@@ -23,9 +23,8 @@ use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockR
 use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IsWindow,
-    RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
-    WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, HWND_MESSAGE,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -126,14 +125,6 @@ impl Drop for ShutdownBlocker {
     }
 }
 
-/// Creates the Layer 1 message-only companion window requested by the MVP plan.
-#[allow(dead_code)]
-pub fn create_shutdown_blocker_window() -> WindowsResult<HWND> {
-    let hinstance = current_instance()?;
-    register_window_class(hinstance)?;
-    create_message_window(hinstance)
-}
-
 /// Handles `WM_QUERYENDSESSION` while Wardoff is in blocking mode.
 pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     if BLOCKER_ACTIVE.load(Ordering::Acquire) {
@@ -149,30 +140,6 @@ pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     }
 
     LRESULT(1)
-}
-
-/// Returns the Windows message identifier used for interactive shutdown negotiation.
-#[allow(dead_code)]
-pub fn query_end_session_message() -> u32 {
-    WM_QUERYENDSESSION
-}
-
-/// Runs the current thread's Windows message loop while Layer 1 is active.
-pub fn run_message_loop() -> WindowsResult<()> {
-    let mut message = MSG::default();
-
-    loop {
-        let get_message_result = unsafe { GetMessageW(&mut message, None, 0, 0) };
-
-        match get_message_result.0 {
-            -1 => return Err(WindowsError::from_thread()),
-            0 => return Ok(()),
-            _ => unsafe {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            },
-        }
-    }
 }
 
 fn current_instance() -> WindowsResult<HINSTANCE> {
