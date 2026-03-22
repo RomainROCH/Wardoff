@@ -1,24 +1,22 @@
 use crate::blocker::update::{connect_task_service, initialize_com_apartment};
 use crate::logger::{self, EventSource};
+use crate::windows_util::is_process_elevated;
 use chrono::Local;
 use log::{info, warn};
 use std::env;
-use std::mem::size_of;
 use std::path::Path;
 use std::thread;
 use windows::core::{Error as WindowsError, Interface, Result as WindowsResult, BSTR, HRESULT};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-    E_ACCESSDENIED, HANDLE, VARIANT_FALSE, VARIANT_TRUE,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+    E_ACCESSDENIED, VARIANT_FALSE, VARIANT_TRUE,
 };
-use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Com::CoUninitialize;
 use windows::Win32::System::TaskScheduler::{
     IExecAction, ILogonTrigger, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_EXEC,
     TASK_CREATE_OR_UPDATE, TASK_INSTANCES_IGNORE_NEW, TASK_LOGON_INTERACTIVE_TOKEN,
     TASK_RUNLEVEL_HIGHEST, TASK_TRIGGER_LOGON,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::Variant::VARIANT;
 
 const AUTOSTART_TASK_NAME: &str = "Wardoff";
@@ -127,18 +125,6 @@ impl Drop for ComApartmentGuard {
     fn drop(&mut self) {
         unsafe {
             CoUninitialize();
-        }
-    }
-}
-
-struct HandleGuard(HANDLE);
-
-impl Drop for HandleGuard {
-    fn drop(&mut self) {
-        if !self.0.is_invalid() {
-            unsafe {
-                let _ = CloseHandle(self.0);
-            }
         }
     }
 }
@@ -356,26 +342,6 @@ fn ensure_process_is_elevated() -> Result<(), String> {
         Err(error) => Err(format!(
             "Wardoff could not determine whether administrator rights are available before changing scheduled task {AUTOSTART_TASK_PATH}: {error}"
         )),
-    }
-}
-
-fn is_process_elevated() -> WindowsResult<bool> {
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
-        let token = HandleGuard(token);
-
-        let mut elevation = TOKEN_ELEVATION::default();
-        let mut returned_size = 0u32;
-        GetTokenInformation(
-            token.0,
-            TokenElevation,
-            Some(&mut elevation as *mut _ as *mut _),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned_size,
-        )?;
-
-        Ok(elevation.TokenIsElevated != 0)
     }
 }
 
