@@ -1,124 +1,127 @@
 # Comparison
 
-> Status note: Wardoff now ships an MVP-level runtime on the current branch. The comparison below reflects what is actually implemented today, not just the long-term plan.
+> Status note: this comparison reflects Wardoff's current 0.1.0-era MVP claims, not later-phase plans.
 
 ## Summary table
 
-| Product | Source model | Stack | Main mechanisms | What is missing or limited | Current status |
-| --- | --- | --- | --- | --- | --- |
-| Wardoff | MIT, open-source project | Rust | Layer 1 interactive blocking, Layer 2 ETW-based standard mode for local `shutdown.exe`, Layer 3 Update Orchestrator task control, Layer 4 remote abort polling, sleep/display blocking, tray, CLI, JSONL logs, autostart, single-instance IPC | No aggressive IFEO mode yet, no Windows Event Log, and current builds still do **not** promise to block local `shutdown /t 0 /f` | MVP runtime implemented |
-| ShutdownBlocker | Closed freeware | .NET Framework 4.0 | Standard shutdown blocking plus IFEO handling for `shutdown.exe` | Closed implementation, last known update in March 2017, no open audit trail for cleanup or admin-boundary handling | Mature but stagnant |
-| ShutdownGuard | MIT, open source | Pure C built with MinGW | Classic shutdown blocking with DLL injection | Archived as `UNSUPPORTED` since 2014, older technique, not aimed at modern Update Orchestrator behavior | Archived |
-| Don't Sleep | Closed freeware; reverse engineering forbidden | Closed-source Windows utility (stack not auditable) | Power-state prevention focused on sleep/standby/hibernate/display behavior | Does not block `shutdown.exe`, no Windows Event Log integration, implementation cannot be audited | Actively maintained |
-| PreventTurnOff | Closed freeware; reverse engineering forbidden | Closed-source Windows utility (stack not auditable) | Simplified version of the Don't Sleep-style prevention approach | Same limits as Don't Sleep, reduced scope, no Event Log, no `shutdown.exe` interception | Actively maintained, simplified |
+| Product | Source model | Current focus | What Wardoff can honestly claim today | Important gaps or planned items |
+| --- | --- | --- | --- | --- |
+| Wardoff | MIT, open source | Transparent shutdown and power-state control for modern Windows | Interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection, remote abort polling, sleep/hibernate/display-idle blocking, tray UI, CLI, JSONL logs, single-instance IPC, autostart | No IFEO mode, no Windows Event Log integration, and no promise to stop local `shutdown /t 0 /f` |
+| ShutdownBlocker | Closed freeware | Traditional shutdown blocking utility | Comparable motivation around shutdown prevention | Closed implementation, older maintenance history, and behavior cannot be audited here |
+| ShutdownGuard | MIT, open source | Historical shutdown-blocking approach | Open-source reference point | Archived and unsupported |
+| Don't Sleep | Closed freeware | Keep-awake / power-state prevention | Strong overlap on sleep-prevention use cases | Not positioned as a transparent layered shutdown-control tool |
+| PreventTurnOff | Closed freeware | Simpler keep-awake utility | Similar overlap on power-state prevention | Narrower scope and closed implementation |
 
-## Detailed notes
+## Wardoff
 
-### Wardoff
+Wardoff's current MVP is best described as a conservative, transparent Windows runtime rather than a "blocks everything" utility.
 
-Wardoff's current differentiators are now partly implemented rather than only planned:
+### What the MVP really includes today
 
-- open source under MIT
-- explicit documentation of all shutdown layers and their limits
-- working tray/runtime with Block and Allow state
-- scriptable CLI with `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, and `--autostart on|off`
+- Layer 1 interactive shutdown and sign-out blocking
+- Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot`
+- Layer 4 best-effort remote shutdown abort polling
+- sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
+- tray controls for Block, Allow, Shutdown, Reboot, Sleep, Hibernate, and Quit
+- CLI control surface for `--block`, `--allow`, `--hide`, `--status`, `--log`, `--tail`, and `--autostart`
 - structured rotating JSONL logs
-- single-instance coordination with named-pipe IPC
-- focus on `Microsoft\Windows\UpdateOrchestrator\Reboot` rather than older update-era assumptions
+- single-instance coordination plus named-pipe control channel
+- Task Scheduler autostart management
 
-Important reality check:
+### What Wardoff does **not** currently claim as shipped user-facing MVP behavior
 
-- the current branch implements Layer 1, Layer 2 standard ETW mode, Layer 3, Layer 4, plus sleep/display blocking
-- aggressive IFEO interception is still missing by design on this milestone
-- current Wardoff therefore still does **not** promise to block local `shutdown /t 0 /f`
-- Windows Event Log integration, toast notifications, timers, profiles, settings UI, and packaging polish are still future work
+- aggressive IFEO interception
+- Windows Event Log integration
+- toast notifications
+- timers
+- profiles
+- settings UI
 
-### ShutdownBlocker
+### Important nuance about ETW and IFEO
 
-Known profile from the project brief:
+Wardoff's repository currently contains ETW-based local shutdown code in `src/blocker/local.rs`, but the project is deliberately **not** treating that path as a documented 0.1.0 headline feature.
 
-- closed freeware
-- built on .NET Framework 4.0
-- last known update: March 2017
-- uses IFEO for `shutdown.exe`
+Why this matters:
 
-What that means in practice:
+- ETW local-shutdown handling is reactive and race-sensitive
+- the project still does **not** promise to stop local `shutdown /t 0 /f`
+- current top-level user-facing docs keep that boundary conservative on purpose
 
-- it addresses a real gap, especially around local `shutdown.exe`
-- but the implementation is not auditable
-- its age raises questions about modern Windows 10/11 assumptions, maintenance, and cleanup behavior
+IFEO is even further from the current MVP:
 
-Wardoff's current difference is not "more magic," but better transparency: the shipped ETW-based standard layer is implemented in the open, the current limitations are documented, and the riskier IFEO interception path is still explicitly deferred.
+- it is a planned later-phase design
+- it is not implemented as a supported feature
+- it should be discussed as future aggressive interception, not current product behavior
 
-### ShutdownGuard
+So the current short version is:
 
-Known profile from the project brief:
+- **ETW local interception exists in repo code, but is not currently documented as a supported headline MVP feature**
+- **IFEO is planned and not implemented**
 
-- open source under MIT
-- pure C
-- built with MinGW
-- archived as `UNSUPPORTED` since 2014
-- used DLL injection
+## ShutdownBlocker
 
-Strengths:
-
-- open-source lineage
-- understandable historical reference point for shutdown blocking
-
-Gaps relative to Wardoff's current direction:
-
-- archived and unsupported
-- based on an older technical era
-- not positioned around modern Windows Update reboot behavior
-- no emphasis on current structured observability, tray/runtime coordination, or named-pipe control
-
-### Don't Sleep
-
-Known profile from the project brief:
+Based on the project notes, ShutdownBlocker appears to be:
 
 - closed freeware
-- actively maintained
-- reverse engineering forbidden
-- does not block `shutdown.exe`
-- no Windows Event Log integration
+- associated with older `shutdown.exe` interception approaches
+- last notably updated years ago
 
-Practical interpretation:
+Compared with that, Wardoff's current advantage is not that it claims broader magic. The difference is that Wardoff documents its limits openly:
 
-- useful when the goal is "keep the machine awake"
-- not a full answer to shutdown/reboot control
-- impossible to audit deeply because the implementation is closed
+- it explains what each layer covers
+- it keeps admin boundaries explicit
+- it does not market the hardest local forced-shutdown case as solved
 
-Wardoff now overlaps with this use case through implemented `SetThreadExecutionState(...)` handling, but Wardoff's broader aim remains layered shutdown control and transparent documentation.
+## ShutdownGuard
 
-### PreventTurnOff
+ShutdownGuard remains useful as a historical open-source reference, but it is archived and unsupported.
 
-Known profile from the project brief:
+Wardoff differs by focusing on:
 
-- simplified version of Don't Sleep
-- same closed/freeware model and reverse-engineering restriction
-- same core limitations
+- current Windows 10/11 behavior
+- observable runtime state
+- tray plus CLI coordination
+- explicit update-reboot handling
 
-Practical interpretation:
+## Don't Sleep
 
-- even narrower scope than Don't Sleep
-- not a substitute for transparent shutdown handling
-- still does not solve aggressive `shutdown.exe` interception or Windows Event Log visibility
+Don't Sleep is still relevant when the main goal is simply to prevent:
 
-## Why Wardoff is positioned differently
+- sleep
+- standby
+- hibernate
+- display idle
 
-Wardoff is not just "another blocker." The current branch already tries to be:
+Wardoff now overlaps with that use case through implemented execution-state blocking, but Wardoff's core value proposition is broader:
+
+- shutdown-aware runtime state
+- CLI and automation support
+- documented limits
+- modern Windows update-reboot awareness
+
+## PreventTurnOff
+
+PreventTurnOff sits even closer to the lightweight keep-awake end of the spectrum.
+
+Compared with Wardoff, it is better thought of as:
+
+- a simpler power-state utility
+- not a layered shutdown-control runtime
+- not an auditable open-source implementation
+
+## Bottom line
+
+Wardoff's current 0.1.0 positioning is:
 
 - open and auditable
-- explicit about the difference between shipped MVP behavior and later phases
-- honest about `shutdown /t 0 /f`
-- focused on Windows 10/11 update behavior, especially `UpdateOrchestrator\Reboot`
-- scriptable and observable for sysadmins, not only desktop users
+- conservative in what it claims
+- useful today for interactive shutdown blocking, update-task protection, remote abort polling, and sleep prevention
+- intentionally cautious about local `shutdown.exe`
 
-That positioning matters because the current alternatives tend to force a trade-off:
+That last point is the most important comparison decision:
 
-- open but abandoned
-- maintained but closed
-- good at sleep prevention but weak on shutdown transparency
-- able to hook aggressively but without modern, documented boundaries
+- Wardoff does **not** currently market ETW local interception as a shipped flagship feature
+- Wardoff does **not** claim IFEO today
+- Wardoff does **not** claim to stop `shutdown /t 0 /f`
 
-Wardoff still has meaningful gaps, especially around local `shutdown.exe`, but it has moved beyond the planning-only stage and already covers a practical safe-MVP subset.
+That honesty is part of the product positioning, not a gap in the docs.
