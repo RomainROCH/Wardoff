@@ -2,7 +2,7 @@
 
 Thanks for helping shape Wardoff.
 
-This repository now contains a working MVP-level Windows runtime in addition to the planning documents. `PLAN.md` remains the product and architecture source of truth for scope, but documentation and code changes should describe the current implementation accurately: the safe MVP layers are present, while Layer 2 / ETW / IFEO / Event Log / toast / timer / profile / settings work is still future scope.
+This repository now contains a working MVP-level Windows runtime in addition to the planning documents. `PLAN.md` remains the product and architecture source of truth for scope, but documentation and code changes should describe the current implementation accurately: the safe MVP layers are present, including Layer 2 standard ETW monitoring on this branch, while aggressive IFEO / Event Log / toast / timer / profile / settings work is still future scope.
 
 ## Development prerequisites
 
@@ -67,7 +67,7 @@ Do not test disruptive shutdown scenarios on a machine you cannot afford to inte
 - Treat `PLAN.md` as the product and architecture source of truth.
 - Keep MVP work limited to the safe, official-API scope currently described in the plan unless the plan is deliberately updated.
 - Document limitations honestly, especially around `shutdown /t 0 /f` and administrator boundaries.
-- Do not describe Layer 2 local `shutdown.exe` interception, ETW, IFEO, Windows Event Log, toast notifications, timers, profiles, or a settings window as implemented unless you actually add them.
+- Do not describe aggressive IFEO, Windows Event Log, toast notifications, timers, profiles, or a settings window as implemented unless you actually add them.
 - Use `rustfmt` and `clippy` for Rust code.
 - Avoid `unwrap()` and `expect()` in production paths.
 - Add `///` doc comments to public Rust items.

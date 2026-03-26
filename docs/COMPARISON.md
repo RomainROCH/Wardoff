@@ -6,7 +6,7 @@
 
 | Product | Source model | Stack | Main mechanisms | What is missing or limited | Current status |
 | --- | --- | --- | --- | --- | --- |
-| Wardoff | MIT, open-source project | Rust | Layer 1 interactive blocking, Layer 3 Update Orchestrator task control, Layer 4 remote abort polling, sleep/display blocking, tray, CLI, JSONL logs, autostart, single-instance IPC | No Layer 2 local `shutdown.exe` interception yet; no ETW, no IFEO, no Windows Event Log, and current builds do **not** block local `shutdown /t 0 /f` | MVP runtime implemented |
+| Wardoff | MIT, open-source project | Rust | Layer 1 interactive blocking, Layer 2 ETW-based standard mode for local `shutdown.exe`, Layer 3 Update Orchestrator task control, Layer 4 remote abort polling, sleep/display blocking, tray, CLI, JSONL logs, autostart, single-instance IPC | No aggressive IFEO mode yet, no Windows Event Log, and current builds still do **not** promise to block local `shutdown /t 0 /f` | MVP runtime implemented |
 | ShutdownBlocker | Closed freeware | .NET Framework 4.0 | Standard shutdown blocking plus IFEO handling for `shutdown.exe` | Closed implementation, last known update in March 2017, no open audit trail for cleanup or admin-boundary handling | Mature but stagnant |
 | ShutdownGuard | MIT, open source | Pure C built with MinGW | Classic shutdown blocking with DLL injection | Archived as `UNSUPPORTED` since 2014, older technique, not aimed at modern Update Orchestrator behavior | Archived |
 | Don't Sleep | Closed freeware; reverse engineering forbidden | Closed-source Windows utility (stack not auditable) | Power-state prevention focused on sleep/standby/hibernate/display behavior | Does not block `shutdown.exe`, no Windows Event Log integration, implementation cannot be audited | Actively maintained |
@@ -28,9 +28,9 @@ Wardoff's current differentiators are now partly implemented rather than only pl
 
 Important reality check:
 
-- the current branch implements the safe MVP layers only: Layer 1, Layer 3, Layer 4, plus sleep/display blocking
-- Layer 2 is still missing, so local `shutdown.exe` interception is not shipped
-- current Wardoff therefore does **not** block local `shutdown /t 0 /f`
+- the current branch implements Layer 1, Layer 2 standard ETW mode, Layer 3, Layer 4, plus sleep/display blocking
+- aggressive IFEO interception is still missing by design on this milestone
+- current Wardoff therefore still does **not** promise to block local `shutdown /t 0 /f`
 - Windows Event Log integration, toast notifications, timers, profiles, settings UI, and packaging polish are still future work
 
 ### ShutdownBlocker
@@ -48,7 +48,7 @@ What that means in practice:
 - but the implementation is not auditable
 - its age raises questions about modern Windows 10/11 assumptions, maintenance, and cleanup behavior
 
-Wardoff's current difference is not "more magic," but better transparency: the safe layers are implemented in the open, the current limitations are documented, and the riskier `shutdown.exe` interception path is still explicitly deferred.
+Wardoff's current difference is not "more magic," but better transparency: the shipped ETW-based standard layer is implemented in the open, the current limitations are documented, and the riskier IFEO interception path is still explicitly deferred.
 
 ### ShutdownGuard
 
@@ -102,7 +102,7 @@ Practical interpretation:
 
 - even narrower scope than Don't Sleep
 - not a substitute for transparent shutdown handling
-- still does not solve `shutdown.exe` interception or Windows Event Log visibility
+- still does not solve aggressive `shutdown.exe` interception or Windows Event Log visibility
 
 ## Why Wardoff is positioned differently
 

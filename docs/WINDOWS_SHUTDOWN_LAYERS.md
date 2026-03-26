@@ -1,6 +1,6 @@
 # Windows Shutdown Layers
 
-> Status note: this document reflects the current implementation. Wardoff now ships Layer 1, Layer 3, Layer 4, and sleep/display blocking in the current branch. Layer 2 is still future work.
+> Status note: this document reflects the current implementation. Wardoff now ships Layer 1, Layer 2 standard mode, Layer 3, Layer 4, and sleep/display blocking in the current branch. Aggressive IFEO mode is still future work.
 
 Wardoff is designed around multiple layers because Windows does not expose one universal user-space hook that covers every shutdown path. An interactive shutdown, a local `shutdown.exe` call, a Windows Update reboot, and a remote shutdown request do not all travel through the same mechanism.
 
@@ -9,7 +9,7 @@ Wardoff is designed around multiple layers because Windows does not expose one u
 | Layer | Target | Current status | Core mechanism | Admin boundary | Key limitation |
 | --- | --- | --- | --- | --- | --- |
 | Layer 1 | Standard interactive shutdown/logoff | Implemented | `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate`, `SetProcessShutdownParameters` | No | Only covers the normal interactive shutdown path |
-| Layer 2 | Local `shutdown.exe` | Not implemented yet | Planned ETW detection plus `AbortSystemShutdown`, with optional future IFEO mode | IFEO mode requires admin | Current builds do **not** intercept local `shutdown.exe`; `shutdown /t 0 /f` is not blocked |
+| Layer 2 | Local `shutdown.exe` | Implemented in standard mode | ETW process-start detection plus immediate `AbortSystemShutdownW(None)` attempt; optional future IFEO mode remains out of scope | Kernel-process ETW access can require privileges; IFEO mode requires admin | Current builds still do **not** promise to stop `shutdown /t 0 /f`; ETW detection can lose that race |
 | Layer 3 | Windows Update reboot scheduling | Implemented | Disable and re-check `Microsoft\Windows\UpdateOrchestrator\Reboot` through Task Scheduler COM | Yes | Windows may re-enable the task, so Wardoff must re-check it periodically |
 | Layer 4 | Remote shutdown | Implemented | Poll `AbortSystemShutdownW(None)` approximately every 900 ms | Required privileges must be available | Only works when the shutdown still has a timeout window |
 
@@ -53,23 +53,24 @@ What Layer 1 does not solve:
 
 ## Layer 2 — Local `shutdown.exe`
 
-This is still the hardest user-space problem, and it is intentionally **not** part of the current safe MVP.
+This remains the hardest user-space problem, but the current branch now ships the **standard** Layer 2 approach.
 
-Current state:
+Current standard-mode behavior:
 
-- no ETW process-start monitoring is implemented yet
-- no IFEO mode is implemented yet
-- no local `shutdown.exe` interception ships in the current branch
+- Wardoff starts a dedicated worker-backed ETW session only while Block mode is active
+- the worker subscribes to `Microsoft-Windows-Kernel-Process` process-start events
+- when the started image is `shutdown.exe`, Wardoff immediately calls `AbortSystemShutdownW(None)`
+- only a successful abort increments the blocked counter
+- detection by itself is logged, but it does not count as a blocked shutdown
+- if ETW is unavailable or the process lacks the needed rights, Layer 2 stays inactive, logs the reason, and Block mode continues without crashing
 
 That means:
 
-- Wardoff currently does **not** stop local `shutdown.exe` launches directly
-- Wardoff currently does **not** block local `shutdown /t 0 /f`
-- the limitation is real and should be communicated clearly
+- Wardoff can sometimes cancel a local `shutdown.exe` request that still leaves Windows an abortable window
+- Wardoff still does **not** promise to stop local `shutdown /t 0 /f`
+- the limitation remains real and should be communicated clearly
 
-### Planned standard mode (later): ETW plus abort
-
-The future standard approach remains to observe process start events from the ETW provider:
+### Standard mode: ETW plus abort
 
 - provider: `Microsoft-Windows-Kernel-Process`
 - provider GUID: `22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716`
@@ -84,11 +85,11 @@ Observe ETW ProcessStart events
 → log the source, action, and result
 ```
 
-This future approach can help when `shutdown.exe` started a shutdown with a timeout such as `/t 30`, because Windows still has a grace window in which `AbortSystemShutdown(...)` can win the race.
+This standard mode can help when `shutdown.exe` started a shutdown with a timeout such as `/t 30`, because Windows still has a grace window in which `AbortSystemShutdownW(None)` can win the race.
 
 ### Hard limit: `shutdown /t 0 /f`
 
-Even with the future ETW layer, local `shutdown /t 0 /f` remains too fast once the process has already entered the forced path. In other words:
+Even with the shipped ETW layer, local `shutdown /t 0 /f` remains too fast once the process has already entered the forced path. In other words:
 
 - ETW could still observe that the event happened
 - the application could still log it honestly
@@ -96,7 +97,7 @@ Even with the future ETW layer, local `shutdown /t 0 /f` remains too fast once t
 
 ### Planned aggressive mode (later): IFEO
 
-Wardoff also plans an opt-in aggressive mode based on Image File Execution Options (IFEO). Instead of reacting after `shutdown.exe` starts, IFEO intercepts the executable launch itself by setting a debugger value under:
+Wardoff still plans an opt-in aggressive mode based on Image File Execution Options (IFEO). Instead of reacting after `shutdown.exe` starts, IFEO intercepts the executable launch itself by setting a debugger value under:
 
 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shutdown.exe`
 
@@ -172,6 +173,7 @@ This currently covers:
 Implemented in the current branch:
 
 - Layer 1
+- Layer 2 standard ETW mode
 - Layer 3
 - Layer 4
 - sleep/hibernate/display blocking
@@ -183,7 +185,6 @@ Implemented in the current branch:
 
 Planned later scope:
 
-- Layer 2 ETW monitoring
 - opt-in IFEO mode
 - Windows Event Log integration
 - toast notifications
