@@ -33,6 +33,8 @@ pub enum EventSource {
     Cli,
     /// The named-pipe IPC layer emitted the event.
     Ipc,
+    /// The Layer 2 local-shutdown ETW blocker emitted the event.
+    Local,
     /// The Layer 4 remote-shutdown blocker emitted the event.
     Remote,
     /// The Layer 1 shutdown blocker emitted the event.
@@ -196,6 +198,7 @@ impl EventSource {
             EventSource::Application => "application",
             EventSource::Cli => "cli",
             EventSource::Ipc => "ipc",
+            EventSource::Local => "local",
             EventSource::Remote => "remote",
             EventSource::Shutdown => "shutdown",
             EventSource::Sleep => "sleep",

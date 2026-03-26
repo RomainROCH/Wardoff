@@ -7,7 +7,7 @@ This document describes a future aggressive mode for Wardoff. It is not enabled,
 Current reality:
 
 - Wardoff currently ships only the safe MVP layers
-- Wardoff does **not** currently implement any local `shutdown.exe` interception
+- Wardoff currently implements only the standard Layer 2 local `shutdown.exe` path: ETW process-start detection plus a best-effort `AbortSystemShutdownW(None)` attempt
 - Wardoff therefore does **not** block local `shutdown /t 0 /f` in the current shipped implementation
 
 ## What IFEO is

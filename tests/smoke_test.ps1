@@ -309,10 +309,6 @@ try {
     Stop-RepoWardoffProcesses
 
     Invoke-TestCase 'cargo build --release succeeds' {
-        if (Test-Path $binaryPath) {
-            Remove-Item -Path $binaryPath -Force -ErrorAction Stop
-        }
-
         $result = Invoke-ExternalCommand -FilePath 'cargo' -Arguments @('build', '--release')
         Assert-Condition ($result.ExitCode -eq 0) "cargo build --release failed with exit code $($result.ExitCode)."
     }
@@ -351,6 +347,9 @@ try {
 
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --status exited with code $($result.ExitCode) while Wardoff was running."
         Assert-Condition ($status.state -eq 'block') "wardoff --status returned state '$($status.state)' instead of 'block'."
+        Assert-Condition ($null -ne $status.layers) 'wardoff --status did not include a layers object while Wardoff was running.'
+        Assert-Condition ($null -ne $status.layers.local_shutdown) 'wardoff --status did not include the layers.local_shutdown field.'
+        Assert-Condition ($status.layers.local_shutdown -is [bool]) 'wardoff --status returned a non-boolean layers.local_shutdown field.'
     }
 
     $powercfgRequestsCheck = Resolve-PowercfgRequestsCheck

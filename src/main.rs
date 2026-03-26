@@ -839,7 +839,7 @@ impl Application {
 }
 
 fn other_error(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, message)
+    io::Error::other(message)
 }
 
 fn should_show_graphical_startup_error() -> bool {

@@ -24,6 +24,7 @@ Implemented in this repository today:
   - `--tail`
   - `--autostart on|off`
 - Layer 1 interactive shutdown blocking via `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
+- Layer 2 standard-mode local `shutdown.exe` detection via ETW process-start monitoring plus best-effort `AbortSystemShutdownW(None)` attempts
 - Layer 3 Windows Update reboot-task protection for `Microsoft\Windows\UpdateOrchestrator\Reboot`
 - Layer 4 remote shutdown abort polling via `AbortSystemShutdownW(None)`
 - sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
@@ -36,8 +37,6 @@ Implemented in this repository today:
 
 These items are still missing in the current shipped implementation:
 
-- Layer 2 local `shutdown.exe` interception
-- ETW monitoring for local `shutdown.exe` and related process activity
 - opt-in aggressive IFEO mode for earlier local `shutdown.exe` interception
 - Windows Event Log integration
 - native Windows toast notifications
@@ -47,8 +46,8 @@ These items are still missing in the current shipped implementation:
 
 ## Honest limitations
 
-- **Current Wardoff does not block local `shutdown /t 0 /f`.** Layer 2 is not implemented yet, and once a local forced shutdown path is already running, the safe MVP layers cannot reliably stop it from user space.
-- The current branch ships Layer 1, Layer 3, Layer 4, and sleep/display blocking. It does **not** yet ship ETW-based `shutdown.exe` monitoring or IFEO interception.
+- **Current Wardoff still does not promise to block local `shutdown /t 0 /f`.** Layer 2 now watches ETW process-start events for local `shutdown.exe` launches and immediately tries `AbortSystemShutdownW(None)`, but a forced zero-second local shutdown can still outrun a user-space abort attempt.
+- The current branch ships Layer 1, Layer 2 standard mode, Layer 3, Layer 4, and sleep/display blocking. It does **not** yet ship aggressive IFEO interception.
 - Windows Update protection is tied to the `Microsoft\Windows\UpdateOrchestrator\Reboot` scheduled task and requires administrator rights.
 - Remote shutdown abort logic only helps while Windows still exposes a shutdown timeout window and the process has the rights needed for `AbortSystemShutdownW(None)`.
 - Default no-argument startup is designed to request elevation so the full safe MVP can run. Some explicit CLI paths can still run without elevation, but elevated-only features may then be skipped and logged as unavailable.
@@ -59,7 +58,7 @@ These items are still missing in the current shipped implementation:
 Wardoff is designed as a layered Windows-only tool because no single user-space API covers every shutdown origin. The architecture reference is documented in [docs/WINDOWS_SHUTDOWN_LAYERS.md](docs/WINDOWS_SHUTDOWN_LAYERS.md):
 
 1. Layer 1: standard interactive shutdown blocking
-2. Layer 2: local `shutdown.exe` handling (**not implemented yet**)
+2. Layer 2: local `shutdown.exe` handling (standard mode)
 3. Layer 3: Windows Update reboot task control
 4. Layer 4: remote shutdown abort polling
 
@@ -115,7 +114,7 @@ Command behavior in the current implementation:
 Example `--status` shape:
 
 ```json
-{"state":"block","layers":{"shutdown":true,"update":true,"remote":true,"sleep":true},"uptime_seconds":42,"blocked_count":3}
+{"state":"block","layers":{"shutdown":true,"local_shutdown":true,"update":true,"remote":true,"sleep":true},"uptime_seconds":42,"blocked_count":3}
 ```
 
 If no primary runtime is active, `--status` returns:
@@ -153,7 +152,7 @@ The current implementation keeps up to 3 log files and rotates when the active l
 
 | Product | Source model | Stack | `shutdown.exe` handling | Status |
 | --- | --- | --- | --- | --- |
-| Wardoff | Open-source MIT project | Rust | No local `shutdown.exe` interception yet; safe shipped layers are 1, 3, and 4 only | MVP runtime implemented on current branch |
+| Wardoff | Open-source MIT project | Rust | ETW-based standard-mode monitoring for local `shutdown.exe`, plus Layers 1, 3, and 4; no aggressive IFEO mode yet | MVP runtime implemented on current branch |
 | ShutdownBlocker | Closed freeware | .NET Framework 4.0 | Uses IFEO for `shutdown.exe` | Last known update March 2017 |
 | ShutdownGuard | Open-source MIT project | Pure C with MinGW | Historical DLL injection approach | Archived as `UNSUPPORTED` since 2014 |
 | Don't Sleep | Closed freeware | Closed-source Windows utility | Does not block `shutdown.exe` | Actively maintained |
