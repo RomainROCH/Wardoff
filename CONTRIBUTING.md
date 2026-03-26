@@ -1,46 +1,29 @@
 # Contributing to Wardoff
 
-Thanks for helping shape Wardoff.
+Thanks for contributing to Wardoff.
 
-This repository now contains a working MVP-level Windows runtime in addition to the planning documents. `PLAN.md` remains the product and architecture source of truth for scope, but documentation and code changes should describe the current implementation accurately: the safe MVP layers are present, including Layer 2 standard ETW monitoring on this branch, while aggressive IFEO / Event Log / toast / timer / profile / settings work is still future scope.
+This repository now contains a working Windows MVP runtime, but the docs should remain conservative: describe what is clearly implemented and supported, and do not turn later-phase ideas into shipped features.
 
-## Development prerequisites
+## Prerequisites
 
-For code work on Windows, use:
+For local development on Windows, use:
 
 - Windows 10 or Windows 11
-- Rust stable with the MSVC toolchain (`x86_64-pc-windows-msvc`)
-- Visual Studio Build Tools 2022 or equivalent MSVC C/C++ build tools
+- Rust stable
+- MSVC Build Tools for the `x86_64-pc-windows-msvc` target
 - Git
 
-Administrator rights are required for some current functionality as well, especially Layer 3 Update Orchestrator task control and autostart task changes. Do not hide missing elevation; surface it clearly and document the degraded behavior honestly.
+Administrator rights are required for some manual validation paths and some runtime features, especially Update Orchestrator task handling and autostart task changes.
 
-## Building
+## Build
 
-The expected local workflow is:
-
-```powershell
-cargo build
-cargo check
-```
-
-For a release-style local build:
+The main build command to use and document is:
 
 ```powershell
 cargo build --release
 ```
 
-## Testing
-
-Use Windows 10+ or Windows 11 for validation. A disposable VM is strongly recommended for any shutdown, reboot, sleep, hibernate, or Task Scheduler experiments.
-
-For documentation-only changes:
-
-- proofread for clear English
-- verify links and file paths
-- keep claims aligned with the current repository state
-
-For code changes:
+Useful supporting commands:
 
 ```powershell
 cargo fmt --check
@@ -48,38 +31,69 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
-Add manual Windows notes for anything that cannot be meaningfully covered by automated tests, especially:
+## Smoke test
 
-- standard interactive shutdown blocking
-- Windows Update reboot handling
-- remote shutdown behavior when a timeout is present
-- non-admin versus admin behavior
-- sleep, hibernate, and display-idle prevention
-- tray behavior, including hidden versus visible startup
-- CLI interactions with the primary instance over named-pipe IPC
-- Task Scheduler autostart behavior
+Run the repo smoke test with:
 
-Do not test disruptive shutdown scenarios on a machine you cannot afford to interrupt.
+```powershell
+powershell -ExecutionPolicy Bypass -File tests\smoke_test.ps1
+```
 
-## Conventions
+Use a disposable VM for disruptive shutdown, reboot, sleep, hibernate, or Task Scheduler validation.
 
-- Keep all documentation in English.
-- Treat `PLAN.md` as the product and architecture source of truth.
-- Keep MVP work limited to the safe, official-API scope currently described in the plan unless the plan is deliberately updated.
-- Document limitations honestly, especially around `shutdown /t 0 /f` and administrator boundaries.
-- Do not describe aggressive IFEO, Windows Event Log, toast notifications, timers, profiles, or a settings window as implemented unless you actually add them.
-- Use `rustfmt` and `clippy` for Rust code.
-- Avoid `unwrap()` and `expect()` in production paths.
-- Add `///` doc comments to public Rust items.
-- Target `x86_64-pc-windows-msvc`.
+## Current implementation boundaries
 
-## Pull request process
+Keep documentation and PR descriptions aligned with the current supported MVP surface:
 
-1. Read `PLAN.md` and `.github/copilot-instructions.md` before starting.
-2. Keep the branch and pull request narrowly scoped.
-3. Use branch names such as `feat/description` or `fix/description`.
-4. Explain what changed, what was tested, and what remains planned.
-5. Call out admin requirements, platform limits, and any manual verification steps.
-6. Do not mix the current safe MVP with v1.0-or-later features unless the plan is explicitly updated.
+- interactive shutdown/sign-out blocking is implemented
+- Update Orchestrator reboot-task protection is implemented
+- remote shutdown abort polling is implemented
+- sleep/hibernate/display-idle blocking is implemented
+- tray, CLI, logging, IPC, autostart, and single-instance coordination are implemented
 
-Small, focused pull requests are easier to review and safer for a Windows system utility.
+Do **not** claim the following as implemented unless your change really adds and validates them:
+
+- IFEO interception
+- Windows Event Log integration
+- toast notifications
+- timers
+- profiles
+- settings UI
+
+Be especially careful with local `shutdown.exe` wording:
+
+- do not promise that Wardoff blocks `shutdown /t 0 /f`
+- do not turn experimental or cautiously documented behavior into a marketing claim
+
+## Branch workflow
+
+Use this workflow unless a maintainer tells you otherwise:
+
+1. branch from `dev`
+2. use a branch name such as `feat/xxx` or `fix/xxx`
+3. merge completed work back into `dev`
+4. open the PR to `main` from the appropriate integrated branch state
+
+Keep changes focused and reviewable.
+
+## Pull request checklist
+
+In each PR:
+
+- explain what changed
+- explain what you tested
+- call out any admin requirement
+- call out any behavior that is intentionally still planned rather than shipped
+- keep docs and code wording consistent
+
+## Coding and documentation conventions
+
+- keep documentation in English
+- prefer `cargo build --release` when describing the real build process
+- use fenced code blocks with language tags
+- use `rustfmt` and `clippy`
+- avoid `unwrap()` and `expect()` in production paths where failure should be surfaced cleanly
+- add `///` comments to public Rust items where appropriate
+- keep claims honest and source-verifiable
+
+Small, accurate PRs are much easier to review than broad speculative rewrites.
