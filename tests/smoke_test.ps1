@@ -20,6 +20,10 @@ function Test-IsAdministrator {
 
 $isAdmin = Test-IsAdministrator
 
+if (-not $isAdmin) {
+    Write-Host 'Run as admin for full test coverage.' -ForegroundColor Yellow
+}
+
 function Add-TestResult {
     param(
         [Parameter(Mandatory = $true)]
@@ -229,6 +233,32 @@ function Get-WardoffStatusResult {
     return Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--status')
 }
 
+function Wait-ForActiveWardoffStatus {
+    $lastResult = $null
+
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $lastResult = Get-WardoffStatusResult
+
+        if ($lastResult.ExitCode -eq 0) {
+            $status = Get-StatusJson -JsonText $lastResult.Output
+            if ($status.state -eq 'block') {
+                return [pscustomobject]@{
+                    Result = $lastResult
+                    Status = $status
+                }
+            }
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    if ($null -eq $lastResult) {
+        throw 'Wardoff never returned a status result while waiting for an active Block state.'
+    }
+
+    throw "Wardoff did not report an active Block state. Last exit code: $($lastResult.ExitCode). Last output: $($lastResult.Output)"
+}
+
 function Wait-ForInactiveWardoffStatus {
     $lastResult = $null
 
@@ -323,6 +353,12 @@ try {
         Assert-Condition ($result.Output -match '(?i)wardoff') "wardoff --help did not mention 'wardoff'."
     }
 
+    Invoke-TestCase 'wardoff --version exits 0 and prints wardoff 0.1.0' {
+        $result = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--version')
+        Assert-Condition ($result.ExitCode -eq 0) "wardoff --version exited with code $($result.ExitCode)."
+        Assert-Condition ($result.Output -eq 'wardoff 0.1.0') "wardoff --version printed '$($result.Output)' instead of 'wardoff 0.1.0'."
+    }
+
     Invoke-TestCase 'wardoff --status without an instance exits 1 and reports inactive JSON' {
         Stop-RepoWardoffProcesses
         $result = Wait-ForInactiveWardoffStatus
@@ -342,8 +378,9 @@ try {
     }
 
     Invoke-TestCase 'wardoff --status reports valid JSON with state block while the background instance is running' {
-        $result = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--status')
-        $status = Get-StatusJson -JsonText $result.Output
+        $activeStatus = Wait-ForActiveWardoffStatus
+        $result = $activeStatus.Result
+        $status = $activeStatus.Status
 
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --status exited with code $($result.ExitCode) while Wardoff was running."
         Assert-Condition ($status.state -eq 'block') "wardoff --status returned state '$($status.state)' instead of 'block'."
@@ -388,6 +425,16 @@ try {
     }
 
     if ($isAdmin) {
+        Invoke-TestCase 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin' {
+            $activeStatus = Wait-ForActiveWardoffStatus
+            Assert-Condition ($activeStatus.Status.layers.update -eq $true) 'wardoff --status did not report layers.update=true in an elevated session.'
+        }
+
+        Invoke-TestCase 'wardoff --status reports Layer 4 AbortSystemShutdown protection as active when run as admin' {
+            $activeStatus = Wait-ForActiveWardoffStatus
+            Assert-Condition ($activeStatus.Status.layers.remote -eq $true) 'wardoff --status did not report layers.remote=true in an elevated session.'
+        }
+
         Invoke-TestCase 'schtasks /query for Microsoft\Windows\UpdateOrchestrator\Reboot completes without crashing the script' {
             $null = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Microsoft\Windows\UpdateOrchestrator\Reboot')
         }
@@ -424,8 +471,12 @@ try {
         }
     }
     else {
-        Skip-TestCase 'schtasks /query for Microsoft\Windows\UpdateOrchestrator\Reboot completes without crashing the script' 'Requires an elevated PowerShell session for the admin-only check.'
-        Skip-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' 'Requires an elevated PowerShell session for the admin-only check.'
+        $adminOnlyMessage = 'Run as admin for full test coverage'
+        Write-Host $adminOnlyMessage -ForegroundColor Yellow
+        Skip-TestCase 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin' $adminOnlyMessage
+        Skip-TestCase 'wardoff --status reports Layer 4 AbortSystemShutdown protection as active when run as admin' $adminOnlyMessage
+        Skip-TestCase 'schtasks /query for Microsoft\Windows\UpdateOrchestrator\Reboot completes without crashing the script' $adminOnlyMessage
+        Skip-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' $adminOnlyMessage
     }
 
     Invoke-TestCase 'The background Wardoff instance can be stopped and cleaned up' {

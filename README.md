@@ -6,75 +6,59 @@
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
 
-Unexpected shutdowns and reboots still interrupt gaming sessions, long-running builds, remote administration, and overnight workloads. Existing utilities are often closed-source, abandoned, or focused mainly on sleep prevention rather than transparent shutdown control. Wardoff is a Windows-native Rust project that tries to be explicit about both its current capabilities and its hard limits.
+Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
-This repository is no longer just a planning scaffold. The current codebase implements a working MVP-level runtime with a tray surface, CLI, structured logging, single-instance coordination, and the safe user-space shutdown layers that fit the current branch scope.
+## Current MVP status
 
-## Features MVP
+Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level capabilities:
 
-Implemented in this repository today:
-
-- working Windows tray/runtime application with Block and Allow state management
-- CLI support for:
-  - `--block`
-  - `--allow`
-  - `--status`
-  - `--hide`
-  - `--log`
-  - `--tail`
-  - `--autostart on|off`
-- Layer 1 interactive shutdown blocking via `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
-- Layer 2 standard-mode local `shutdown.exe` detection via ETW process-start monitoring plus best-effort `AbortSystemShutdownW(None)` attempts
-- Layer 3 Windows Update reboot-task protection for `Microsoft\Windows\UpdateOrchestrator\Reboot`
-- Layer 4 remote shutdown abort polling via `AbortSystemShutdownW(None)`
+- Block/Allow runtime state with a red/green tray icon
+- Layer 1 interactive shutdown and sign-out blocking through `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
+- Layer 3 protection for the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot`
+- Layer 4 best-effort remote shutdown abort polling with `AbortSystemShutdownW(None)`
 - sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
-- rotating structured JSONL logs under `%LOCALAPPDATA%\Wardoff\logs\`
+- structured rotating JSONL logging under `%LOCALAPPDATA%\Wardoff\logs\`
+- single-instance coordination so later CLI calls can control the primary runtime
 - Task Scheduler autostart management
-- single-instance enforcement plus named-pipe IPC so secondary CLI invocations can control the primary runtime
-- tray power actions for Shutdown, Reboot, Sleep, Hibernate, and Quit
+- tray actions for Shutdown, Reboot, Sleep, Hibernate, and Quit
 
-## Planned features v1.0
+## Not implemented yet
 
-These items are still missing in the current shipped implementation:
+These are **not** part of the current documented MVP and should not be treated as shipped user-facing features:
 
-- opt-in aggressive IFEO mode for earlier local `shutdown.exe` interception
+- aggressive IFEO interception
+- ETW-based local `shutdown.exe` interception as a documented feature
 - Windows Event Log integration
-- native Windows toast notifications
-- timer-based blocking windows
-- profiles and a settings window
-- packaging and distribution polish via GitHub Releases, Winget, Scoop, and Chocolatey
+- Windows toast notifications
+- timers
+- profiles
+- settings UI
+- packaged distribution via Winget, Scoop, Chocolatey, or a polished installer
 
-## Honest limitations
+## Honest limits
 
-- **Current Wardoff still does not promise to block local `shutdown /t 0 /f`.** Layer 2 now watches ETW process-start events for local `shutdown.exe` launches and immediately tries `AbortSystemShutdownW(None)`, but a forced zero-second local shutdown can still outrun a user-space abort attempt.
-- The current branch ships Layer 1, Layer 2 standard mode, Layer 3, Layer 4, and sleep/display blocking. It does **not** yet ship aggressive IFEO interception.
-- Windows Update protection is tied to the `Microsoft\Windows\UpdateOrchestrator\Reboot` scheduled task and requires administrator rights.
-- Remote shutdown abort logic only helps while Windows still exposes a shutdown timeout window and the process has the rights needed for `AbortSystemShutdownW(None)`.
-- Default no-argument startup is designed to request elevation so the full safe MVP can run. Some explicit CLI paths can still run without elevation, but elevated-only features may then be skipped and logged as unavailable.
-- There is no Windows Event Log integration, toast UI, settings window, timer/profile system, or polished installer/distribution flow yet.
-
-## How it works
-
-Wardoff is designed as a layered Windows-only tool because no single user-space API covers every shutdown origin. The architecture reference is documented in [docs/WINDOWS_SHUTDOWN_LAYERS.md](docs/WINDOWS_SHUTDOWN_LAYERS.md):
-
-1. Layer 1: standard interactive shutdown blocking
-2. Layer 2: local `shutdown.exe` handling (standard mode)
-3. Layer 3: Windows Update reboot task control
-4. Layer 4: remote shutdown abort polling
-
-Wardoff also implements a separate power-state blocker for sleep, hibernate, and display idle prevention.
+- **Wardoff does not promise to stop `shutdown /t 0 /f`.** A forced zero-second local shutdown is outside what a normal user-space app can reliably block.
+- Windows Update reboot-task protection requires administrator rights.
+- Remote shutdown abort logic only helps when Windows still exposes a timeout window and the process has the rights required for `AbortSystemShutdownW(None)`.
+- Some CLI paths can run without elevation, but admin-only features will report that requirement instead of pretending they succeeded.
 
 ## Installation
 
-Wardoff is currently source-first. There is not yet a polished release/distribution pipeline.
+Wardoff is currently source-first.
 
-Build from source on Windows with the MSVC toolchain:
+### Requirements
+
+- Windows 10 or Windows 11
+- Rust toolchain
+- MSVC build tools for `x86_64-pc-windows-msvc`
+
+### Build from source
 
 ```powershell
 cargo build --release
 ```
 
-The resulting binary is typically:
+The compiled binary is:
 
 ```text
 target\release\wardoff.exe
@@ -82,48 +66,68 @@ target\release\wardoff.exe
 
 ## Usage
 
-### Default launch
+### Quick start
 
-Running `wardoff` with no arguments starts the primary runtime in **Block** mode with a visible tray icon. On the default startup path, Wardoff may relaunch itself elevated so Layer 3 and other privileged functionality can operate when available.
+```powershell
+wardoff
+wardoff --version
+wardoff --block --hide
+wardoff --status
+wardoff --autostart on
+wardoff --log --tail 10
+wardoff --allow
+```
 
-### CLI
+### What the main commands do
 
 ```powershell
 wardoff
 wardoff --block
+wardoff --block --hide
+wardoff --hide
 wardoff --allow
 wardoff --status
-wardoff --hide
 wardoff --log
-wardoff --log --tail 50
+wardoff --log --tail 10
 wardoff --autostart on
 wardoff --autostart off
+wardoff --version
 ```
 
-Command behavior in the current implementation:
+- `wardoff` starts the primary runtime in **Block** mode with the tray visible
+- `wardoff --block` starts or switches the runtime into Block mode without showing a tray icon
+- `wardoff --block --hide` is accepted and resolves to hidden Block-mode startup
+- `wardoff --hide` starts Block mode with the tray icon hidden
+- `wardoff --allow` switches the running instance to Allow mode, or starts a visible Allow-mode runtime if needed
+- `wardoff --status` prints compact JSON for scripts
+- `wardoff --log` prints recent structured log entries
+- `wardoff --log --tail 10` prints the newest 10 structured log entries
+- `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
+- `wardoff --version` prints the package version, for example `wardoff 0.1.0`
 
-- `wardoff` starts the tray runtime in Block mode
-- `--block` switches the primary instance to Block mode or starts a headless Block-mode runtime
-- `--allow` switches the primary instance to Allow mode or starts a visible Allow-mode runtime
-- `--status` prints compact JSON describing the current state, active layers, uptime, and blocked count
-- `--hide` starts Block mode with the tray icon created but hidden
-- `--log` prints recent structured JSONL records
-- `--tail N` changes how many recent records `--log` prints
-- `--autostart on|off` creates, updates, or removes the current-user scheduled task used for Start with Windows
-
-Example `--status` shape:
+Example status output while Wardoff is active:
 
 ```json
-{"state":"block","layers":{"shutdown":true,"local_shutdown":true,"update":true,"remote":true,"sleep":true},"uptime_seconds":42,"blocked_count":3}
+{"state":"block","layers":{"shutdown":true,"local_shutdown":false,"update":true,"remote":true,"sleep":true},"uptime_seconds":42,"blocked_count":3}
 ```
 
-If no primary runtime is active, `--status` returns:
+If no primary runtime is running:
 
 ```json
 {"state":"inactive"}
 ```
 
-### Tray surface
+## Running as Administrator
+
+Wardoff is explicit about elevation:
+
+- launching the built release executable normally causes Windows to request elevation, because the release binary is marked to run as administrator so the default startup path can enable admin-only protections
+- Layer 3 UpdateOrchestrator protection requires elevation
+- Layer 4 remote shutdown abort polling depends on the shutdown-abort privilege and is intended to run elevated
+- `--autostart on|off` requires elevation because it changes a scheduled task
+- if you run an explicit CLI command in a non-elevated console, Wardoff keeps working where it can and reports when an admin-only action is unavailable
+
+## Tray behavior
 
 The current tray menu includes:
 
@@ -136,9 +140,9 @@ The current tray menu includes:
 - Hibernate
 - Quit
 
-Tray icons are red in Block mode and green in Allow mode.
+Red icon = Block mode. Green icon = Allow mode.
 
-### Logging
+## Logging
 
 Wardoff writes rotating structured JSONL logs to:
 
@@ -146,23 +150,21 @@ Wardoff writes rotating structured JSONL logs to:
 %LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl
 ```
 
-The current implementation keeps up to 3 log files and rotates when the active log grows past 5 MiB.
+The current implementation keeps up to 3 log files and rotates when the active file grows past 5 MiB.
 
 ## Comparison
 
-| Product | Source model | Stack | `shutdown.exe` handling | Status |
-| --- | --- | --- | --- | --- |
-| Wardoff | Open-source MIT project | Rust | ETW-based standard-mode monitoring for local `shutdown.exe`, plus Layers 1, 3, and 4; no aggressive IFEO mode yet | MVP runtime implemented on current branch |
-| ShutdownBlocker | Closed freeware | .NET Framework 4.0 | Uses IFEO for `shutdown.exe` | Last known update March 2017 |
-| ShutdownGuard | Open-source MIT project | Pure C with MinGW | Historical DLL injection approach | Archived as `UNSUPPORTED` since 2014 |
-| Don't Sleep | Closed freeware | Closed-source Windows utility | Does not block `shutdown.exe` | Actively maintained |
-| PreventTurnOff | Closed freeware | Closed-source Windows utility | Same limitation as Don't Sleep | Actively maintained, simplified |
-
-See [docs/COMPARISON.md](docs/COMPARISON.md) for the full comparison and trade-offs.
+| Product | Source model | `shutdown.exe` story | Current reality |
+| --- | --- | --- | --- |
+| Wardoff | Open-source MIT | Honest MVP: interactive shutdown/sign-out blocking, UpdateOrchestrator protection, remote abort polling, but no documented ETW/IFEO local interception yet | Implemented MVP runtime on this branch |
+| ShutdownBlocker | Closed freeware | Commonly associated with aggressive `shutdown.exe` interception approaches | Last known update March 2017 |
+| ShutdownGuard | Open-source MIT | Historical injection-based approach | Archived / unsupported |
+| Don't Sleep | Closed freeware | Focused mainly on sleep/power-state prevention, not transparent shutdown control | Actively maintained |
+| PreventTurnOff | Closed freeware | Similar positioning, simplified | Actively maintained |
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), read `PLAN.md`, and keep changes aligned with the current MVP scope and the current branch's honest limitations.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), read [PLAN.md](PLAN.md), and keep changes aligned with the current MVP boundaries.
 
 ## License
 
