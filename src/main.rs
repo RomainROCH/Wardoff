@@ -22,7 +22,7 @@ use crate::ipc::{
     IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
-use crate::tray::{create_tray_controller, TrayAction, TrayController, TrayVisibility};
+use crate::tray::{spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility};
 use crate::windows_util::{
     show_fatal_error_dialog, ElevationLaunchResult, INTERNAL_ELEVATED_RELAUNCH_ARG,
 };
@@ -30,6 +30,7 @@ use log::{error, info, warn};
 use std::error::Error;
 use std::ffi::OsStr;
 use std::io;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -41,13 +42,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
 const ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+static ACTIVE_APPLICATION: AtomicPtr<Application> = AtomicPtr::new(std::ptr::null_mut());
+
 /// Coordinates CLI, tray, and blocker scaffolding for the Wardoff binary.
 struct Application {
     blocker_coordinator: BlockerCoordinator,
-    tray_controller: Option<TrayController>,
+    tray_service: Option<TrayServiceHandle>,
     ipc_requests: Receiver<PendingRequest>,
     ipc_server: IpcServer,
     started_at: Instant,
+    forced_shutdown_cleanup_completed: bool,
     _primary_instance: InstanceGuard,
 }
 
@@ -73,23 +77,17 @@ fn bootstrap(
 
     let blocker_coordinator =
         create_blocker_coordinator(options.initial_mode).map_err(other_error)?;
-    let mut tray_controller = match options.tray_surface {
+    let tray_service = match options.tray_surface {
         TraySurface::Headless => None,
         TraySurface::Visible => Some(
-            create_tray_controller(TrayVisibility::Visible)
-                .map_err(|message| other_error(message.to_string()))?,
+            spawn_tray_service(TrayVisibility::Visible, blocker_coordinator.mode())
+                .map_err(other_error)?,
         ),
         TraySurface::Hidden => Some(
-            create_tray_controller(TrayVisibility::Hidden)
-                .map_err(|message| other_error(message.to_string()))?,
+            spawn_tray_service(TrayVisibility::Hidden, blocker_coordinator.mode())
+                .map_err(other_error)?,
         ),
     };
-
-    if let Some(tray_controller) = tray_controller.as_mut() {
-        tray_controller
-            .set_mode(blocker_coordinator.mode())
-            .map_err(other_error)?;
-    }
 
     ensure_message_queue();
     let (ipc_request_tx, ipc_requests) = mpsc::channel();
@@ -116,10 +114,11 @@ fn bootstrap(
 
     let mut application = Application {
         blocker_coordinator,
-        tray_controller,
+        tray_service,
         ipc_requests,
         ipc_server,
         started_at: Instant::now(),
+        forced_shutdown_cleanup_completed: false,
         _primary_instance: primary_instance,
     };
     application.refresh_autostart_tray_state();
@@ -129,6 +128,9 @@ fn bootstrap(
 
 /// Runs the shared Win32 event loop for the hidden Layer 1 windows and the tray icon.
 fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
+    ACTIVE_APPLICATION.store(&mut application as *mut Application, Ordering::Release);
+    blocker::shutdown::set_end_session_cleanup_callback(forced_shutdown_cleanup_callback);
+
     let mut message = MSG::default();
 
     'message_loop: loop {
@@ -161,6 +163,8 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
         unsafe { WaitMessage()? };
     }
 
+    blocker::shutdown::clear_end_session_cleanup_callback();
+    ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
     application.shutdown()?;
     Ok(())
 }
@@ -507,8 +511,8 @@ impl Application {
     }
 
     fn process_tray_actions(&mut self) -> bool {
-        let actions = match self.tray_controller.as_ref() {
-            Some(tray_controller) => tray_controller.drain_actions(),
+        let actions = match self.tray_service.as_ref() {
+            Some(tray_service) => tray_service.drain_actions(),
             None => return false,
         };
 
@@ -725,11 +729,7 @@ impl Application {
     }
 
     fn set_autostart_enabled(&mut self, enabled: bool, source: EventSource) -> Result<(), String> {
-        let previous_state = self
-            .tray_controller
-            .as_ref()
-            .map(TrayController::autostart_enabled)
-            .unwrap_or(false);
+        let previous_state = autostart::is_enabled().unwrap_or(false);
 
         match autostart::set_enabled(enabled) {
             Ok(()) => {
@@ -762,8 +762,8 @@ impl Application {
     }
 
     fn sync_tray(&mut self, mode: BlockerMode) -> Result<(), String> {
-        match self.tray_controller.as_mut() {
-            Some(tray_controller) => tray_controller.set_mode(mode),
+        match self.tray_service.as_ref() {
+            Some(tray_service) => tray_service.set_mode(mode),
             None => Ok(()),
         }
     }
@@ -787,8 +787,8 @@ impl Application {
     }
 
     fn sync_tray_autostart(&self, enabled: bool) {
-        if let Some(tray_controller) = self.tray_controller.as_ref() {
-            tray_controller.set_autostart_enabled(enabled);
+        if let Some(tray_service) = self.tray_service.as_ref() {
+            let _ = tray_service.set_autostart_enabled(enabled);
         }
     }
 
@@ -805,8 +805,8 @@ impl Application {
         let ipc_shutdown = self.ipc_server.shutdown().map_err(other_error);
         let blocker_shutdown = self.blocker_coordinator.shutdown().map_err(other_error);
 
-        if let Some(tray_controller) = self.tray_controller.as_mut() {
-            tray_controller.shutdown();
+        if let Some(tray_service) = self.tray_service.as_mut() {
+            tray_service.shutdown();
         }
 
         let shutdown_result: Result<(), Box<dyn Error>> = match (ipc_shutdown, blocker_shutdown) {
@@ -835,6 +835,33 @@ impl Application {
 
         logger::shutdown_structured_logging();
         shutdown_result
+    }
+
+    fn handle_forced_shutdown_cleanup(&mut self) {
+        if self.forced_shutdown_cleanup_completed {
+            return;
+        }
+
+        self.forced_shutdown_cleanup_completed = true;
+        self.blocker_coordinator.forced_shutdown_cleanup();
+        info!("Wardoff shutting down due to user-forced shutdown");
+        logger::log_event(
+            "application_forced_shutdown",
+            EventSource::Application,
+            "Wardoff shutting down due to user-forced shutdown",
+            true,
+        );
+    }
+}
+
+fn forced_shutdown_cleanup_callback() {
+    let application_ptr = ACTIVE_APPLICATION.load(Ordering::Acquire);
+    if application_ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*application_ptr).handle_forced_shutdown_cleanup();
     }
 }
 

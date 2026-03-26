@@ -13,6 +13,7 @@
 
 use crate::logger::{self, EventSource};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::sync::OnceLock;
 
 use log::warn;
@@ -24,11 +25,14 @@ use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, HWND_MESSAGE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static WINDOW_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
+static END_SESSION_CLEANUP_CALLBACK: Mutex<Option<fn()>> = Mutex::new(None);
+static END_SESSION_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
 const SHUTDOWN_PRIORITY: u32 = 0x3FF;
 
@@ -142,6 +146,39 @@ pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
     LRESULT(1)
 }
 
+/// Registers the callback invoked when Windows forces session shutdown.
+pub(crate) fn set_end_session_cleanup_callback(callback: fn()) {
+    if let Ok(mut slot) = END_SESSION_CLEANUP_CALLBACK.lock() {
+        *slot = Some(callback);
+    }
+    END_SESSION_CLEANUP_STARTED.store(false, Ordering::Release);
+}
+
+/// Clears the forced-shutdown cleanup callback.
+pub(crate) fn clear_end_session_cleanup_callback() {
+    if let Ok(mut slot) = END_SESSION_CLEANUP_CALLBACK.lock() {
+        *slot = None;
+    }
+    END_SESSION_CLEANUP_STARTED.store(false, Ordering::Release);
+}
+
+fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+    if wparam.0 != 0 {
+        BLOCKER_ACTIVE.store(false, Ordering::Release);
+        let _ = unsafe { ShutdownBlockReasonDestroy(hwnd) };
+
+        if !END_SESSION_CLEANUP_STARTED.swap(true, Ordering::AcqRel) {
+            if let Ok(slot) = END_SESSION_CLEANUP_CALLBACK.lock() {
+                if let Some(callback) = *slot {
+                    callback();
+                }
+            }
+        }
+    }
+
+    LRESULT(0)
+}
+
 fn current_instance() -> WindowsResult<HINSTANCE> {
     unsafe { Ok(GetModuleHandleW(None)?.into()) }
 }
@@ -225,6 +262,7 @@ unsafe extern "system" fn shutdown_window_proc(
 ) -> LRESULT {
     match message {
         WM_QUERYENDSESSION => handle_query_end_session(wparam, lparam),
+        WM_ENDSESSION => handle_end_session(hwnd, wparam),
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
