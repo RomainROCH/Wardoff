@@ -1,37 +1,60 @@
 # Copilot instructions
 
-This repository is currently in planning mode. The only checked-in project artifact is `PLAN.md`, and it is the source of truth for product scope and architecture until a Rust workspace is added. Treat the details below as planned design, not implemented code.
+This repository is an active Windows-only Rust application. `PLAN.md` remains the source of truth for product scope and MVP boundaries, but the repo now also contains a checked-in Cargo project, source tree, and a PowerShell smoke test script.
 
 ## Repository status and commands
 
-- There is no checked-in `Cargo.toml`, source tree, CI workflow, or test suite yet.
-- There are therefore no verified build, test, lint, or single-test commands to run today.
-- Do not assume standard Rust commands exist until the workspace is scaffolded and committed.
+- The repo contains `Cargo.toml`, `src\`, and `tests\smoke_test.ps1`.
+- Preferred build / validation commands:
+  - `cargo check`
+  - `cargo test`
+  - `cargo build --release`
+- `cargo build --release` produces `target\release\wardoff.exe`, typically around ~1.5 MiB on this branch.
+- `cargo check` and `cargo test` should pass on this branch.
+- The dedicated smoke test entry point is `powershell -ExecutionPolicy Bypass -File .\tests\smoke_test.ps1`.
+- Do not add CI workflows, release automation, or packaging work unless explicitly requested.
 
 ## High-level architecture
 
-- `Wardoff` is planned as a Windows-only Rust utility for preventing or aborting unwanted shutdown, reboot, sleep, hibernate, and related power transitions. The intended target is `x86_64-pc-windows-msvc`.
+- `Wardoff` is a Windows-only Rust utility for preventing or aborting unwanted shutdown, reboot, sleep, hibernate, and related power transitions. The intended target is `x86_64-pc-windows-msvc`.
 - The product has two control surfaces that should stay aligned:
-  - a tray/background app with Block/Allow state, settings, notifications, and optional hidden mode
-  - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, and `--aggressive`, with `--status` expected to produce JSON for scripting
+  - a tray/background app with Block/Allow state and optional hidden mode
+  - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, `--autostart on|off`, and `--version`, with `--status` expected to produce JSON for scripting
 - Logging and observability are first-class:
   - rotating JSON lines file logs
-  - Windows Event Log integration
   - shared counters and metadata such as total blocked attempts, last blocked attempt, and likely source
 - Shutdown handling is intentionally layered:
   1. standard interactive shutdown blocking through a message-only window that handles `WM_QUERYENDSESSION`, calls `ShutdownBlockReasonCreate()`, and raises shutdown priority with `SetProcessShutdownParameters()`
-  2. local `shutdown.exe` protection, planned first via ETW detection plus `AbortSystemShutdown()`, with an opt-in aggressive IFEO mode later
+  2. local `shutdown.exe` protection is not part of the current documented MVP surface
   3. Windows Update reboot protection by disabling the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` and re-checking it periodically
   4. remote shutdown protection via repeated `AbortSystemShutdown(NULL)` polling
 - Sleep/hibernate/display blocking is a separate toggle and is expected to use `SetThreadExecutionState(...)`.
-- Autostart is planned via Task Scheduler rather than the `Run` registry key so elevated scenarios can be handled correctly.
+- Autostart is handled via Task Scheduler rather than the `Run` registry key so elevated scenarios can be handled correctly.
+
+## Implemented module structure
+
+- `src/main.rs`: CLI dispatch, bootstrap, message loop, tray coordination, shutdown cleanup
+- `src/cli.rs`: clap definitions, requested-action mapping, JSON status payloads
+- `src/blocker/mod.rs`: blocker coordinator and shared power-action helpers
+- `src/blocker/shutdown.rs`: Layer 1 shutdown/sign-out handling and shutdown block reason ownership
+- `src/blocker/local.rs`: current local shutdown worker implementation; keep its user-facing documentation conservative and aligned with MVP scope decisions
+- `src/blocker/update.rs`: UpdateOrchestrator task monitoring and restore logic
+- `src/blocker/remote.rs`: Layer 4 `AbortSystemShutdownW(None)` polling loop
+- `src/blocker/sleep.rs`: `SetThreadExecutionState(...)` blocker
+- `src/blocker/abort.rs`: shared shutdown-abort privilege and result helpers
+- `src/autostart.rs`: scheduled-task autostart management
+- `src/instance.rs` and `src/ipc.rs`: single-instance ownership and named-pipe control path
+- `src/logger\`: human logging plus rotating structured JSONL logging
+- `src/tray\`: tray icon/menu surface and tray action plumbing
+- `src/windows_util.rs`: elevation checks and relaunch helpers
+- `src/config.rs`: app data and path helpers
 
 ## Project-specific conventions from `PLAN.md`
 
 - Re-read `PLAN.md` before making major structural decisions. It currently stands in for a README, architecture doc, and roadmap.
 - Preserve the distinction between MVP and later phases:
   - MVP is the safe, official-API release: standard shutdown blocking, UpdateOrchestrator handling, remote abort loop, tray basics, CLI basics, Task Scheduler autostart, sleep/hibernate/display blocking, and simple file logging
-  - ETW monitoring, aggressive IFEO mode, Windows Event Log, profiles, timer, and toast notifications belong to later phases unless the plan is updated
+  - aggressive IFEO mode, Windows Event Log, profiles, timer, and toast notifications belong to later phases unless the plan is updated
 - Be explicit about elevation boundaries. Update protection and aggressive `shutdown.exe` interception are planned as admin-only features; tray, UI, and CLI flows should surface that requirement clearly rather than failing silently.
 - Prefer official Windows APIs first. Aggressive behavior is opt-in and should carry strong warnings because it may trigger EDR tooling.
 - The plan explicitly targets `Microsoft\Windows\UpdateOrchestrator\Reboot`, not the older `MusNotification` approach.
@@ -53,13 +76,12 @@ Only these features belong in the current phase:
 - Layer 4: AbortSystemShutdown polling loop
 - Sleep/hibernate/screensaver blocking via SetThreadExecutionState
 - Tray icon: Block/Allow toggle, right-click menu (Block, Allow, Shutdown, Reboot, Sleep, Hibernate, Quit)
-- CLI: --block, --allow, --status (JSON output), --hide
+- CLI: --block, --allow, --status (JSON output), --hide, --log, --tail, --autostart on|off, --version
 - Auto-start via Task Scheduler
 - File logging: rotating JSON lines (timestamp, event type, source, action, success/failure)
 - README.md with technical documentation
 
 ### What is OUT of scope (v1.0 or later — do NOT implement)
-- ETW monitoring (ferrisetw, Microsoft-Windows-Kernel-Process)
 - IFEO aggressive mode
 - Windows Event Log integration (EventLog provider)
 - Toast notifications
@@ -78,12 +100,13 @@ Only these features belong in the current phase:
 4. **No scope creep into v1.0 features.** If a task seems to require a v1.0 feature, flag it explicitly: "This requires [feature X] which is marked as v1.0 in PLAN.md. Should I proceed?"
 5. **Document limitations honestly.** If something cannot be done (e.g., blocking `shutdown /t 0 /f`), document it in comments and README instead of implementing a hacky workaround.
 6. **Admin boundaries are explicit.** Features requiring elevation must check for admin rights and fail with a clear message, not silently degrade.
-7. **Test what you build.** After implementing a feature, compile it (`cargo build`) and verify it runs. If it requires Windows APIs that can only be tested at runtime, document what to test manually.
+7. **Document user-facing status conservatively.** Do not describe IFEO, ETW local shutdown interception, Windows Event Log, toasts, timers, profiles, or settings as shipped user-facing features unless the plan is updated and the task explicitly asks for that.
+8. **Test what you build.** After implementing a feature, compile it (`cargo build`) and verify it runs. If it requires Windows APIs that can only be tested at runtime, document what to test manually.
 
 ### Code conventions
 - All public items must have `///` doc comments
 - Use `log` crate macros (info!, warn!, error!) for all operational messages
 - No `unwrap()` or `expect()` in production code paths — use proper error handling
-- Module structure must match the layout defined in this file (see Module architecture below)
+- Module structure must match the layout defined in this file (see Implemented module structure above)
 - Minimum Rust edition: 2021
 - Target: x86_64-pc-windows-msvc only

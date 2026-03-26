@@ -30,7 +30,7 @@ pub mod update;
 
 /// Default text shown by Windows when Layer 1 blocks a shutdown.
 pub const DEFAULT_SHUTDOWN_BLOCK_REASON: &str =
-    "Wardoff is blocking shutdown while Layer 1 protection is active.";
+    "Wardoff is protecting this PC. Use the tray icon or run \"wardoff --allow\" before shutting down or signing out.";
 
 static BLOCKED_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 

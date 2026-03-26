@@ -25,8 +25,8 @@ use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, HWND_MESSAGE,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW,
-    WS_OVERLAPPED,
+    ENDSESSION_LOGOFF, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION,
+    WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -129,21 +129,34 @@ impl Drop for ShutdownBlocker {
     }
 }
 
-/// Handles `WM_QUERYENDSESSION` while Wardoff is in blocking mode.
-pub fn handle_query_end_session(_wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+/// Handles `WM_QUERYENDSESSION` for shutdown and sign-out while Wardoff is in blocking mode.
+pub fn handle_query_end_session(_wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if BLOCKER_ACTIVE.load(Ordering::Acquire) {
+        let requested_action = if is_logoff_query(lparam) {
+            "sign-out"
+        } else {
+            "shutdown"
+        };
         super::record_blocked_event();
-        warn!("Blocking WM_QUERYENDSESSION while Layer 1 protection is active");
+        warn!(
+            "Blocking WM_QUERYENDSESSION for {requested_action} while Layer 1 protection is active"
+        );
         logger::log_event(
             "shutdown_blocked",
             EventSource::Shutdown,
-            "Layer 1 blocked WM_QUERYENDSESSION and returned FALSE to Windows.",
+            format!(
+                "Layer 1 blocked a Windows {requested_action} request through WM_QUERYENDSESSION and returned FALSE."
+            ),
             true,
         );
         return LRESULT(0);
     }
 
     LRESULT(1)
+}
+
+fn is_logoff_query(lparam: LPARAM) -> bool {
+    (lparam.0 & ENDSESSION_LOGOFF as isize) != 0
 }
 
 /// Registers the callback invoked when Windows forces session shutdown.

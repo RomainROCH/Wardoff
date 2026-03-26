@@ -31,8 +31,9 @@ enum CliAutostartState {
 /// Defines the MVP command-line switches supported by Wardoff.
 #[derive(Debug, Parser)]
 #[command(
+    name = "wardoff",
     author = "Romain ROCH",
-    version,
+    version = env!("CARGO_PKG_VERSION"),
     about = "Open-source Windows shutdown/reboot/sleep blocker"
 )]
 pub struct WardoffCli {
@@ -176,7 +177,7 @@ impl From<BlockerMode> for StatusState {
 #[cfg(test)]
 mod tests {
     use super::{RequestedAction, WardoffCli};
-    use clap::Parser;
+    use clap::{error::ErrorKind, Parser};
 
     #[test]
     fn default_launch_remains_default_when_relaunched_internally() {
@@ -192,5 +193,17 @@ mod tests {
 
         assert_eq!(cli.requested_action(), RequestedAction::Hide);
         assert!(!cli.is_internal_elevated_relaunch());
+    }
+
+    #[test]
+    fn version_flag_reports_the_expected_binary_name_and_package_version() {
+        let error = WardoffCli::try_parse_from(["wardoff", "--version"])
+            .expect_err("--version should short-circuit argument parsing");
+
+        assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string().trim(),
+            format!("wardoff {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 }
