@@ -15,6 +15,10 @@ use windows::Win32::System::Shutdown::{
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+/// Shared AbortSystemShutdownW(None) handling used by Layers 2 and 4.
+pub mod abort;
+/// Scaffolding for Layer 2 local shutdown.exe handling.
+pub mod local;
 /// Scaffolding for Layer 4 remote shutdown abort handling.
 pub mod remote;
 /// Scaffolding for Layer 1 interactive shutdown blocking.
@@ -43,6 +47,7 @@ pub enum BlockerMode {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LayerStatus {
     shutdown: bool,
+    local_shutdown: bool,
     update: bool,
     remote: bool,
     sleep: bool,
@@ -65,6 +70,7 @@ pub enum PowerAction {
 pub struct BlockerCoordinator {
     mode: BlockerMode,
     shutdown_blocker: shutdown::ShutdownBlocker,
+    local_shutdown_blocker: local::LocalShutdownBlocker,
     update_reboot_blocker: update::UpdateRebootBlocker,
     remote_shutdown_blocker: remote::RemoteShutdownBlocker,
     sleep_blocker: sleep::SleepBlocker,
@@ -107,6 +113,7 @@ impl BlockerCoordinator {
         let mut coordinator = Self {
             mode: BlockerMode::Allow,
             shutdown_blocker,
+            local_shutdown_blocker: local::LocalShutdownBlocker::default(),
             update_reboot_blocker: update::UpdateRebootBlocker::default(),
             remote_shutdown_blocker: remote::RemoteShutdownBlocker::default(),
             sleep_blocker: sleep::SleepBlocker::default(),
@@ -125,6 +132,7 @@ impl BlockerCoordinator {
     pub fn layer_status(&self) -> LayerStatus {
         LayerStatus {
             shutdown: self.shutdown_blocker.is_active(),
+            local_shutdown: self.local_shutdown_blocker.is_active(),
             update: self.update_reboot_blocker.is_active(),
             remote: self.remote_shutdown_blocker.is_active(),
             sleep: self.sleep_blocker.is_active(),
@@ -168,6 +176,7 @@ impl BlockerCoordinator {
 
     fn activate_block_mode(&mut self) -> Result<(), String> {
         let activation_result = (|| {
+            self.local_shutdown_blocker.activate()?;
             self.update_reboot_blocker.activate()?;
             self.remote_shutdown_blocker.activate()?;
             self.sleep_blocker.activate()?;
@@ -191,6 +200,7 @@ impl BlockerCoordinator {
         self.sleep_blocker.deactivate();
         self.remote_shutdown_blocker.deactivate();
         self.update_reboot_blocker.deactivate();
+        self.local_shutdown_blocker.deactivate();
         Ok(())
     }
 
@@ -198,6 +208,7 @@ impl BlockerCoordinator {
         self.sleep_blocker.deactivate();
         self.remote_shutdown_blocker.deactivate();
         self.update_reboot_blocker.deactivate();
+        self.local_shutdown_blocker.deactivate();
 
         match self.shutdown_blocker.deactivate() {
             Ok(()) => format!(
@@ -281,4 +292,23 @@ fn mode_label(mode: BlockerMode) -> &'static str {
 
 fn record_blocked_event() {
     BLOCKED_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LayerStatus;
+
+    #[test]
+    fn layer_status_serializes_the_layer2_flag() {
+        let json = serde_json::to_string(&LayerStatus {
+            shutdown: true,
+            local_shutdown: false,
+            update: true,
+            remote: false,
+            sleep: true,
+        })
+        .expect("LayerStatus should serialize");
+
+        assert!(json.contains("\"local_shutdown\":false"));
+    }
 }
