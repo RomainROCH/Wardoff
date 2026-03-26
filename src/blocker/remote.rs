@@ -1,3 +1,4 @@
+use crate::blocker::abort::{abort_pending_shutdown, ShutdownAbortOutcome};
 use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::sync::{
@@ -7,11 +8,6 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use windows::core::{Error as WindowsError, Result as WindowsResult, HRESULT};
-use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_NO_SHUTDOWN_IN_PROGRESS, E_ACCESSDENIED,
-};
-use windows::Win32::System::Shutdown::AbortSystemShutdownW;
 
 const LAYER4_THREAD_NAME: &str = "wardoff-layer4-remote-shutdown";
 
@@ -96,11 +92,6 @@ pub fn remote_abort_interval() -> Duration {
     Duration::from_millis(900)
 }
 
-/// Issues the Windows call used to cancel a pending remote shutdown.
-pub fn abort_remote_shutdown() -> WindowsResult<()> {
-    unsafe { AbortSystemShutdownW(None) }
-}
-
 struct RemoteShutdownWorker {
     stop_tx: Sender<()>,
     join_handle: Option<JoinHandle<()>>,
@@ -165,8 +156,8 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
 }
 
 fn poll_remote_shutdown() -> bool {
-    match abort_remote_shutdown() {
-        Ok(()) => {
+    match abort_pending_shutdown() {
+        ShutdownAbortOutcome::Aborted => {
             super::record_blocked_event();
             info!("Layer 4 intercepted and aborted a pending remote shutdown.");
             logger::log_event(
@@ -177,43 +168,34 @@ fn poll_remote_shutdown() -> bool {
             );
             true
         }
-        Err(error) if is_no_shutdown_in_progress_error(&error) => true,
-        Err(error) if is_access_denied_error(&error) => {
+        ShutdownAbortOutcome::NoShutdownPending => true,
+        ShutdownAbortOutcome::AccessDenied { details } => {
             warn!(
-                "Layer 4 could not call AbortSystemShutdownW(None) because this process lacks the required shutdown privilege; skipping Layer 4 remote shutdown protection: {error}"
+                "Layer 4 could not call AbortSystemShutdownW(None) because this process lacks the required shutdown privilege; skipping Layer 4 remote shutdown protection: {details}"
             );
             logger::log_event(
                 "remote_layer_enabled",
                 EventSource::Remote,
                 format!(
-                    "Layer 4 could not call AbortSystemShutdownW(None) because the required shutdown privilege is missing: {error}"
+                    "Layer 4 could not call AbortSystemShutdownW(None) because the required shutdown privilege is missing: {details}"
                 ),
                 false,
             );
             false
         }
-        Err(error) => {
+        ShutdownAbortOutcome::Failed { details } => {
             warn!(
-                "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {error}"
+                "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {details}"
             );
             logger::log_event(
                 "remote_layer_disabled",
                 EventSource::Remote,
                 format!(
-                    "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {error}"
+                    "Layer 4 polling stopped after AbortSystemShutdownW(None) failed unexpectedly: {details}"
                 ),
                 false,
             );
             false
         }
     }
-}
-
-fn is_access_denied_error(error: &WindowsError) -> bool {
-    let code = error.code();
-    code == E_ACCESSDENIED || code == HRESULT::from_win32(ERROR_ACCESS_DENIED.0)
-}
-
-fn is_no_shutdown_in_progress_error(error: &WindowsError) -> bool {
-    error.code() == HRESULT::from_win32(ERROR_NO_SHUTDOWN_IN_PROGRESS.0)
 }
