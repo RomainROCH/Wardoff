@@ -22,6 +22,17 @@ Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level
 - Task Scheduler autostart management
 - tray actions for Shutdown, Reboot, Sleep, Hibernate, and Quit
 
+## Documentation entrypoints
+
+If you are brand-new to the repo, read these in order:
+
+1. **`README.md`** - current user-facing MVP snapshot
+2. **[`PLAN.md`](PLAN.md)** - current status, boundaries, and prioritized next steps
+3. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** - where the runtime pieces live in code
+4. **[`docs/WINDOWS_SHUTDOWN_LAYERS.md`](docs/WINDOWS_SHUTDOWN_LAYERS.md)** - detailed shutdown-layer behavior, including Layer 2 ETW/local-shutdown nuances and limits
+5. **[`CONTRIBUTING.md`](CONTRIBUTING.md)** - workflow, testing, and documentation guardrails
+6. **[`.github/copilot-instructions.md`](.github/copilot-instructions.md)** - agent-specific read order and scope rules
+
 ## Not implemented yet
 
 These are **not** part of the current documented MVP and should not be treated as shipped user-facing features:
@@ -41,6 +52,20 @@ These are **not** part of the current documented MVP and should not be treated a
 - Windows Update reboot-task protection requires administrator rights.
 - Remote shutdown abort logic only helps when Windows still exposes a timeout window and the process has the rights required for `AbortSystemShutdownW(None)`.
 - Some CLI paths can run without elevation, but admin-only features will report that requirement instead of pretending they succeeded.
+
+For the detailed per-layer behavior and the cautious Layer 2 local `shutdown.exe` wording, see [`docs/WINDOWS_SHUTDOWN_LAYERS.md`](docs/WINDOWS_SHUTDOWN_LAYERS.md).
+
+## What comes next
+
+The repo is already in a conservative MVP state, so the next likely work is **hardening and clarifying what already ships**, not pretending a big new feature wave is done.
+
+Today, a new agent should assume this order of priority:
+
+1. improve confidence and docs around the implemented shutdown, update-reboot, remote-abort, sleep, tray, IPC, logging, and autostart behavior
+2. keep build/run/read-order guidance easy for a first-time contributor or evaluator
+3. treat larger feature ideas as later backlog unless `PLAN.md` explicitly moves them forward
+
+For the current roadmap summary, read [`PLAN.md`](PLAN.md).
 
 ## Installation
 
@@ -164,7 +189,7 @@ The current implementation keeps up to 3 log files and rotates when the active f
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), read [PLAN.md](PLAN.md), and keep changes aligned with the current MVP boundaries.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then [PLAN.md](PLAN.md), and keep changes aligned with the current MVP boundaries.
 
 ## License
 

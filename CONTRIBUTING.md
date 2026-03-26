@@ -4,6 +4,14 @@ Thanks for contributing to Wardoff.
 
 This repository now contains a working Windows MVP runtime, but the docs should remain conservative: describe what is clearly implemented and supported, and do not turn later-phase ideas into shipped features.
 
+## Read this first
+
+If you are new to the repo, read these before making changes:
+
+1. `README.md` for the current MVP summary
+2. `PLAN.md` for scope boundaries and the current "what's next" answer
+3. `docs/ARCHITECTURE.md` for the code map
+
 ## Prerequisites
 
 For local development on Windows, use:
