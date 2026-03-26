@@ -167,7 +167,7 @@ function Get-RepoWardoffProcesses {
         return @()
     }
 
-    return ,@(
+    return @(
         $processes | Where-Object {
             $_.ExecutablePath -and
             [string]::Equals(
