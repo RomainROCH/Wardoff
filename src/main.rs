@@ -257,11 +257,21 @@ fn handle_status_request() -> Result<i32, Box<dyn Error>> {
         Ok(IpcResponse::Ok) => Err(Box::new(other_error(
             "Wardoff received an unexpected empty response for --status.".to_string(),
         ))),
-        Err(ClientError::Unavailable) => {
+        Err(ClientError::Unavailable) => handle_unavailable_status_request(),
+        Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
+    }
+}
+
+fn handle_unavailable_status_request() -> Result<i32, Box<dyn Error>> {
+    match claim_primary_instance().map_err(other_error)? {
+        InstanceClaim::Primary(primary_instance) => {
+            drop(primary_instance);
             println!("{}", StatusOutput::inactive().to_json()?);
             Ok(1)
         }
-        Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
+        InstanceClaim::Secondary => Err(Box::new(other_error(
+            "Wardoff found an active primary instance, but its control pipe is unavailable. The primary instance may still be starting up or shutting down.".to_string(),
+        ))),
     }
 }
 
