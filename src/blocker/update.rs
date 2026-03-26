@@ -4,7 +4,7 @@ use log::{error, info, warn};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    Arc,
+    Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -31,6 +31,7 @@ const LAYER3_THREAD_NAME: &str = "wardoff-layer3-update-reboot";
 pub struct UpdateRebootBlocker {
     worker: Option<UpdateRebootWorker>,
     active_state: Arc<AtomicBool>,
+    restore_state: Arc<Mutex<RestoreState>>,
 }
 
 impl UpdateRebootBlocker {
@@ -38,6 +39,10 @@ impl UpdateRebootBlocker {
     pub fn activate(&mut self) -> Result<(), String> {
         if self.worker.is_some() {
             return Ok(());
+        }
+
+        if let Ok(mut restore_state) = self.restore_state.lock() {
+            *restore_state = RestoreState::default();
         }
 
         match is_process_elevated() {
@@ -74,10 +79,11 @@ impl UpdateRebootBlocker {
 
         let (stop_tx, stop_rx) = mpsc::channel();
         let active_state = Arc::clone(&self.active_state);
+        let restore_state = Arc::clone(&self.restore_state);
 
         match thread::Builder::new()
             .name(LAYER3_THREAD_NAME.to_string())
-            .spawn(move || run_worker(active_state, stop_rx))
+            .spawn(move || run_worker(active_state, restore_state, stop_rx))
         {
             Ok(join_handle) => {
                 self.worker = Some(UpdateRebootWorker {
@@ -94,12 +100,11 @@ impl UpdateRebootBlocker {
 
     /// Stops Layer 3 polling and restores the reboot task when this process changed it.
     pub fn deactivate(&mut self) {
+        self.begin_forced_shutdown_cleanup();
+
         let Some(mut worker) = self.worker.take() else {
             return;
         };
-
-        self.active_state.store(false, Ordering::Release);
-        let _ = worker.stop_tx.send(());
 
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
@@ -112,6 +117,17 @@ impl UpdateRebootBlocker {
                 );
             }
         }
+    }
+
+    /// Requests Layer 3 cleanup immediately without waiting for its polling thread to join.
+    pub(crate) fn begin_forced_shutdown_cleanup(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+
+        self.active_state.store(false, Ordering::Release);
+        let _ = worker.stop_tx.send(());
+        self.worker = Some(worker);
     }
 
     /// Returns whether Layer 3 is currently monitoring UpdateOrchestrator.
@@ -131,6 +147,7 @@ impl Default for UpdateRebootBlocker {
         Self {
             worker: None,
             active_state: Arc::new(AtomicBool::new(false)),
+            restore_state: Arc::new(Mutex::new(RestoreState::default())),
         }
     }
 }
@@ -183,7 +200,7 @@ impl Drop for ActiveStateGuard {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct RestoreState {
     original_state_recorded: bool,
     restore_enabled_on_exit: bool,
@@ -212,7 +229,11 @@ impl Drop for ComApartmentGuard {
     }
 }
 
-fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
+fn run_worker(
+    active_state: Arc<AtomicBool>,
+    restore_state: Arc<Mutex<RestoreState>>,
+    stop_rx: Receiver<()>,
+) {
     let _com_apartment = match ComApartmentGuard::initialize() {
         Ok(guard) => guard,
         Err(error) => {
@@ -230,9 +251,7 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
             return;
         }
     };
-    let mut restore_state = RestoreState::default();
-
-    match ensure_reboot_task_disabled(&mut restore_state) {
+    match with_restore_state(&restore_state, ensure_reboot_task_disabled) {
         Ok(true) => {
             info!(
                 "Layer 3 will re-check scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH} every 5 minutes while Block mode is active."
@@ -284,7 +303,7 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
         match stop_rx.recv_timeout(recheck_interval()) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
-                match ensure_reboot_task_disabled(&mut restore_state) {
+                match with_restore_state(&restore_state, ensure_reboot_task_disabled) {
                     Ok(true) => {}
                     Ok(false) => break,
                     Err(error) if is_access_denied_error(&error) => {
@@ -323,7 +342,7 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     }
 
     drop(active_guard);
-    restore_task_if_needed(&restore_state);
+    restore_task_if_needed(&restore_state_snapshot(&restore_state));
 
     if stopped_cleanly {
         logger::log_event(
@@ -539,6 +558,20 @@ fn restore_task_if_needed(restore_state: &RestoreState) {
             );
         }
     }
+}
+
+fn with_restore_state<T>(
+    restore_state: &Arc<Mutex<RestoreState>>,
+    action: impl FnOnce(&mut RestoreState) -> WindowsResult<T>,
+) -> WindowsResult<T> {
+    let mut guard = restore_state.lock().map_err(|_| {
+        WindowsError::new(HRESULT(0x80004005u32 as i32), "Restore state lock poisoned")
+    })?;
+    action(&mut guard)
+}
+
+fn restore_state_snapshot(restore_state: &Arc<Mutex<RestoreState>>) -> RestoreState {
+    restore_state.lock().map(|guard| *guard).unwrap_or_default()
 }
 
 fn lookup_reboot_task() -> WindowsResult<RebootTaskLookup> {

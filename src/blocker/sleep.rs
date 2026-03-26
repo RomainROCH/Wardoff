@@ -49,12 +49,11 @@ impl SleepBlocker {
 
     /// Stops the worker thread and clears the execution-state request on the same thread.
     pub fn deactivate(&mut self) {
+        self.begin_forced_shutdown_cleanup();
+
         let Some(mut worker) = self.worker.take() else {
             return;
         };
-
-        self.active_state.store(false, Ordering::Release);
-        let _ = worker.stop_tx.send(());
 
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
@@ -67,6 +66,17 @@ impl SleepBlocker {
                 );
             }
         }
+    }
+
+    /// Requests the sleep-blocking worker to clear its execution-state request and exit.
+    pub(crate) fn begin_forced_shutdown_cleanup(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+
+        self.active_state.store(false, Ordering::Release);
+        let _ = worker.stop_tx.send(());
+        self.worker = Some(worker);
     }
 
     /// Returns whether the sleep-blocking worker thread is currently active.
