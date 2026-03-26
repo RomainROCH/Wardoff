@@ -27,7 +27,8 @@ const TRAY_THREAD_NAME: &str = "wardoff-tray";
 const TRAY_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const TRAY_UNAVAILABLE_WARNING_INTERVAL: Duration = Duration::from_secs(30);
 const TRAY_THREAD_POLL_INTERVAL: Duration = Duration::from_millis(200);
-const TASKBAR_CREATED_WINDOW_CLASS_NAME: windows::core::PCWSTR = w!("WardoffTrayTaskbarCreatedWindow");
+const TASKBAR_CREATED_WINDOW_CLASS_NAME: windows::core::PCWSTR =
+    w!("WardoffTrayTaskbarCreatedWindow");
 
 static TASKBAR_CREATED_WINDOW_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 static TASKBAR_CREATED_MESSAGE_ID: OnceLock<u32> = OnceLock::new();
@@ -321,6 +322,7 @@ struct TrayThreadState {
     mode: BlockerMode,
     autostart_enabled: bool,
     controller: Option<TrayController>,
+    creation_failure_reported: bool,
     waiting_since: Option<Instant>,
     next_retry_at: Instant,
     last_warning_at: Option<Instant>,
@@ -336,15 +338,11 @@ fn run_tray_thread(
     let _taskbar_created_window = create_taskbar_created_window()
         .map(TaskbarCreatedWindow)
         .map_err(|error| {
-            log::warn!(
-                "Wardoff could not create its Explorer restart listener window: {error}"
-            );
+            log::warn!("Wardoff could not create its Explorer restart listener window: {error}");
             logger::log_event(
                 "tray_taskbar_restart_listener_unavailable",
                 EventSource::Tray,
-                format!(
-                    "Wardoff could not create its Explorer restart listener window: {error}"
-                ),
+                format!("Wardoff could not create its Explorer restart listener window: {error}"),
                 false,
             );
             error
@@ -356,6 +354,7 @@ fn run_tray_thread(
         mode: initial_mode,
         autostart_enabled: false,
         controller: None,
+        creation_failure_reported: false,
         waiting_since: None,
         next_retry_at: Instant::now(),
         last_warning_at: None,
@@ -447,15 +446,26 @@ fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> boo
     match command {
         TrayCommand::SetMode(mode) => {
             state.mode = mode;
-            if apply_current_tray_state(state).is_err() {
-                reset_tray_controller(state);
+            if let Err(error) = apply_current_tray_state(state) {
+                log_tray_update_failure_and_reset(
+                    state,
+                    format!(
+                        "Wardoff could not apply the current tray state after changing blocker mode to {mode:?}: {error}. Resetting the tray controller and retrying tray creation."
+                    ),
+                );
             }
             false
         }
         TrayCommand::SetAutostart(enabled) => {
             state.autostart_enabled = enabled;
-            if apply_current_tray_state(state).is_err() {
-                reset_tray_controller(state);
+            if let Err(error) = apply_current_tray_state(state) {
+                log_tray_update_failure_and_reset(
+                    state,
+                    format!(
+                        "Wardoff could not apply the current tray state after changing Start with Windows to {}: {error}. Resetting the tray controller and retrying tray creation.",
+                        if enabled { "enabled" } else { "disabled" }
+                    ),
+                );
             }
             false
         }
@@ -516,12 +526,12 @@ fn try_create_tray_controller(state: &mut TrayThreadState) {
                     state.controller = Some(controller);
                 }
                 Err(error) => {
-                    log_tray_creation_failure(error);
+                    log_tray_creation_failure(state, error);
                 }
             }
         }
         Err(error) => {
-            log_tray_creation_failure(error);
+            log_tray_creation_failure(state, error);
         }
     }
 }
@@ -537,6 +547,7 @@ fn apply_current_tray_state(state: &mut TrayThreadState) -> Result<(), String> {
 
 fn reset_tray_controller(state: &mut TrayThreadState) {
     state.controller.take();
+    state.creation_failure_reported = false;
     if state.waiting_since.is_none() {
         state.waiting_since = Some(Instant::now());
     }
@@ -546,8 +557,24 @@ fn reset_tray_controller(state: &mut TrayThreadState) {
     state.next_retry_at = Instant::now();
 }
 
-fn log_tray_creation_failure(error: String) {
-    let _ = error;
+fn log_tray_update_failure_and_reset(state: &mut TrayThreadState, message: String) {
+    log::warn!("{message}");
+    logger::log_event("tray_update_failed", EventSource::Tray, message, false);
+    reset_tray_controller(state);
+}
+
+fn log_tray_creation_failure(state: &mut TrayThreadState, error: String) {
+    if state.creation_failure_reported {
+        return;
+    }
+
+    let message = format!(
+        "Wardoff could not create or refresh its tray icon: {error}. It will keep retrying every {} seconds until Explorer accepts the tray icon.",
+        TRAY_RETRY_INTERVAL.as_secs()
+    );
+    log::warn!("{message}");
+    logger::log_event("tray_creation_failed", EventSource::Tray, message, false);
+    state.creation_failure_reported = true;
 }
 
 fn create_taskbar_created_window() -> WindowsResult<HWND> {
