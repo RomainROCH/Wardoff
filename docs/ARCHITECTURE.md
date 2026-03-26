@@ -2,6 +2,8 @@
 
 This document explains how the current Wardoff runtime is organized so a new developer can understand where startup, shutdown protection, tray behavior, logging, and IPC live.
 
+For current shipped-status messaging and roadmap priority, start with `README.md` and `PLAN.md`; this file is the code-structure companion.
+
 ## High-level overview
 
 Wardoff is a Windows-native Rust application built around one primary process that owns:

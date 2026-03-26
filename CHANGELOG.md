@@ -4,8 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-- Initial project documentation scaffold.
+### Changed
+- Refreshed the documentation truth-source and read order so new contributors and agents can identify the current MVP status, documentation entrypoints, and likely next work from the repository alone.
 
 ## [0.1.0] - 2026-03-22
 

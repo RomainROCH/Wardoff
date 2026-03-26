@@ -2,6 +2,26 @@
 
 This repository is an active Windows-only Rust application. `PLAN.md` remains the source of truth for product scope and MVP boundaries, but the repo now also contains a checked-in Cargo project, source tree, and a PowerShell smoke test script.
 
+## Read this first
+
+When you start work in this repo, read in this order:
+
+1. `README.md` for the current MVP snapshot
+2. `PLAN.md` for current boundaries and prioritized next steps
+3. `docs/ARCHITECTURE.md` for the code map
+4. `docs/WINDOWS_SHUTDOWN_LAYERS.md` for detailed shutdown-layer behavior, especially Layer 2 ETW/local-shutdown nuance and limits
+5. `CONTRIBUTING.md` for workflow and documentation expectations
+6. this file for agent-specific guardrails
+
+## How to answer "what's next?"
+
+If a user asks only **"what's next?"**, answer from repo docs instead of inventing a roadmap:
+
+1. summarize the shipped MVP from `README.md`
+2. state that the immediate priority is MVP hardening, validation, and documentation clarity from `PLAN.md`
+3. mention later-phase backlog items only as backlog, not as shipped or currently committed work
+4. stay conservative about local `shutdown.exe` handling and never promise that Wardoff stops `shutdown /t 0 /f`
+
 ## Repository status and commands
 
 - The repo contains `Cargo.toml`, `src\`, and `tests\smoke_test.ps1`.
@@ -28,6 +48,7 @@ This repository is an active Windows-only Rust application. `PLAN.md` remains th
   2. local `shutdown.exe` protection is not part of the current documented MVP surface
   3. Windows Update reboot protection by disabling the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` and re-checking it periodically
   4. remote shutdown protection via repeated `AbortSystemShutdown(NULL)` polling
+- For detailed layer-by-layer behavior and the cautious wording around ETW/local shutdown handling, read `docs/WINDOWS_SHUTDOWN_LAYERS.md`.
 - Sleep/hibernate/display blocking is a separate toggle and is expected to use `SetThreadExecutionState(...)`.
 - Autostart is handled via Task Scheduler rather than the `Run` registry key so elevated scenarios can be handled correctly.
 
@@ -51,7 +72,7 @@ This repository is an active Windows-only Rust application. `PLAN.md` remains th
 
 ## Project-specific conventions from `PLAN.md`
 
-- Re-read `PLAN.md` before making major structural decisions. It currently stands in for a README, architecture doc, and roadmap.
+- Re-read `PLAN.md` before making major structural decisions. Use it as the roadmap and scope boundary document, while `README.md` stays the quickest current-state summary.
 - Preserve the distinction between MVP and later phases:
   - MVP is the safe, official-API release: standard shutdown blocking, UpdateOrchestrator handling, remote abort loop, tray basics, CLI basics, Task Scheduler autostart, sleep/hibernate/display blocking, and simple file logging
   - aggressive IFEO mode, Windows Event Log, profiles, timer, and toast notifications belong to later phases unless the plan is updated
@@ -61,9 +82,9 @@ This repository is an active Windows-only Rust application. `PLAN.md` remains th
 - Do not hide platform limits. The plan is explicit that `shutdown /t 0 /f` cannot be blocked from user space; future code and docs should log that case honestly instead of claiming success.
 - Keep the project scriptable and sysadmin-friendly:
   - machine-readable CLI output for status
-  - log and event data that can be queried from PowerShell or SIEM tooling
+  - structured JSONL log data that can be queried from PowerShell or other tooling
   - Task Scheduler usage over ad-hoc startup hooks
-- UI semantics in the plan matter: Block state is visually red, Allow is green, and profiles are named `Gaming`, `Work`, `Update Shield`, and `Custom`.
+- UI semantics that matter in the current MVP: Block state is visually red and Allow is green.
 
 ## Scope guardrails
 
