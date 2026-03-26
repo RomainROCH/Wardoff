@@ -47,6 +47,8 @@ Run the repo smoke test with:
 powershell -ExecutionPolicy Bypass -File tests\smoke_test.ps1
 ```
 
+For the current MVP validation split between automated coverage, manual checks, admin-only checks, and VM-only checks, see [`docs/MVP_VALIDATION_MATRIX.md`](docs/MVP_VALIDATION_MATRIX.md).
+
 Use a disposable VM for disruptive shutdown, reboot, sleep, hibernate, or Task Scheduler validation.
 
 ## Current implementation boundaries
