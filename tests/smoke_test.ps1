@@ -179,6 +179,50 @@ function Get-RepoWardoffProcesses {
     )
 }
 
+function Wait-ForBinaryUnlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+        [int] $Attempts = 5,
+        [int] $DelayMilliseconds = 400
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $stream = $null
+
+        try {
+            $stream = [System.IO.File]::Open(
+                $Path,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+            return
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -eq $Attempts) {
+                throw "Timed out waiting for '$Path' to become readable and unlocked after Wardoff cleanup. A stale wardoff.exe process or another handle may still be holding the binary. Stop any remaining Wardoff processes and retry the smoke test. Last error: $($_.Exception.Message)"
+            }
+        }
+        catch [System.UnauthorizedAccessException] {
+            if ($attempt -eq $Attempts) {
+                throw "Timed out waiting for '$Path' to become readable and unlocked after Wardoff cleanup. A stale wardoff.exe process or another handle may still be holding the binary. Stop any remaining Wardoff processes and retry the smoke test. Last error: $($_.Exception.Message)"
+            }
+        }
+        finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+        }
+
+        Start-Sleep -Milliseconds $DelayMilliseconds
+    }
+}
+
 function Stop-RepoWardoffProcesses {
     $processes = @(Get-RepoWardoffProcesses)
 
@@ -208,6 +252,10 @@ function Stop-RepoWardoffProcesses {
         }
         catch {
         }
+    }
+
+    if (Test-Path $binaryPath) {
+        Wait-ForBinaryUnlock -Path $binaryPath
     }
 }
 
