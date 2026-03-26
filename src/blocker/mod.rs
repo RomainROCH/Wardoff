@@ -174,6 +174,14 @@ impl BlockerCoordinator {
         self.deactivate()
     }
 
+    /// Starts the non-blocking cleanup path used when Windows forces session shutdown.
+    pub fn forced_shutdown_cleanup(&mut self) {
+        self.update_reboot_blocker.begin_forced_shutdown_cleanup();
+        self.sleep_blocker.begin_forced_shutdown_cleanup();
+        self.remote_shutdown_blocker.begin_forced_shutdown_cleanup();
+        self.mode = BlockerMode::Allow;
+    }
+
     fn activate_block_mode(&mut self) -> Result<(), String> {
         let activation_result = (|| {
             self.local_shutdown_blocker.activate()?;
