@@ -1,95 +1,90 @@
 # IFEO Warning
 
-> **LATER-PHASE DESIGN NOTE — NOT IMPLEMENTED IN CURRENT BUILDS**
+> **PLANNED — NOT YET IMPLEMENTED**
 
-This document describes a future aggressive mode for Wardoff. It is not enabled, shipped, or implemented in the current repository.
+This document describes a possible future aggressive mode for Wardoff. It is not part of the current supported implementation.
 
 Current reality:
 
-- Wardoff currently ships only the safe MVP layers
-- Wardoff currently implements only the standard Layer 2 local `shutdown.exe` path: ETW process-start detection plus a best-effort `AbortSystemShutdownW(None)` attempt
-- Wardoff therefore does **not** block local `shutdown /t 0 /f` in the current shipped implementation
+- Wardoff's documented MVP does **not** include IFEO
+- Wardoff does **not** currently ship IFEO-based `shutdown.exe` interception as a user-facing feature
+- Wardoff still does **not** promise to block local `shutdown /t 0 /f`
 
 ## What IFEO is
 
-Image File Execution Options (IFEO) is a Windows registry mechanism that can change how a specific executable starts. The most relevant value is `Debugger`, which tells Windows to launch another executable instead of starting the original process directly.
+Image File Execution Options (IFEO) is a Windows registry feature that can alter how a named executable starts. The most relevant mechanism here is the `Debugger` value, which can redirect process launch through another executable.
 
-For the local `shutdown.exe` path, the relevant registry location is:
+For `shutdown.exe`, the registry path would be:
 
 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shutdown.exe`
 
-Conceptual example:
+Conceptually:
 
 ```text
 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shutdown.exe
   Debugger = "C:\Program Files\Wardoff\wardoff-proxy.exe"
 ```
 
-With that configuration, Windows starts the proxy first. The proxy can then inspect the arguments, log the event, decide whether to block it, and optionally forward the original command.
+That approach would let a proxy inspect or block `shutdown.exe` before the original process fully runs.
 
-## Why Wardoff would consider it
+## Why the project has considered it
 
-In the planned architecture, ETW plus `AbortSystemShutdown(...)` is useful when there is still a timeout window. It is not fast enough for a local `shutdown /t 0 /f` once `shutdown.exe` is already running.
+Wardoff's hardest local-shutdown case is the fast forced path, especially:
 
-That is why IFEO is being considered:
+```text
+shutdown /t 0 /f
+```
 
-- for the specific local `shutdown.exe` path, it is the only planned user-space interception point before the executable actually starts
-- it can stop the launch before Windows enters the fast forced-shutdown path
-- it gives the project a way to handle the exact command line that ordinary reactive techniques cannot catch in time
+Reactive techniques run into a race there. IFEO is attractive because it moves the interception point earlier, before `shutdown.exe` proceeds normally.
 
-Important limitation:
+## Why it is not in the MVP
 
-- IFEO is not a universal power-control solution
-- it only applies to the `shutdown.exe` executable path
-- it does not replace deeper kernel-level interception
+IFEO is intentionally excluded from the current safe MVP because it is:
 
-## Why it is controversial
+- aggressive
+- admin-only
+- security-sensitive
+- easy to get wrong if cleanup is incomplete
 
-IFEO is powerful, but it is also widely associated with persistence and defense-evasion techniques.
+It also tends to attract scrutiny from:
 
-Specific concerns:
+- EDR products
+- antivirus tooling
+- enterprise administrators
+- security reviewers
 
-- MITRE ATT&CK classifies this area under **T1546.012 — Image File Execution Options Injection**
-- many EDR and antivirus products monitor or alert on IFEO changes
-- administrators may treat unexpected IFEO entries as suspicious until proven otherwise
-- bad cleanup can leave the target executable permanently redirected
-- enterprise policy may forbid this class of behavior entirely
+## Security and operational concerns
 
-In other words, IFEO is legitimate Windows functionality, but it lives in a security-sensitive part of the platform.
+Specific concerns include:
 
-## Planned safeguards
+- IFEO is commonly associated with persistence and defense-evasion tradecraft
+- a stale `Debugger` value can break the normal `shutdown.exe` path
+- cleanup must restore prior state correctly, not just delete blindly
+- enablement must be explicit and reversible
 
-If Wardoff ever adds this mode, it should be handled with strict boundaries:
+## Requirements for any future implementation
 
-- opt-in only
-- clearly marked as aggressive
-- administrator rights required
-- explicit warning in the UI and CLI before enablement
-- structured logging when the setting is enabled, disabled, or used
-- clean removal on disable or uninstall
-- restoration of any previous legitimate IFEO state instead of blind deletion
+If Wardoff ever ships this feature, it should require all of the following:
 
-The default experience should remain the safe, official-API path. IFEO should never be silently enabled.
+- explicit opt-in
+- very clear warning text
+- elevation
+- structured logging for enable, disable, and use
+- robust cleanup on disable and uninstall
+- restoration of any previous legitimate IFEO state
 
-## Cleanup expectations
+## Relationship to current local-shutdown behavior
 
-Proper cleanup is mandatory for this feature to be acceptable.
+The repository may contain ETW-based local-shutdown code, but that is separate from this document.
 
-At minimum, the future implementation should:
+This file is only about the later-phase aggressive option:
 
-- remove the `Debugger` value it created when the mode is turned off
-- restore any pre-existing value if Wardoff replaced one
-- log cleanup success or failure
-- fail loudly if elevation is missing instead of pretending the cleanup happened
+- ETW local interception is not the same as IFEO
+- IFEO remains planned
+- IFEO is not implemented today
 
-This is one reason the feature is deferred: if the project cannot guarantee safe cleanup, it should not ship the mode at all.
+## Bottom line
 
-## Position in the roadmap
+Wardoff should only ship IFEO if it can do so transparently, reversibly, and with explicit user consent.
 
-According to the current plan:
-
-- IFEO is **not** part of the safe MVP
-- it belongs to a later phase as an aggressive, opt-in mode
-- it exists specifically because `shutdown /t 0 /f` is otherwise beyond what the current and planned safe user-space layers can stop reliably
-
-That roadmap placement is intentional. The project prefers transparent limitations over pretending that a risky feature is harmless.
+Until then, this document is design guidance only.
