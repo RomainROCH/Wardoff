@@ -119,10 +119,10 @@ wardoff --autostart off
 wardoff --version
 ```
 
-- `wardoff` starts the primary runtime in **Block** mode with the tray visible
-- `wardoff --block` starts or switches the runtime into Block mode without showing a tray icon
-- `wardoff --block --hide` is accepted and resolves to hidden Block-mode startup
-- `wardoff --hide` starts Block mode with the tray icon hidden
+- `wardoff` starts a new primary runtime in **Block** mode with the tray visible when no primary instance is already running
+- `wardoff --block` switches an existing runtime into Block mode, or starts a new headless Block-mode primary if none is running
+- `wardoff --block --hide` is accepted and behaves like hidden Block-mode startup when it launches a new primary runtime
+- `wardoff --hide` switches an existing runtime into Block mode, or starts a new Block-mode primary with the tray icon hidden
 - `wardoff --allow` switches the running instance to Allow mode, or starts a visible Allow-mode runtime if needed
 - `wardoff --status` prints compact JSON for scripts
 - `wardoff --log` prints recent structured log entries
@@ -146,7 +146,8 @@ If no primary runtime is running:
 
 Wardoff is explicit about elevation:
 
-- launching the built release executable normally causes Windows to request elevation, because the release binary is marked to run as administrator so the default startup path can enable admin-only protections
+- the release manifest now stays at `asInvoker`, so explicit CLI invocations can start in a normal non-elevated console
+- if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
 - Layer 3 UpdateOrchestrator protection requires elevation
 - Layer 4 remote shutdown abort polling depends on the shutdown-abort privilege and is intended to run elevated
 - `--autostart on|off` requires elevation because it changes a scheduled task
