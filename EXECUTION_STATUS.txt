@@ -1,11 +1,11 @@
 WHERE WE ARE NOW
-Recent Group B hardening slices are merged to dev, including Allow-mode deactivation hardening, autostart tray-sync honesty, and secondary handoff recovery.
-The docs-only validation handoff slice is prepared on docs/tray-handoff-validation and is waiting for final review before commit and merge.
+Recent hardening and documentation slices are merged to dev, including Allow-mode deactivation hardening, autostart tray-sync honesty, secondary handoff recovery, and the tray/handoff validation guidance expanded in e39ea3a.
+There is no pending docs-only validation handoff slice waiting for review, commit, or merge.
 
 WHAT JUST FINISHED
-Updated README.md, docs\MVP_VALIDATION_MATRIX.md, and CHANGELOG.md so the current validation path is explicit and conservative.
-Refreshed EXECUTION_STATUS.txt for the post-doc-slice state without overstating local shutdown interception behavior.
+dev already contains the refreshed README.md, docs\MVP_VALIDATION_MATRIX.md, CHANGELOG.md, and related conservative validation guidance updates.
+EXECUTION_STATUS.txt is now aligned with that post-merge state instead of pointing at docs/tray-handoff-validation as unfinished work.
 
 WHAT COMES NEXT
-Run the remaining elevated and manual checks called out in docs\MVP_VALIDATION_MATRIX.md, especially tray and Explorer-restart verification plus elevated autostart honesty coverage.
-Then commit this docs slice, merge it back into dev, and push dev.
+Run the remaining manual and elevated verification passes listed in docs\MVP_VALIDATION_MATRIX.md, especially tray, Explorer-restart, autostart, and other admin-sensitive checks that require a real Windows environment.
+Only queue follow-up docs or code work if those verification passes uncover a concrete gap, regression, or wording issue.
