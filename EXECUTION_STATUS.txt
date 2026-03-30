@@ -1,11 +1,11 @@
 WHERE WE ARE NOW
-The autostart tray-honesty slice is finished, validated, and merged to dev.
-Group B remains focused on the next low-risk tray/IPC or operator-clarity hardening follow-up.
+The secondary-handoff recovery slice is finished, validated, and merged to dev.
+Group B Todo 3 now has the runtime/autostart secondary handoff fallback in place.
 
 WHAT JUST FINISHED
-Committed and fast-forward merged the autostart tray sync honesty fix.
+Recovered the runtime and autostart secondary handoff race by reclaiming primary ownership when the control pipe is unavailable after mutex release.
 Validated with cargo check, cargo test, cargo build --release, and tests\smoke_test.ps1.
 
 WHAT COMES NEXT
-Take the next low-risk Group B tray/IPC recovery or operator-clarity slice.
-Keep the remaining elevated/manual-only checks queued for the right Windows session.
+Finish the remaining manual tray and Explorer-restart verification in the right Windows session.
+Then take the next operator-clarity/docs follow-up that those checks still require.

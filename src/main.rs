@@ -229,21 +229,13 @@ fn handle_runtime_request(
 
     match instance_claim {
         InstanceClaim::Primary(primary_instance) => {
-            let primary_instance = match action {
-                RequestedAction::Default => {
-                    match prepare_default_launch(primary_instance, internal_elevated_relaunch)? {
-                        DefaultLaunchDisposition::Bootstrap(primary_instance) => primary_instance,
-                        DefaultLaunchDisposition::Exit(exit_code) => return Ok(exit_code),
-                    }
-                }
-                _ => primary_instance,
-            };
-
-            let application = bootstrap(primary_instance, runtime_options_for(action))?;
-            run(application)?;
-            Ok(0)
+            handle_primary_runtime_request(action, internal_elevated_relaunch, primary_instance)
         }
-        InstanceClaim::Secondary => forward_request_to_primary(ipc_request_for(action)),
+        InstanceClaim::Secondary => {
+            forward_request_to_primary(ipc_request_for(action), |primary_instance| {
+                handle_primary_runtime_request(action, internal_elevated_relaunch, primary_instance)
+            })
+        }
     }
 }
 
@@ -270,7 +262,7 @@ fn handle_unavailable_status_request() -> Result<i32, Box<dyn Error>> {
             Ok(1)
         }
         InstanceClaim::Secondary => Err(Box::new(other_error(
-            "Wardoff found an active primary instance, but its control pipe is unavailable. The primary instance may still be starting up or shutting down.".to_string(),
+            active_primary_pipe_unavailable_message(),
         ))),
     }
 }
@@ -286,31 +278,58 @@ fn handle_log_request(tail: usize) -> Result<i32, Box<dyn Error>> {
 fn handle_autostart_request(enabled: bool) -> Result<i32, Box<dyn Error>> {
     match claim_primary_instance().map_err(other_error)? {
         InstanceClaim::Primary(primary_instance) => {
-            drop(primary_instance);
-
-            let mut structured_logging_started = false;
-            match logger::initialize_structured_logging() {
-                Ok(()) => structured_logging_started = true,
-                Err(error) => {
-                    error!(
-                        "Wardoff could not initialize structured logging for --autostart: {error}"
-                    );
-                }
-            }
-
-            let result = autostart::set_enabled(enabled)
-                .map_err(other_error)
-                .map(|_| 0);
-            if structured_logging_started {
-                logger::shutdown_structured_logging();
-            }
-
-            Ok(result?)
+            handle_local_autostart_request(enabled, primary_instance)
         }
         InstanceClaim::Secondary => {
-            forward_request_to_primary(IpcRequest::SetAutostart { enabled })
+            forward_request_to_primary(IpcRequest::SetAutostart { enabled }, |primary_instance| {
+                handle_local_autostart_request(enabled, primary_instance)
+            })
         }
     }
+}
+
+fn handle_primary_runtime_request(
+    action: RequestedAction,
+    internal_elevated_relaunch: bool,
+    primary_instance: InstanceGuard,
+) -> Result<i32, Box<dyn Error>> {
+    let primary_instance = match action {
+        RequestedAction::Default => {
+            match prepare_default_launch(primary_instance, internal_elevated_relaunch)? {
+                DefaultLaunchDisposition::Bootstrap(primary_instance) => primary_instance,
+                DefaultLaunchDisposition::Exit(exit_code) => return Ok(exit_code),
+            }
+        }
+        _ => primary_instance,
+    };
+
+    let application = bootstrap(primary_instance, runtime_options_for(action))?;
+    run(application)?;
+    Ok(0)
+}
+
+fn handle_local_autostart_request(
+    enabled: bool,
+    primary_instance: InstanceGuard,
+) -> Result<i32, Box<dyn Error>> {
+    drop(primary_instance);
+
+    let mut structured_logging_started = false;
+    match logger::initialize_structured_logging() {
+        Ok(()) => structured_logging_started = true,
+        Err(error) => {
+            error!("Wardoff could not initialize structured logging for --autostart: {error}");
+        }
+    }
+
+    let result = autostart::set_enabled(enabled)
+        .map_err(other_error)
+        .map(|_| 0);
+    if structured_logging_started {
+        logger::shutdown_structured_logging();
+    }
+
+    Ok(result?)
 }
 
 enum DefaultLaunchDisposition {
@@ -354,16 +373,29 @@ fn prepare_default_launch(
     }
 }
 
-fn forward_request_to_primary(request: IpcRequest) -> Result<i32, Box<dyn Error>> {
+fn active_primary_pipe_unavailable_message() -> String {
+    "Wardoff found an active primary instance, but its control pipe is unavailable. The primary instance may still be starting up or shutting down.".to_string()
+}
+
+fn forward_request_to_primary<F>(
+    request: IpcRequest,
+    local_fallback: F,
+) -> Result<i32, Box<dyn Error>>
+where
+    F: FnOnce(InstanceGuard) -> Result<i32, Box<dyn Error>>,
+{
     match send_request(&request) {
         Ok(IpcResponse::Ok) => Ok(0),
         Ok(IpcResponse::Error { message }) => Err(Box::new(other_error(message))),
         Ok(IpcResponse::Status { .. }) => Err(Box::new(other_error(
             "Wardoff received a status payload for a control command.".to_string(),
         ))),
-        Err(ClientError::Unavailable) => Err(Box::new(other_error(
-            "Wardoff found another instance, but its control pipe was unavailable.".to_string(),
-        ))),
+        Err(ClientError::Unavailable) => match claim_primary_instance().map_err(other_error)? {
+            InstanceClaim::Primary(primary_instance) => local_fallback(primary_instance),
+            InstanceClaim::Secondary => Err(Box::new(other_error(
+                active_primary_pipe_unavailable_message(),
+            ))),
+        },
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
     }
 }
