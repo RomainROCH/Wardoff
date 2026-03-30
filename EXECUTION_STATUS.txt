@@ -1,0 +1,11 @@
+WHERE WE ARE NOW
+The Allow-mode deactivation hardening slice is finished, validated, and now part of dev.
+Group B continues with low-risk tray/IPC reliability and operator-clarity hardening.
+
+WHAT JUST FINISHED
+Completed the Todo 2 Allow-mode deactivation fix so Allow-mode cleanup still deactivates non-Layer-1 blockers if Layer 1 errors.
+Validated it with cargo check, cargo test, cargo build --release, and tests\smoke_test.ps1.
+
+WHAT COMES NEXT
+Take the next low-risk tray/IPC reliability or operator-clarity slice.
+Continue Group B tray/IPC recovery verification and related operator-clarity follow-ups.
