@@ -301,9 +301,11 @@ Release-elevation behavior is controlled by:
 Current design:
 
 - in release builds on Windows, `build.rs` embeds the application manifest
-- `wardoff.manifest` requests `requireAdministrator`
+- `wardoff.manifest` requests `asInvoker`, so Windows does not force elevation before CLI argument parsing
+- `src/main.rs` calls `prepare_default_launch(...)` when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
+- explicit CLI commands such as `--help`, `--version`, and `--status` stay non-elevated unless the command itself later checks for administrator rights
 
-That design supports the default runtime path, where admin-only protections such as Update Orchestrator task control are expected to be available.
+That design preserves scriptable non-elevated CLI usage while still letting the default runtime path request elevation so admin-only protections such as Update Orchestrator task control can be available.
 
 The code still handles non-elevated scenarios explicitly instead of pretending they succeeded.
 
