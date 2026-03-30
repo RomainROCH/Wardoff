@@ -202,14 +202,17 @@ impl BlockerCoordinator {
     }
 
     fn activate_allow_mode(&mut self) -> Result<(), String> {
-        self.shutdown_blocker
-            .deactivate()
-            .map_err(|error| format!("Layer 1 could not enter Allow mode: {error}"))?;
-        self.sleep_blocker.deactivate();
-        self.remote_shutdown_blocker.deactivate();
-        self.update_reboot_blocker.deactivate();
-        self.local_shutdown_blocker.deactivate();
-        Ok(())
+        deactivate_allow_mode_layers(
+            || {
+                self.shutdown_blocker
+                    .deactivate()
+                    .map_err(|error| error.to_string())
+            },
+            || self.sleep_blocker.deactivate(),
+            || self.remote_shutdown_blocker.deactivate(),
+            || self.update_reboot_blocker.deactivate(),
+            || self.local_shutdown_blocker.deactivate(),
+        )
     }
 
     fn rollback_failed_block_activation(&mut self, error: String) -> String {
@@ -298,13 +301,47 @@ fn mode_label(mode: BlockerMode) -> &'static str {
     }
 }
 
+fn deactivate_allow_mode_layers<
+    ShutdownDeactivate,
+    SleepDeactivate,
+    RemoteDeactivate,
+    UpdateDeactivate,
+    LocalDeactivate,
+>(
+    shutdown_deactivate: ShutdownDeactivate,
+    sleep_deactivate: SleepDeactivate,
+    remote_deactivate: RemoteDeactivate,
+    update_deactivate: UpdateDeactivate,
+    local_deactivate: LocalDeactivate,
+) -> Result<(), String>
+where
+    ShutdownDeactivate: FnOnce() -> Result<(), String>,
+    SleepDeactivate: FnOnce(),
+    RemoteDeactivate: FnOnce(),
+    UpdateDeactivate: FnOnce(),
+    LocalDeactivate: FnOnce(),
+{
+    let shutdown_result = shutdown_deactivate();
+    sleep_deactivate();
+    remote_deactivate();
+    update_deactivate();
+    local_deactivate();
+
+    shutdown_result.map_err(|error| {
+        format!(
+            "Wardoff could not fully switch to Allow mode because Layer 1 could not deactivate: {error}"
+        )
+    })
+}
+
 fn record_blocked_event() {
     BLOCKED_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::LayerStatus;
+    use super::{deactivate_allow_mode_layers, LayerStatus};
+    use std::cell::Cell;
 
     #[test]
     fn layer_status_serializes_the_layer2_flag() {
@@ -318,5 +355,33 @@ mod tests {
         .expect("LayerStatus should serialize");
 
         assert!(json.contains("\"local_shutdown\":false"));
+    }
+
+    #[test]
+    fn allow_mode_cleanup_continues_after_layer1_error() {
+        let sleep_deactivated = Cell::new(false);
+        let remote_deactivated = Cell::new(false);
+        let update_deactivated = Cell::new(false);
+        let local_deactivated = Cell::new(false);
+
+        let result = deactivate_allow_mode_layers(
+            || Err("layer 1 destroy failed".to_string()),
+            || sleep_deactivated.set(true),
+            || remote_deactivated.set(true),
+            || update_deactivated.set(true),
+            || local_deactivated.set(true),
+        );
+
+        assert_eq!(
+            result,
+            Err(
+                "Wardoff could not fully switch to Allow mode because Layer 1 could not deactivate: layer 1 destroy failed"
+                    .to_string()
+            )
+        );
+        assert!(sleep_deactivated.get());
+        assert!(remote_deactivated.get());
+        assert!(update_deactivated.get());
+        assert!(local_deactivated.get());
     }
 }
