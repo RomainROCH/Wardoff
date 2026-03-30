@@ -1,11 +1,11 @@
 WHERE WE ARE NOW
-The secondary-handoff recovery slice is finished, validated, and merged to dev.
-Group B Todo 3 now has the runtime/autostart secondary handoff fallback in place.
+Recent Group B hardening slices are merged to dev, including Allow-mode deactivation hardening, autostart tray-sync honesty, and secondary handoff recovery.
+The docs-only validation handoff slice is prepared on docs/tray-handoff-validation and is waiting for final review before commit and merge.
 
 WHAT JUST FINISHED
-Recovered the runtime and autostart secondary handoff race by reclaiming primary ownership when the control pipe is unavailable after mutex release.
-Validated with cargo check, cargo test, cargo build --release, and tests\smoke_test.ps1.
+Updated README.md, docs\MVP_VALIDATION_MATRIX.md, and CHANGELOG.md so the current validation path is explicit and conservative.
+Refreshed EXECUTION_STATUS.txt for the post-doc-slice state without overstating local shutdown interception behavior.
 
 WHAT COMES NEXT
-Finish the remaining manual tray and Explorer-restart verification in the right Windows session.
-Then take the next operator-clarity/docs follow-up that those checks still require.
+Run the remaining elevated and manual checks called out in docs\MVP_VALIDATION_MATRIX.md, especially tray and Explorer-restart verification plus elevated autostart honesty coverage.
+Then commit this docs slice, merge it back into dev, and push dev.

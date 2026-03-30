@@ -62,11 +62,14 @@ Use a normal desktop session for these checks. They should not require actually 
 | --- | --- | --- |
 | Tray presence | Launch `wardoff` and confirm exactly one tray icon appears | Runtime is visible and does not create duplicate tray icons |
 | Tray state | Toggle Block and Allow from the tray menu | State changes cleanly without crashing or leaving stale UI |
+| Tray and CLI sync | With Wardoff running, alternate `wardoff --allow`, `wardoff --block`, and tray Block/Allow toggles while checking `wardoff --status` after each change | Tray state, status JSON, and the active mode stay aligned with the latest request without leaving stale Block-mode behavior behind |
 | CLI to primary runtime | With Wardoff already running, run `wardoff --status`, `wardoff --allow`, and `wardoff --block` from a second console | Secondary commands control the existing runtime instead of creating a second one |
 | Single-instance behavior | Start Wardoff more than once from the repo build | Only one primary runtime remains active |
 | IPC | Change state from CLI while the tray instance is running | The running instance reflects the requested state change |
+| Secondary handoff recovery | During a controlled primary restart or handoff window, run a secondary CLI command from another console | Wardoff remains controllable and settles back to a single primary runtime instead of staying unavailable or leaving two active runtimes |
 | Logging | Run `wardoff --log --tail 10` after state changes | Recent structured log entries are readable from the CLI |
 | Tray menu surface | Open the tray menu without invoking disruptive actions | Menu shows Block, Allow, Start with Windows, Shutdown, Reboot, Sleep, Hibernate, and Quit |
+| Explorer restart / tray recreation | Restart Explorer while Wardoff keeps running, then wait for the shell to return | The tray icon is recreated once Explorer returns, matches the current state, and still opens the expected menu |
 | Exit behavior | Quit from the tray after testing | Tray icon disappears and the runtime exits cleanly |
 
 ## Admin-only checks
@@ -80,6 +83,7 @@ Run these in an elevated session when you want manual confidence beyond the auto
 | Update task access | Run `schtasks /query /tn "Microsoft\Windows\UpdateOrchestrator\Reboot"` | Task query succeeds |
 | Autostart on | Run `wardoff --autostart on`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task exists |
 | Autostart off | Run `wardoff --autostart off`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task is removed |
+| Autostart tray/menu honesty | In an elevated session, change autostart with `wardoff --autostart on|off` or the tray `Start with Windows` checkbox, then reopen the tray menu and confirm with `schtasks /query /tn "Wardoff"` | The tray checkbox reflects the real scheduled-task state after the change and does not keep a stale checked or unchecked state |
 | Honest non-admin behavior | Retry an admin-only command from a non-elevated console | Wardoff reports the requirement instead of pretending success |
 
 ## Disruptive manual checks for a disposable VM
@@ -101,4 +105,5 @@ Do these only in a disposable VM or similarly safe environment.
 - [ ] Manual non-disruptive checks completed
 - [ ] Admin-only checks completed or explicitly deferred
 - [ ] Disruptive VM-only checks completed or explicitly deferred
+- [ ] Tray sync, Explorer restart, handoff, and autostart tray/menu honesty checks completed or explicitly deferred
 - [ ] Docs and PR wording stay within the current MVP and do not overstate local shutdown handling
