@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - Refreshed the documentation truth-source and read order so new contributors and agents can identify the current MVP status, documentation entrypoints, and likely next work from the repository alone.
+- Hardened Allow-mode deactivation so switching to Allow clears Block-mode behavior more cleanly.
+- Tightened autostart tray-sync honesty so elevated task changes are reflected accurately in the tray menu state.
+- Improved secondary handoff recovery when a follower reaches Wardoff during a primary restart or handoff window.
+- Expanded validation guidance for tray sync, Explorer restart, secondary handoff, and admin-only autostart scenarios.
 
 ## [0.1.0] - 2026-03-22
 
