@@ -739,11 +739,18 @@ impl Application {
     }
 
     fn set_autostart_enabled(&mut self, enabled: bool, source: EventSource) -> Result<(), String> {
-        let previous_state = autostart::is_enabled().unwrap_or(false);
+        let previous_state = autostart::is_enabled().ok();
 
         match autostart::set_enabled(enabled) {
             Ok(()) => {
-                self.sync_tray_autostart(enabled);
+                self.sync_tray_autostart_with_logging(
+                    enabled,
+                    source,
+                    format!(
+                        "Wardoff turned Start with Windows {} but could not update the tray checkbox",
+                        on_off_label(enabled)
+                    ),
+                );
                 logger::log_event(
                     "autostart_changed",
                     source,
@@ -756,9 +763,22 @@ impl Application {
                 Ok(())
             }
             Err(error) => {
-                match autostart::is_enabled() {
-                    Ok(actual_state) => self.sync_tray_autostart(actual_state),
-                    Err(_) => self.sync_tray_autostart(previous_state),
+                match resolved_autostart_state_for_tray(previous_state, autostart::is_enabled()) {
+                    Ok(restored_state) => self.sync_tray_autostart_with_logging(
+                        restored_state,
+                        source,
+                        format!(
+                            "Wardoff could not restore the tray checkbox to Start with Windows {} after a failed scheduled-task update",
+                            on_off_label(restored_state)
+                        ),
+                    ),
+                    Err(read_error) => self.log_autostart_tray_sync_failure(
+                        source,
+                        format!(
+                            "Wardoff could not restore the tray checkbox after failing to turn Start with Windows {} because the scheduled task state could not be read before or after the change attempt: {read_error}",
+                            on_off_label(enabled)
+                        ),
+                    ),
                 }
 
                 let error_message = format!(
@@ -780,9 +800,21 @@ impl Application {
 
     fn refresh_autostart_tray_state(&mut self) {
         match autostart::is_enabled() {
-            Ok(enabled) => self.sync_tray_autostart(enabled),
+            Ok(enabled) => self.sync_tray_autostart_with_logging(
+                enabled,
+                EventSource::Application,
+                format!(
+                    "Wardoff could not update the tray checkbox while refreshing Start with Windows {}",
+                    on_off_label(enabled)
+                ),
+            ),
             Err(message) => {
-                self.sync_tray_autostart(false);
+                self.sync_tray_autostart_with_logging(
+                    false,
+                    EventSource::Application,
+                    "Wardoff could not update the tray checkbox while falling back to Start with Windows off during initialization"
+                        .to_string(),
+                );
                 warn!("Wardoff could not query its Start with Windows state: {message}");
                 logger::log_event(
                     "autostart_state_read",
@@ -796,10 +828,27 @@ impl Application {
         }
     }
 
-    fn sync_tray_autostart(&self, enabled: bool) {
-        if let Some(tray_service) = self.tray_service.as_ref() {
-            let _ = tray_service.set_autostart_enabled(enabled);
+    fn sync_tray_autostart(&self, enabled: bool) -> Result<(), String> {
+        match self.tray_service.as_ref() {
+            Some(tray_service) => tray_service.set_autostart_enabled(enabled),
+            None => Ok(()),
         }
+    }
+
+    fn sync_tray_autostart_with_logging(
+        &self,
+        enabled: bool,
+        source: EventSource,
+        context: String,
+    ) {
+        if let Err(tray_error) = self.sync_tray_autostart(enabled) {
+            self.log_autostart_tray_sync_failure(source, format!("{context}: {tray_error}"));
+        }
+    }
+
+    fn log_autostart_tray_sync_failure(&self, source: EventSource, message: String) {
+        warn!("{message}");
+        logger::log_event("autostart_tray_sync", source, message, false);
     }
 
     fn reject_pending_ipc_requests(&mut self) {
@@ -913,5 +962,44 @@ fn on_off_label(enabled: bool) -> &'static str {
         "on"
     } else {
         "off"
+    }
+}
+
+fn resolved_autostart_state_for_tray(
+    previous_state: Option<bool>,
+    actual_state: Result<bool, String>,
+) -> Result<bool, String> {
+    match actual_state {
+        Ok(actual_state) => Ok(actual_state),
+        Err(error) => previous_state.ok_or(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved_autostart_state_for_tray;
+
+    #[test]
+    fn prefers_current_autostart_state_when_available() {
+        assert_eq!(
+            resolved_autostart_state_for_tray(Some(false), Ok(true)),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn falls_back_to_previous_autostart_state_when_reread_fails() {
+        assert_eq!(
+            resolved_autostart_state_for_tray(Some(false), Err("read failed".to_string())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn preserves_unknown_autostart_state_when_reads_fail() {
+        assert_eq!(
+            resolved_autostart_state_for_tray(None, Err("read failed".to_string())),
+            Err("read failed".to_string())
+        );
     }
 }
