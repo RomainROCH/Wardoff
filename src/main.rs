@@ -22,7 +22,9 @@ use crate::ipc::{
     IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
-use crate::tray::{spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility};
+use crate::tray::{
+    spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility, TRAY_ACTION_WAKE_MESSAGE,
+};
 use crate::windows_util::{
     show_fatal_error_dialog, ElevationLaunchResult, INTERNAL_ELEVATED_RELAUNCH_ARG,
 };
@@ -77,22 +79,30 @@ fn bootstrap(
 
     let blocker_coordinator =
         create_blocker_coordinator(options.initial_mode).map_err(other_error)?;
+    ensure_message_queue();
+    let ui_thread_id = unsafe { GetCurrentThreadId() };
     let tray_service = match options.tray_surface {
         TraySurface::Headless => None,
         TraySurface::Visible => Some(
-            spawn_tray_service(TrayVisibility::Visible, blocker_coordinator.mode())
-                .map_err(other_error)?,
+            spawn_tray_service(
+                TrayVisibility::Visible,
+                blocker_coordinator.mode(),
+                ui_thread_id,
+            )
+            .map_err(other_error)?,
         ),
         TraySurface::Hidden => Some(
-            spawn_tray_service(TrayVisibility::Hidden, blocker_coordinator.mode())
-                .map_err(other_error)?,
+            spawn_tray_service(
+                TrayVisibility::Hidden,
+                blocker_coordinator.mode(),
+                ui_thread_id,
+            )
+            .map_err(other_error)?,
         ),
     };
 
-    ensure_message_queue();
     let (ipc_request_tx, ipc_requests) = mpsc::channel();
-    let ipc_server =
-        IpcServer::start(ipc_request_tx, unsafe { GetCurrentThreadId() }).map_err(other_error)?;
+    let ipc_server = IpcServer::start(ipc_request_tx, ui_thread_id).map_err(other_error)?;
 
     let start_message = application_start_message(options);
     info!("{start_message}");
@@ -139,8 +149,11 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
                 break 'message_loop;
             }
 
-            if message.message == IPC_WAKE_MESSAGE {
+            if message.message == IPC_WAKE_MESSAGE || message.message == TRAY_ACTION_WAKE_MESSAGE {
                 application.process_ipc_requests();
+                if application.process_tray_actions() {
+                    break 'message_loop;
+                }
                 continue;
             }
 
