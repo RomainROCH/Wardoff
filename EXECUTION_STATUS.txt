@@ -1,11 +1,11 @@
 WHERE WE ARE NOW
-Recent hardening and documentation slices are merged to dev, including Allow-mode deactivation hardening, autostart tray-sync honesty, secondary handoff recovery, and the tray/handoff validation guidance expanded in e39ea3a.
-There is no pending docs-only validation handoff slice waiting for review, commit, or merge.
+Recent hardening and validation slices are merged to dev, including the tray wakeup/menu reliability fix that keeps tray-originated actions from stalling behind `WaitMessage()`.
+That tray fix is finished and validated with `cargo check`, `cargo test`, `cargo build --release`, and `powershell -ExecutionPolicy Bypass -File tests\smoke_test.ps1`.
 
 WHAT JUST FINISHED
-dev already contains the refreshed README.md, docs\MVP_VALIDATION_MATRIX.md, CHANGELOG.md, and related conservative validation guidance updates.
-EXECUTION_STATUS.txt is now aligned with that post-merge state instead of pointing at docs/tray-handoff-validation as unfinished work.
+`fix/tray-menu-wakeup` is complete and merged to dev.
+It wires tray menu actions to wake the main thread promptly, preserves the existing IPC wake path, and adds regression coverage for issuing exactly one wake request per forwarded action batch.
 
 WHAT COMES NEXT
-Run the remaining manual and elevated verification passes listed in docs\MVP_VALIDATION_MATRIX.md, especially tray, Explorer-restart, autostart, and other admin-sensitive checks that require a real Windows environment.
-Only queue follow-up docs or code work if those verification passes uncover a concrete gap, regression, or wording issue.
+The remaining work is the manual and elevated verification still called out in `docs\MVP_VALIDATION_MATRIX.md`.
+Focus on the real-Windows-session checks there, especially tray, Explorer-restart, autostart, shutdown, and other admin-sensitive scenarios.

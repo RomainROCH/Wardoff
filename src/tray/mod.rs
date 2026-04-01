@@ -16,8 +16,8 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, IsWindow, PeekMessageW,
-    RegisterClassW, RegisterWindowMessageW, TranslateMessage, MSG, PM_NOREMOVE, PM_REMOVE,
-    WINDOW_EX_STYLE, WM_DESTROY, WM_QUIT, WNDCLASSW, WS_OVERLAPPED,
+    PostThreadMessageW, RegisterClassW, RegisterWindowMessageW, TranslateMessage, MSG, PM_NOREMOVE,
+    PM_REMOVE, WINDOW_EX_STYLE, WM_APP, WM_DESTROY, WM_QUIT, WNDCLASSW, WS_OVERLAPPED,
 };
 
 /// Scaffolding for tray icon asset selection.
@@ -27,6 +27,7 @@ const TRAY_THREAD_NAME: &str = "wardoff-tray";
 const TRAY_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const TRAY_UNAVAILABLE_WARNING_INTERVAL: Duration = Duration::from_secs(30);
 const TRAY_THREAD_POLL_INTERVAL: Duration = Duration::from_millis(200);
+pub(crate) const TRAY_ACTION_WAKE_MESSAGE: u32 = WM_APP + 2;
 const TASKBAR_CREATED_WINDOW_CLASS_NAME: windows::core::PCWSTR =
     w!("WardoffTrayTaskbarCreatedWindow");
 
@@ -102,13 +103,22 @@ pub fn create_tray_controller(visibility: TrayVisibility) -> Result<TrayControll
 pub(crate) fn spawn_tray_service(
     visibility: TrayVisibility,
     initial_mode: BlockerMode,
+    main_thread_id: u32,
 ) -> Result<TrayServiceHandle, String> {
     let (action_tx, action_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
 
     let join_handle = thread::Builder::new()
         .name(TRAY_THREAD_NAME.to_string())
-        .spawn(move || run_tray_thread(visibility, initial_mode, command_rx, action_tx))
+        .spawn(move || {
+            run_tray_thread(
+                visibility,
+                initial_mode,
+                main_thread_id,
+                command_rx,
+                action_tx,
+            )
+        })
         .map_err(|error| format!("Wardoff could not start its tray thread: {error}"))?;
 
     Ok(TrayServiceHandle {
@@ -331,6 +341,7 @@ struct TrayThreadState {
 fn run_tray_thread(
     visibility: TrayVisibility,
     initial_mode: BlockerMode,
+    main_thread_id: u32,
     command_rx: Receiver<TrayCommand>,
     action_tx: Sender<TrayAction>,
 ) {
@@ -363,7 +374,7 @@ fn run_tray_thread(
     loop {
         pump_windows_messages();
         handle_taskbar_created(&mut state);
-        forward_tray_actions(&state, &action_tx);
+        forward_tray_actions(&state, &action_tx, main_thread_id);
 
         while let Ok(command) = command_rx.try_recv() {
             if handle_tray_command(&mut state, command) {
@@ -430,16 +441,54 @@ fn handle_taskbar_created(state: &mut TrayThreadState) {
     reset_tray_controller(state);
 }
 
-fn forward_tray_actions(state: &TrayThreadState, action_tx: &Sender<TrayAction>) {
+fn forward_tray_actions(
+    state: &TrayThreadState,
+    action_tx: &Sender<TrayAction>,
+    main_thread_id: u32,
+) {
     let Some(controller) = state.controller.as_ref() else {
         return;
     };
 
-    for action in controller.drain_actions() {
+    forward_actions(controller.drain_actions(), action_tx, || {
+        wake_main_thread_for_tray_action(main_thread_id)
+    });
+}
+
+fn forward_actions<F>(
+    actions: Vec<TrayAction>,
+    action_tx: &Sender<TrayAction>,
+    mut wake_main_thread: F,
+) where
+    F: FnMut() -> Result<(), String>,
+{
+    let mut forwarded_any = false;
+
+    for action in actions {
         if action_tx.send(action).is_err() {
             break;
         }
+        forwarded_any = true;
     }
+
+    if forwarded_any {
+        if let Err(error) = wake_main_thread() {
+            log::warn!("{error}");
+            logger::log_event("tray_action_wake_failed", EventSource::Tray, error, false);
+        }
+    }
+}
+
+fn wake_main_thread_for_tray_action(main_thread_id: u32) -> Result<(), String> {
+    unsafe {
+        PostThreadMessageW(
+            main_thread_id,
+            TRAY_ACTION_WAKE_MESSAGE,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    }
+    .map_err(|error| format!("Wardoff could not wake its main thread for a tray action: {error}"))
 }
 
 fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> bool {
@@ -682,5 +731,43 @@ fn visibility_label(visibility: TrayVisibility) -> &'static str {
     match visibility {
         TrayVisibility::Visible => "visible",
         TrayVisibility::Hidden => "hidden",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward_actions, TrayAction};
+    use std::sync::mpsc;
+
+    #[test]
+    fn wakes_main_thread_once_after_forwarding_tray_actions() {
+        let (action_tx, action_rx) = mpsc::channel();
+        let mut wake_count = 0;
+
+        forward_actions(
+            vec![TrayAction::Allow, TrayAction::Quit],
+            &action_tx,
+            || {
+                wake_count += 1;
+                Ok(())
+            },
+        );
+
+        assert_eq!(action_rx.recv().unwrap(), TrayAction::Allow);
+        assert_eq!(action_rx.recv().unwrap(), TrayAction::Quit);
+        assert_eq!(wake_count, 1);
+    }
+
+    #[test]
+    fn does_not_wake_main_thread_when_no_actions_are_forwarded() {
+        let (action_tx, _action_rx) = mpsc::channel();
+        let mut wake_count = 0;
+
+        forward_actions(Vec::new(), &action_tx, || {
+            wake_count += 1;
+            Ok(())
+        });
+
+        assert_eq!(wake_count, 0);
     }
 }
