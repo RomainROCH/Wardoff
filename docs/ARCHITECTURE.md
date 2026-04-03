@@ -152,6 +152,7 @@ Behavior:
 
 - the first process to claim the mutex becomes the primary runtime
 - later invocations become secondary clients
+- later invocations probe the existing mutex with minimal access before treating access restrictions as fatal
 - an internal retry path exists to bridge short handoff windows during elevated relaunch
 
 This prevents multiple tray-owning, blocker-owning runtimes from competing with each other.
