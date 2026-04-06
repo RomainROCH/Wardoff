@@ -161,10 +161,11 @@ This prevents multiple tray-owning, blocker-owning runtimes from competing with 
 
 Source: `src/ipc.rs`
 
-Secondary commands communicate with the primary runtime over the named pipe:
+Secondary commands use two local named-pipe paths:
 
 ```text
 \\.\pipe\WardoffControl
+\\.\pipe\WardoffStatus
 ```
 
 ### Why IPC exists
@@ -180,26 +181,28 @@ would need to start independent runtimes or fail whenever a primary instance alr
 Instead, the secondary process:
 
 1. detects that another instance already owns the mutex
-2. connects to the named pipe
-3. sends a JSON request
-4. waits for a JSON response
+2. connects to the appropriate local pipe
+3. either sends a JSON control request or reads a status reply
+4. waits for the primary runtime's response
 
 ### Request flow
 
 The primary runtime:
 
 - starts `IpcServer` on a background thread
-- receives parsed `IpcRequest` values
+- starts a separate read-only status pipe alongside the control pipe
+- receives parsed `IpcRequest` values for control traffic
 - wakes the UI thread with a custom `WM_APP`-based message
 - handles the request on the main application thread
-- returns `IpcResponse`
+- returns `IpcResponse` for control commands or plain status JSON for read-only status queries
 
 Current request types include:
 
 - mode changes
 - autostart changes
-- status queries
 - internal server shutdown during orderly app exit
+
+`wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe.
 
 ### Why the UI thread handles requests
 
@@ -304,7 +307,8 @@ Current design:
 - in release builds on Windows, `build.rs` embeds the application manifest
 - `wardoff.manifest` requests `asInvoker`, so Windows does not force elevation before CLI argument parsing
 - `src/main.rs` calls `prepare_default_launch(...)` when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
-- explicit CLI commands such as `--help`, `--version`, and `--status` stay non-elevated unless the command itself later checks for administrator rights
+- explicit CLI commands such as `--help`, `--version`, `--status`, and `--log --tail N` stay non-elevated unless the command itself later checks for administrator rights
+- `--status` reaches an elevated primary runtime through the dedicated read-only status pipe instead of the bidirectional control pipe
 
 That design preserves scriptable non-elevated CLI usage while still letting the default runtime path request elevation so admin-only protections such as Update Orchestrator task control can be available.
 

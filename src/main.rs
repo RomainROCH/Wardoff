@@ -18,8 +18,8 @@ use crate::instance::{
     claim_primary_instance, claim_primary_instance_with_retry, InstanceClaim, InstanceGuard,
 };
 use crate::ipc::{
-    send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest, PipeMode,
-    IPC_WAKE_MESSAGE,
+    read_status, send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest,
+    PipeMode, IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
 use crate::tray::{
@@ -253,6 +253,17 @@ fn handle_runtime_request(
 }
 
 fn handle_status_request() -> Result<i32, Box<dyn Error>> {
+    match read_status() {
+        Ok(status) => {
+            println!("{}", status.to_json()?);
+            Ok(0)
+        }
+        Err(ClientError::Unavailable) => handle_status_request_via_control_pipe(),
+        Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
+    }
+}
+
+fn handle_status_request_via_control_pipe() -> Result<i32, Box<dyn Error>> {
     match send_request(&IpcRequest::Status) {
         Ok(IpcResponse::Status { status }) => {
             println!("{}", status.to_json()?);
@@ -905,6 +916,7 @@ impl Application {
     }
 
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        self.ipc_server.begin_shutdown();
         self.reject_pending_ipc_requests();
         let ipc_shutdown = self.ipc_server.shutdown().map_err(other_error);
         let blocker_shutdown = self.blocker_coordinator.shutdown().map_err(other_error);
