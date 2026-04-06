@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::io::{FromRawHandle, RawHandle};
-use std::sync::mpsc::{self, Sender};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Sender},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::core::{w, Error as WindowsError};
@@ -14,14 +18,17 @@ use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY,
     ERROR_PIPE_CONNECTED, HANDLE, LPARAM, WPARAM,
 };
-use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, PIPE_ACCESS_OUTBOUND};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 
 const CONTROL_PIPE_PATH: &str = r"\\.\pipe\WardoffControl";
+const STATUS_PIPE_PATH: &str = r"\\.\pipe\WardoffStatus";
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
+const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
@@ -83,7 +90,9 @@ pub(crate) enum ClientError {
 
 /// Owns the named-pipe server thread used by the primary Wardoff runtime.
 pub(crate) struct IpcServer {
-    join_handle: Option<JoinHandle<()>>,
+    control_join_handle: Option<JoinHandle<()>>,
+    status_join_handle: Option<JoinHandle<()>>,
+    status_shutdown_requested: Arc<AtomicBool>,
 }
 
 impl IpcServer {
@@ -92,10 +101,21 @@ impl IpcServer {
         request_tx: Sender<PendingRequest>,
         ui_thread_id: u32,
     ) -> Result<Self, String> {
-        let join_handle = thread::Builder::new()
+        let status_shutdown_requested = Arc::new(AtomicBool::new(false));
+        let control_request_tx = request_tx.clone();
+        let control_join_handle = thread::Builder::new()
             .name(IPC_SERVER_THREAD_NAME.to_string())
-            .spawn(move || run_server_loop(request_tx, ui_thread_id))
+            .spawn(move || run_server_loop(control_request_tx, ui_thread_id))
             .map_err(|error| format!("Wardoff could not start its IPC server thread: {error}"))?;
+        let status_join_handle = thread::Builder::new()
+            .name(STATUS_SERVER_THREAD_NAME.to_string())
+            .spawn({
+                let shutdown_requested = Arc::clone(&status_shutdown_requested);
+                move || run_status_server_loop(request_tx, ui_thread_id, shutdown_requested)
+            })
+            .map_err(|error| {
+                format!("Wardoff could not start its status server thread: {error}")
+            })?;
 
         info!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}.");
         logger::log_event(
@@ -104,18 +124,34 @@ impl IpcServer {
             format!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}."),
             true,
         );
+        info!("Wardoff started its read-only status pipe on {STATUS_PIPE_PATH}.");
+        logger::log_event(
+            "status_server_started",
+            EventSource::Ipc,
+            format!("Wardoff started its read-only status pipe on {STATUS_PIPE_PATH}."),
+            true,
+        );
 
         Ok(Self {
-            join_handle: Some(join_handle),
+            control_join_handle: Some(control_join_handle),
+            status_join_handle: Some(status_join_handle),
+            status_shutdown_requested,
         })
+    }
+
+    /// Stops accepting new status-pipe clients before the main runtime begins shutdown work.
+    pub(crate) fn begin_shutdown(&self) {
+        self.status_shutdown_requested.store(true, Ordering::Release);
+        let _ = wake_status_server();
     }
 
     /// Stops the background named-pipe server and joins its worker thread.
     pub(crate) fn shutdown(&mut self) -> Result<(), String> {
-        if self.join_handle.is_none() {
+        if self.control_join_handle.is_none() && self.status_join_handle.is_none() {
             return Ok(());
         }
 
+        self.begin_shutdown();
         match send_request(&IpcRequest::ShutdownServer) {
             Ok(IpcResponse::Ok) | Err(ClientError::Unavailable) => {}
             Ok(IpcResponse::Error { message }) => {
@@ -132,10 +168,15 @@ impl IpcServer {
             Err(ClientError::Transport(message)) => return Err(message),
         }
 
-        if let Some(join_handle) = self.join_handle.take() {
+        if let Some(join_handle) = self.control_join_handle.take() {
             join_handle
                 .join()
                 .map_err(|_| "Wardoff IPC server thread panicked during shutdown.".to_string())?;
+        }
+        if let Some(join_handle) = self.status_join_handle.take() {
+            join_handle
+                .join()
+                .map_err(|_| "Wardoff status server thread panicked during shutdown.".to_string())?;
         }
 
         Ok(())
@@ -144,7 +185,7 @@ impl IpcServer {
 
 /// Sends a JSON control request to the primary Wardoff runtime.
 pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientError> {
-    let mut pipe = connect_client_pipe()?;
+    let mut pipe = connect_control_pipe()?;
     let payload = serde_json::to_string(request).map_err(|error| {
         ClientError::Transport(format!(
             "Wardoff could not serialize its IPC request: {error}"
@@ -190,6 +231,32 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
     })
 }
 
+/// Reads the current runtime status through the dedicated read-only status pipe.
+pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
+    let mut pipe = connect_status_pipe()?;
+    let mut status_line = String::new();
+    let bytes_read = {
+        let mut reader = BufReader::new(&mut pipe);
+        reader.read_line(&mut status_line).map_err(|error| {
+            ClientError::Transport(format!(
+                "Wardoff could not read the status reply from {STATUS_PIPE_PATH}: {error}"
+            ))
+        })?
+    };
+
+    if bytes_read == 0 {
+        return Err(ClientError::Transport(format!(
+            "Wardoff did not receive any status reply from {STATUS_PIPE_PATH}."
+        )));
+    }
+
+    serde_json::from_str(status_line.trim_end()).map_err(|error| {
+        ClientError::Transport(format!(
+            "Wardoff received malformed status JSON from {STATUS_PIPE_PATH}: {error}"
+        ))
+    })
+}
+
 impl From<PipeMode> for BlockerMode {
     fn from(mode: PipeMode) -> Self {
         match mode {
@@ -221,7 +288,7 @@ impl Drop for PipeHandle {
 
 fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
     loop {
-        let mut pipe = match accept_client() {
+        let mut pipe = match accept_control_client() {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
@@ -321,7 +388,94 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
     );
 }
 
-fn accept_client() -> Result<File, String> {
+fn run_status_server_loop(
+    request_tx: Sender<PendingRequest>,
+    ui_thread_id: u32,
+    shutdown_requested: Arc<AtomicBool>,
+) {
+    loop {
+        if shutdown_requested.load(Ordering::Acquire) {
+            break;
+        }
+
+        let mut pipe = match accept_status_client() {
+            Ok(pipe) => pipe,
+            Err(error) => {
+                warn!("Wardoff stopped its status server after an IPC error: {error}");
+                logger::log_event(
+                    "status_server_stopped",
+                    EventSource::Ipc,
+                    format!("Wardoff stopped its read-only status pipe after an IPC error: {error}"),
+                    false,
+                );
+                break;
+            }
+        };
+
+        if shutdown_requested.load(Ordering::Acquire) {
+            break;
+        }
+
+        let (response_tx, response_rx) = mpsc::channel();
+        if request_tx
+            .send(PendingRequest {
+                request: IpcRequest::Status,
+                response_tx,
+            })
+            .is_err()
+        {
+            break;
+        }
+
+        if let Err(error) = wake_ui_thread(ui_thread_id) {
+            warn!("{error}");
+            logger::log_event(
+                "status_request_rejected",
+                EventSource::Ipc,
+                format!("Wardoff could not wake its UI thread for a status request: {error}"),
+                false,
+            );
+            continue;
+        }
+
+        match response_rx.recv() {
+            Ok(IpcResponse::Status { status }) => {
+                if let Err(error) = write_status_output(&mut pipe, &status) {
+                    warn!("Wardoff could not send a status reply: {error}");
+                }
+            }
+            Ok(IpcResponse::Error { message }) => {
+                warn!("Wardoff could not produce a status reply: {message}");
+                logger::log_event(
+                    "status_request_rejected",
+                    EventSource::Ipc,
+                    format!("Wardoff could not produce a status reply: {message}"),
+                    false,
+                );
+            }
+            Ok(IpcResponse::Ok) => {
+                warn!("Wardoff produced an empty reply for its read-only status pipe.");
+                logger::log_event(
+                    "status_request_rejected",
+                    EventSource::Ipc,
+                    "Wardoff produced an empty reply for its read-only status pipe.",
+                    false,
+                );
+            }
+            Err(_) => break,
+        }
+    }
+
+    info!("Wardoff stopped its read-only status pipe.");
+    logger::log_event(
+        "status_server_stopped",
+        EventSource::Ipc,
+        format!("Wardoff stopped its read-only status pipe on {STATUS_PIPE_PATH}."),
+        true,
+    );
+}
+
+fn accept_control_client() -> Result<File, String> {
     let pipe = unsafe {
         CreateNamedPipeW(
             w!("\\\\.\\pipe\\WardoffControl"),
@@ -348,6 +502,40 @@ fn accept_client() -> Result<File, String> {
         Err(error) => {
             return Err(format!(
                 "Wardoff could not accept a client on {CONTROL_PIPE_PATH}: {error}"
+            ));
+        }
+    }
+
+    Ok(pipe.into_file())
+}
+
+fn accept_status_client() -> Result<File, String> {
+    let pipe = unsafe {
+        CreateNamedPipeW(
+            w!("\\\\.\\pipe\\WardoffStatus"),
+            PIPE_ACCESS_OUTBOUND,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            PIPE_BUFFER_SIZE,
+            PIPE_BUFFER_SIZE,
+            0,
+            None,
+        )
+    };
+    if pipe.is_invalid() {
+        return Err(format!(
+            "Wardoff could not create {STATUS_PIPE_PATH}: {}",
+            WindowsError::from_thread()
+        ));
+    }
+
+    let pipe = PipeHandle(pipe);
+    match unsafe { ConnectNamedPipe(pipe.0, None) } {
+        Ok(()) => {}
+        Err(_) if unsafe { GetLastError() } == ERROR_PIPE_CONNECTED => {}
+        Err(error) => {
+            return Err(format!(
+                "Wardoff could not accept a client on {STATUS_PIPE_PATH}: {error}"
             ));
         }
     }
@@ -384,7 +572,20 @@ fn write_response(pipe: &mut File, response: &IpcResponse) -> Result<(), String>
         .map_err(|error| format!("Wardoff could not flush its IPC reply: {error}"))
 }
 
-fn connect_client_pipe() -> Result<File, ClientError> {
+fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), String> {
+    let payload = status
+        .to_json()
+        .map_err(|error| format!("Wardoff could not serialize a status reply: {error}"))?;
+
+    pipe.write_all(payload.as_bytes())
+        .map_err(|error| format!("Wardoff could not write a status reply: {error}"))?;
+    pipe.write_all(b"\n")
+        .map_err(|error| format!("Wardoff could not finish its status reply: {error}"))?;
+    pipe.flush()
+        .map_err(|error| format!("Wardoff could not flush its status reply: {error}"))
+}
+
+fn connect_control_pipe() -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
@@ -410,11 +611,45 @@ fn connect_client_pipe() -> Result<File, ClientError> {
                     continue;
                 }
 
-                return Err(map_connect_error(error, raw_code));
+                return Err(map_connect_error(CONTROL_PIPE_PATH, error, raw_code));
             }
         }
     }
 
+    final_connect_error(CONTROL_PIPE_PATH, last_error_code)
+}
+
+fn connect_status_pipe() -> Result<File, ClientError> {
+    let mut last_error_code = None;
+
+    for attempt in 0..PIPE_CONNECT_ATTEMPTS {
+        match OpenOptions::new().read(true).open(STATUS_PIPE_PATH) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error) => {
+                let raw_code = error.raw_os_error();
+                last_error_code = raw_code;
+
+                if matches!(
+                    raw_code,
+                    Some(code)
+                        if code == ERROR_FILE_NOT_FOUND.0 as i32
+                            || code == ERROR_PATH_NOT_FOUND.0 as i32
+                            || code == ERROR_PIPE_BUSY.0 as i32
+                ) && attempt + 1 < PIPE_CONNECT_ATTEMPTS
+                {
+                    thread::sleep(PIPE_CONNECT_DELAY);
+                    continue;
+                }
+
+                return Err(map_connect_error(STATUS_PIPE_PATH, error, raw_code));
+            }
+        }
+    }
+
+    final_connect_error(STATUS_PIPE_PATH, last_error_code)
+}
+
+fn final_connect_error(path: &str, last_error_code: Option<i32>) -> Result<File, ClientError> {
     match last_error_code {
         Some(code)
             if code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32 =>
@@ -422,15 +657,15 @@ fn connect_client_pipe() -> Result<File, ClientError> {
             Err(ClientError::Unavailable)
         }
         Some(code) if code == ERROR_PIPE_BUSY.0 as i32 => Err(ClientError::Transport(format!(
-            "Wardoff found a primary instance, but {CONTROL_PIPE_PATH} stayed busy."
+            "Wardoff found a primary instance, but {path} stayed busy."
         ))),
         _ => Err(ClientError::Transport(format!(
-            "Wardoff could not connect to {CONTROL_PIPE_PATH}."
+            "Wardoff could not connect to {path}."
         ))),
     }
 }
 
-fn map_connect_error(error: std::io::Error, raw_code: Option<i32>) -> ClientError {
+fn map_connect_error(path: &str, error: std::io::Error, raw_code: Option<i32>) -> ClientError {
     match raw_code {
         Some(code)
             if code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32 =>
@@ -438,12 +673,16 @@ fn map_connect_error(error: std::io::Error, raw_code: Option<i32>) -> ClientErro
             ClientError::Unavailable
         }
         Some(code) if code == ERROR_PIPE_BUSY.0 as i32 => ClientError::Transport(format!(
-            "Wardoff found a primary instance, but {CONTROL_PIPE_PATH} is busy: {error}"
+            "Wardoff found a primary instance, but {path} is busy: {error}"
         )),
         _ => ClientError::Transport(format!(
-            "Wardoff could not connect to {CONTROL_PIPE_PATH}: {error}"
+            "Wardoff could not connect to {path}: {error}"
         )),
     }
+}
+
+fn wake_status_server() -> std::io::Result<()> {
+    OpenOptions::new().read(true).open(STATUS_PIPE_PATH).map(|_| ())
 }
 
 fn wake_ui_thread(ui_thread_id: u32) -> Result<(), String> {

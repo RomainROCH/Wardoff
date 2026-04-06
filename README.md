@@ -149,6 +149,7 @@ Wardoff is explicit about elevation:
 
 - the release manifest now stays at `asInvoker`, so explicit CLI invocations can start in a normal non-elevated console
 - if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
+- `wardoff --status` uses a dedicated read-only status pipe, and `wardoff --log --tail N` reads structured log files directly, so both commands stay non-elevated even when the primary runtime is already elevated
 - Layer 3 UpdateOrchestrator protection requires elevation
 - Layer 4 remote shutdown abort polling depends on the shutdown-abort privilege and is intended to run elevated
 - `--autostart on|off` requires elevation because it changes a scheduled task

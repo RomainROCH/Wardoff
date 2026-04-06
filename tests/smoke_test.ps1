@@ -437,6 +437,23 @@ try {
         Assert-Condition ($status.layers.local_shutdown -is [bool]) 'wardoff --status returned a non-boolean layers.local_shutdown field.'
     }
 
+    Invoke-TestCase 'wardoff --log --tail 3 exits 0 and returns 3 JSON log lines while the background instance is running' {
+        $result = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--log', '--tail', '3')
+        Assert-Condition ($result.ExitCode -eq 0) "wardoff --log --tail 3 exited with code $($result.ExitCode)."
+
+        $lines = @($result.Output -split "`r?`n" | Where-Object { $_ -ne '' })
+        Assert-Condition ($lines.Count -eq 3) "wardoff --log --tail 3 returned $($lines.Count) line(s) instead of 3."
+
+        foreach ($line in $lines) {
+            try {
+                $null = $line | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw "wardoff --log --tail 3 returned a non-JSON line: $line"
+            }
+        }
+    }
+
     $powercfgRequestsCheck = Resolve-PowercfgRequestsCheck
     if ($powercfgRequestsCheck.State -eq 'testable') {
         Invoke-TestCase 'powercfg /requests mentions Wardoff while blocking is active' {
