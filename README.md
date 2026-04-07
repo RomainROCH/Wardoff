@@ -14,7 +14,7 @@ Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level
 
 - Block/Allow runtime state with a red/green tray icon
 - Layer 1 interactive shutdown and sign-out blocking through `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
-- Layer 3 protection for the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot`
+- Layer 3 protection for the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` when that task exists
 - Layer 4 best-effort remote shutdown abort polling with `AbortSystemShutdownW(None)`
 - sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
 - structured rotating JSONL logging under `%LOCALAPPDATA%\Wardoff\logs\`
@@ -53,6 +53,7 @@ These are **not** part of the current documented MVP and should not be treated a
 - Windows Update reboot-task protection requires administrator rights.
 - Remote shutdown abort logic only helps when Windows still exposes a timeout window and the process has the rights required for `AbortSystemShutdownW(None)`.
 - Some CLI paths can run without elevation, but admin-only features will report that requirement instead of pretending they succeeded.
+- On editions such as Windows LTSC where `\Microsoft\Windows\UpdateOrchestrator\Reboot` does not exist, Layer 3 is skipped automatically; that is normal, not a failure.
 
 For the detailed per-layer behavior and the cautious Layer 2 local `shutdown.exe` wording, see [`docs/WINDOWS_SHUTDOWN_LAYERS.md`](docs/WINDOWS_SHUTDOWN_LAYERS.md).
 
@@ -131,6 +132,17 @@ wardoff --version
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
 - `wardoff --version` prints the package version, for example `wardoff 0.1.0`
 
+Read-only commands stay non-elevated:
+
+- `--help` and `--version` short-circuit locally in clap
+- `--status` reads status through the dedicated `\\.\pipe\WardoffStatus` pipe when a primary runtime is active
+- `--log` and `--log --tail N` read the rotating JSONL log files directly
+
+State-changing/default behavior uses the normal runtime path:
+
+- default `wardoff` startup bootstraps a new visible Block-mode primary runtime and may trigger Wardoff's built-in self-elevation path when admin-only protections are desired
+- `--block`, `--allow`, `--hide`, and `--autostart on|off` are not read-only commands; they either start a runtime locally or talk to the primary runtime over the state-changing control pipe `\\.\pipe\WardoffControl`
+
 Example status output while Wardoff is active:
 
 ```json
@@ -148,7 +160,7 @@ If no primary runtime is running:
 - `wardoff --help` exits `0`
 - `wardoff --version` exits `0`
 - `wardoff --status` exits `0` when Wardoff is active, exits `1` when no primary runtime is active, and exits `1` on errors
-- `wardoff --log --tail N` exits `0` on success and `1` on errors
+- `wardoff --log` and `wardoff --log --tail N` exit `0` on success and `1` on errors
 - `wardoff --block` and `wardoff --allow` exit `0` on success, including when they start a runtime or switch the running runtime, and exit `1` when they fail
 - `wardoff --autostart on|off` exits `0` on success and `1` on failure
 
@@ -160,8 +172,10 @@ Wardoff is explicit about elevation:
 - if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
 - `src/main.rs` now keeps an explicit non-elevating read-only dispatch for `--status` and `--log --tail N` before any runtime bootstrap logic
 - `wardoff --status` uses a dedicated read-only status pipe, and `wardoff --log --tail N` reads structured log files directly, so both commands stay non-elevated even when the primary runtime is already elevated
+- state-changing secondary commands still use the control pipe `\\.\pipe\WardoffControl`
 - `--help` and `--version` still short-circuit inside clap and remain pure local console output
 - Layer 3 UpdateOrchestrator protection requires elevation
+- on editions such as LTSC where `\Microsoft\Windows\UpdateOrchestrator\Reboot` is missing, Layer 3 is skipped automatically and that is expected
 - Layer 4 remote shutdown abort polling depends on the shutdown-abort privilege and is intended to run elevated
 - `--autostart on|off` requires elevation because it changes a scheduled task
 - if you run an explicit CLI command in a non-elevated console, Wardoff keeps working where it can and reports when an admin-only action is unavailable
