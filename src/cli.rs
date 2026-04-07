@@ -79,6 +79,9 @@ pub struct WardoffCli {
     /// Internal marker used to prevent default-launch elevation loops.
     #[arg(long = "wardoff-elevated-relaunch", hide = true)]
     elevated_relaunch: bool,
+    /// Internal marker used when Wardoff relaunches a long-lived runtime without a shell console.
+    #[arg(long = "wardoff-detached-runtime", hide = true)]
+    detached_runtime: bool,
 }
 
 /// Represents the serialized state string returned by `wardoff --status`.
@@ -138,6 +141,11 @@ impl WardoffCli {
     pub fn is_internal_elevated_relaunch(&self) -> bool {
         self.elevated_relaunch
     }
+
+    /// Returns whether the current process was started by Wardoff's internal detached-runtime relaunch.
+    pub fn is_internal_detached_runtime(&self) -> bool {
+        self.detached_runtime
+    }
 }
 
 impl StatusOutput {
@@ -188,18 +196,24 @@ mod tests {
 
     #[test]
     fn default_launch_remains_default_when_relaunched_internally() {
-        let cli = WardoffCli::parse_from(["wardoff", "--wardoff-elevated-relaunch"]);
+        let cli = WardoffCli::parse_from([
+            "wardoff",
+            "--wardoff-elevated-relaunch",
+            "--wardoff-detached-runtime",
+        ]);
 
         assert_eq!(cli.requested_action(), RequestedAction::Default);
         assert!(cli.is_internal_elevated_relaunch());
+        assert!(cli.is_internal_detached_runtime());
     }
 
     #[test]
     fn explicit_commands_are_not_reclassified_as_default_launches() {
-        let cli = WardoffCli::parse_from(["wardoff", "--hide"]);
+        let cli = WardoffCli::parse_from(["wardoff", "--hide", "--wardoff-detached-runtime"]);
 
         assert_eq!(cli.requested_action(), RequestedAction::Hide);
         assert!(!cli.is_internal_elevated_relaunch());
+        assert!(cli.is_internal_detached_runtime());
     }
 
     #[test]

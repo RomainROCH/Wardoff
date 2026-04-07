@@ -312,6 +312,9 @@ Current design:
 - clap still short-circuits `--help` and `--version` locally before Wardoff reaches any runtime bootstrap logic
 - `src/main.rs` now routes `--status` and `--log --tail N` through an explicit read-only dispatch before calling `prepare_default_launch(...)` or any default-runtime bootstrap path
 - `src/main.rs` calls `prepare_default_launch(...)` only when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
+- release builds now run as a console-friendly executable so direct shell invocations of read-only commands keep normal stdout/stderr/exit-code behavior
+- when a long-lived primary runtime would start from an inherited console, `src/main.rs` relaunches that runtime through `relaunch_self_detached()` and exits the shell-facing process cleanly instead of blocking the console forever
+- when a long-lived primary runtime starts with a dedicated standalone console instead of an inherited shell console, `src/main.rs` hides and frees that console before the tray/runtime loop settles in
 - explicit CLI commands such as `--help`, `--version`, `--status`, and `--log --tail N` stay non-elevated unless the command itself later checks for administrator rights
 - `--status` reaches an elevated primary runtime through the dedicated read-only status pipe instead of the bidirectional control pipe
 - state-changing commands such as `--block`, `--allow`, `--hide`, and `--autostart on|off` remain on the normal runtime/control-pipe path rather than the read-only status path

@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - Improved secondary handoff recovery when a follower reaches Wardoff during a primary restart or handoff window.
 - Expanded validation guidance for tray sync, Explorer restart, secondary handoff, and admin-only autostart scenarios.
 - Switched Windows release-manifest embedding from manual linker flags to `winres` resource compilation and added a smoke guard that asserts the built release binary still embeds `requestedExecutionLevel level="asInvoker"`.
+- Made the release binary console-friendly for direct PowerShell CLI use, while detaching or hiding console state for long-lived tray/runtime launches so read-only commands stay inline without regressing background UX.
 
 ## [0.1.0] - 2026-03-22
 
