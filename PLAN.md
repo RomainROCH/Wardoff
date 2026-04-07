@@ -18,7 +18,7 @@ The branch already contains a working runtime plus CLI centered on one main prom
 ### Implemented and supported now
 
 - Layer 1 interactive shutdown and sign-out blocking
-- Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot`
+- Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot` when that task exists on the machine
 - Layer 4 best-effort remote shutdown abort polling
 - sleep, hibernate, and display-idle blocking
 - tray UI with Block/Allow state and power actions
@@ -57,6 +57,7 @@ Keep improving confidence in the features that already exist:
 - improve manual validation guidance for shutdown, sign-out, sleep, hibernate, remote shutdown, autostart, and elevation-sensitive paths
 - fix bugs or rough edges in tray, IPC, logging, and Task Scheduler flows
 - keep admin versus non-admin behavior explicit
+- keep LTSC-style Layer 3 skip behavior documented as normal when the UpdateOrchestrator reboot task is absent
 
 ### 2. Source-first operator/developer polish
 
@@ -64,6 +65,7 @@ Make the current source-first MVP easier to adopt without overstating it:
 
 - improve repo read order and truth-source docs
 - keep README, plan, architecture notes, and changelog aligned
+- keep README, plan, architecture notes, copilot guidance, and changelog aligned on the read-only CLI contract, both IPC pipes, default startup behavior, and exit codes
 - clarify expected build/run flow for a first-time evaluator
 - preserve honest messaging around local forced shutdown limits
 

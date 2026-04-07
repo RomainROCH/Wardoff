@@ -41,14 +41,16 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
   - a tray/background app with Block/Allow state and optional hidden mode
   - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, `--autostart on|off`, and `--version`, with `--status` expected to produce JSON for scripting
 - Keep the read-only CLI contract explicit: `--help`, `--version`, `--status`, and `--log --tail N` must remain non-elevating/local-or-read-only paths, while the default no-argument startup may still use the existing self-elevation path when needed.
+- Keep the IPC split explicit when documenting CLI behavior: `\\.\pipe\WardoffControl` is the state-changing pipe and `\\.\pipe\WardoffStatus` is the dedicated read-only status pipe.
 - Logging and observability are first-class:
   - rotating JSON lines file logs
   - shared counters and metadata such as total blocked attempts, last blocked attempt, and likely source
 - Shutdown handling is intentionally layered:
   1. standard interactive shutdown blocking through a message-only window that handles `WM_QUERYENDSESSION`, calls `ShutdownBlockReasonCreate()`, and raises shutdown priority with `SetProcessShutdownParameters()`
   2. local `shutdown.exe` protection is not part of the current documented MVP surface
-  3. Windows Update reboot protection by disabling the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` and re-checking it periodically
+  3. Windows Update reboot protection by disabling the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` and re-checking it periodically when that task exists
   4. remote shutdown protection via repeated `AbortSystemShutdown(NULL)` polling
+- Be explicit that Layer 3 can skip cleanly on editions such as LTSC where `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent; that is normal behavior, not a failure.
 - For detailed layer-by-layer behavior and the cautious wording around ETW/local shutdown handling, read `docs/WINDOWS_SHUTDOWN_LAYERS.md`.
 - Sleep/hibernate/display blocking is a separate toggle and is expected to use `SetThreadExecutionState(...)`.
 - Autostart is handled via Task Scheduler rather than the `Run` registry key so elevated scenarios can be handled correctly.
@@ -65,7 +67,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
 - `src/blocker/sleep.rs`: `SetThreadExecutionState(...)` blocker
 - `src/blocker/abort.rs`: shared shutdown-abort privilege and result helpers
 - `src/autostart.rs`: scheduled-task autostart management
-- `src/instance.rs` and `src/ipc.rs`: single-instance ownership and named-pipe control path
+- `src/instance.rs` and `src/ipc.rs`: single-instance ownership plus the named-pipe control and read-only status paths
 - `src/logger\`: human logging plus rotating structured JSONL logging
 - `src/tray\`: tray icon/menu surface and tray action plumbing
 - `src/windows_util.rs`: elevation checks and relaunch helpers
@@ -85,6 +87,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
   - machine-readable CLI output for status
   - structured JSONL log data that can be queried from PowerShell or other tooling
   - Task Scheduler usage over ad-hoc startup hooks
+- Keep README/architecture/copilot guidance aligned with the documented exit-code contract in README rather than inventing new CLI result semantics.
 - UI semantics that matter in the current MVP: Block state is visually red and Allow is green.
 
 ## Scope guardrails
