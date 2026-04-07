@@ -11,7 +11,7 @@ Wardoff is a Windows-native Rust application built around one primary process th
 - the blocker state machine
 - the hidden Windows message loop
 - the tray surface
-- the named-pipe control server
+- the named-pipe control and read-only status servers
 - the structured logging pipeline
 
 At runtime, the primary instance coordinates several worker-backed protection layers. Secondary CLI invocations do not create a second full runtime; they forward commands to the primary instance over named-pipe IPC.
@@ -203,7 +203,7 @@ Current request types include:
 - autostart changes
 - internal server shutdown during orderly app exit
 
-`wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe.
+`wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use `\\.\pipe\WardoffControl`.
 
 ### Why the UI thread handles requests
 
@@ -284,6 +284,8 @@ Uses Task Scheduler COM APIs to control:
 
 This is Layer 3 protection and runs only while Block mode is active.
 
+If the `\Microsoft\Windows\UpdateOrchestrator` folder or `Reboot` task does not exist on the machine, Layer 3 exits cleanly. That is expected on some Windows editions, including LTSC-style installations where the reboot task may be absent; it is a normal skip, not a failure.
+
 ### `src/autostart.rs`
 
 Uses Task Scheduler COM APIs to manage:
@@ -312,6 +314,7 @@ Current design:
 - `src/main.rs` calls `prepare_default_launch(...)` only when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
 - explicit CLI commands such as `--help`, `--version`, `--status`, and `--log --tail N` stay non-elevated unless the command itself later checks for administrator rights
 - `--status` reaches an elevated primary runtime through the dedicated read-only status pipe instead of the bidirectional control pipe
+- state-changing commands such as `--block`, `--allow`, `--hide`, and `--autostart on|off` remain on the normal runtime/control-pipe path rather than the read-only status path
 
 That design preserves scriptable non-elevated CLI usage while still letting the default runtime path request elevation so admin-only protections such as Update Orchestrator task control can be available.
 
