@@ -280,6 +280,37 @@ function Invoke-ExternalCommandWithRepoProcessTracking {
     })
 }
 
+function Convert-ToSingleQuotedPowerShellLiteral {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Text
+    )
+
+    return "'" + $Text.Replace("'", "''") + "'"
+}
+
+function Invoke-DirectPowerShellWardoffCommand {
+    param(
+        [string[]] $Arguments = @()
+    )
+
+    $argumentLiterals = @(
+        $Arguments | ForEach-Object { Convert-ToSingleQuotedPowerShellLiteral -Text ([string] $_) }
+    ) -join ', '
+    $binaryLiteral = Convert-ToSingleQuotedPowerShellLiteral -Text ([string] $binaryPath)
+    $command = "& $binaryLiteral @($argumentLiterals)`nexit `$LASTEXITCODE"
+
+    return Invoke-ExternalCommand -FilePath 'powershell' -Arguments @(
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        $command
+    )
+}
+
 function Get-WardoffProcessesByName {
     $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction SilentlyContinue
 
@@ -624,6 +655,22 @@ try {
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --version exited with code $($result.ExitCode)."
         Assert-Condition (-not [string]::IsNullOrWhiteSpace($result.Output)) 'wardoff --version did not print any output.'
         Assert-Condition ($result.Output -match '^wardoff\s+\S+$') "wardoff --version did not print a recognizable version string. Output: '$($result.Output)'."
+    }
+
+    if ($isAdmin) {
+        Skip-TestCase 'direct non-admin PowerShell invocation of wardoff --status stays inline without an elevation-startup error' 'Current smoke script is already elevated, so the required non-elevated PowerShell repro path is unavailable.'
+    }
+    else {
+        Invoke-TestCase 'direct non-admin PowerShell invocation of wardoff --status stays inline without an elevation-startup error' {
+            Stop-RepoWardoffProcesses
+
+            $result = Invoke-DirectPowerShellWardoffCommand -Arguments @('--status')
+            $status = Get-StatusJson -JsonText $result.Output
+
+            Assert-Condition ($result.ExitCode -eq 1) "direct PowerShell wardoff --status exited with code $($result.ExitCode) instead of 1."
+            Assert-Condition ($status.state -eq 'inactive') "direct PowerShell wardoff --status returned state '$($status.state)' instead of 'inactive'."
+            Assert-Condition ($result.Output -notmatch '(?i)elevation|required administrator rights|failed to start') "direct PowerShell wardoff --status reported an unexpected startup or elevation failure: $($result.Output)"
+        }
     }
 
     if ($isAdmin) {

@@ -131,17 +131,21 @@ wardoff --version
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
 - `wardoff --version` prints the package version, for example `wardoff 0.1.0`
+- direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
 Read-only commands stay non-elevated:
 
 - `--help` and `--version` short-circuit locally in clap
 - `--status` reads status through the dedicated `\\.\pipe\WardoffStatus` pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
+- those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
 
 State-changing/default behavior uses the normal runtime path:
 
 - default `wardoff` startup bootstraps a new visible Block-mode primary runtime and may trigger Wardoff's built-in self-elevation path when admin-only protections are desired
 - `--block`, `--allow`, `--hide`, and `--autostart on|off` are not read-only commands; they either start a runtime locally or talk to the primary runtime over the state-changing control pipe `\\.\pipe\WardoffControl`
+- when a CLI launch would create a new long-lived primary runtime from an existing shell console, Wardoff relaunches that runtime in a detached background process so the shell prompt is not left hanging
+- when the long-lived runtime starts from Explorer, autostart, or another launch path without an inherited shell console, Wardoff hides and frees any dedicated console window during startup
 
 Example status output while Wardoff is active:
 
@@ -170,11 +174,14 @@ Wardoff is explicit about elevation:
 
 - the release manifest now stays at `asInvoker`, so explicit CLI invocations can start in a normal non-elevated console
 - the release build now embeds that `asInvoker` manifest through the normal Windows resource path instead of ad-hoc linker flags, which makes the launch contract more predictable for shell invocations
+- the release binary is now console-friendly in release builds, so direct PowerShell invocations of read-only commands stay in the calling console instead of behaving like a GUI-style launch
 - if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
 - `src/main.rs` now keeps an explicit non-elevating read-only dispatch for `--status` and `--log --tail N` before any runtime bootstrap logic
 - `wardoff --status` uses a dedicated read-only status pipe, and `wardoff --log --tail N` reads structured log files directly, so both commands stay non-elevated even when the primary runtime is already elevated
 - state-changing secondary commands still use the control pipe `\\.\pipe\WardoffControl`
 - `--help` and `--version` still short-circuit inside clap and remain pure local console output
+- if a new long-lived primary runtime is launched from an existing console, Wardoff detaches and relaunches that runtime so the console session can return immediately
+- if a new long-lived primary runtime starts without an inherited shell console, Wardoff hides and frees the standalone console early so Explorer-style launches do not leave an empty console window behind
 - Layer 3 UpdateOrchestrator protection requires elevation
 - on editions such as LTSC where `\Microsoft\Windows\UpdateOrchestrator\Reboot` is missing, Layer 3 is skipped automatically and that is expected
 - Layer 4 remote shutdown abort polling depends on the shutdown-abort privilege and is intended to run elevated

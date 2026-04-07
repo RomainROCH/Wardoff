@@ -1,5 +1,3 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod autostart;
 mod blocker;
 mod cli;
@@ -26,7 +24,8 @@ use crate::tray::{
     spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility, TRAY_ACTION_WAKE_MESSAGE,
 };
 use crate::windows_util::{
-    show_fatal_error_dialog, ElevationLaunchResult, INTERNAL_ELEVATED_RELAUNCH_ARG,
+    show_fatal_error_dialog, ConsoleLaunchContext, ElevationLaunchResult,
+    INTERNAL_DETACHED_RUNTIME_ARG, INTERNAL_ELEVATED_RELAUNCH_ARG,
 };
 use log::{error, info, warn};
 use std::error::Error;
@@ -222,9 +221,11 @@ fn run_main() -> Result<i32, Box<dyn Error>> {
         action @ (RequestedAction::Default
         | RequestedAction::Block
         | RequestedAction::Allow
-        | RequestedAction::Hide) => {
-            handle_runtime_request(action, cli.is_internal_elevated_relaunch())
-        }
+        | RequestedAction::Hide) => handle_runtime_request(
+            action,
+            cli.is_internal_elevated_relaunch(),
+            cli.is_internal_detached_runtime(),
+        ),
         RequestedAction::Status | RequestedAction::Log { .. } => {
             unreachable!("read-only CLI actions are handled before runtime and elevation dispatch")
         }
@@ -244,6 +245,7 @@ fn handle_read_only_request(action: RequestedAction) -> Result<i32, Box<dyn Erro
 fn handle_runtime_request(
     action: RequestedAction,
     internal_elevated_relaunch: bool,
+    internal_detached_runtime: bool,
 ) -> Result<i32, Box<dyn Error>> {
     let instance_claim = if action == RequestedAction::Default && internal_elevated_relaunch {
         claim_primary_instance_with_retry(
@@ -256,12 +258,20 @@ fn handle_runtime_request(
     };
 
     match instance_claim {
-        InstanceClaim::Primary(primary_instance) => {
-            handle_primary_runtime_request(action, internal_elevated_relaunch, primary_instance)
-        }
+        InstanceClaim::Primary(primary_instance) => handle_primary_runtime_request(
+            action,
+            internal_elevated_relaunch,
+            internal_detached_runtime,
+            primary_instance,
+        ),
         InstanceClaim::Secondary => {
             forward_request_to_primary(ipc_request_for(action), |primary_instance| {
-                handle_primary_runtime_request(action, internal_elevated_relaunch, primary_instance)
+                handle_primary_runtime_request(
+                    action,
+                    internal_elevated_relaunch,
+                    internal_detached_runtime,
+                    primary_instance,
+                )
             })
         }
     }
@@ -330,6 +340,7 @@ fn handle_autostart_request(enabled: bool) -> Result<i32, Box<dyn Error>> {
 fn handle_primary_runtime_request(
     action: RequestedAction,
     internal_elevated_relaunch: bool,
+    internal_detached_runtime: bool,
     primary_instance: InstanceGuard,
 ) -> Result<i32, Box<dyn Error>> {
     let primary_instance = match action {
@@ -341,6 +352,11 @@ fn handle_primary_runtime_request(
         }
         _ => primary_instance,
     };
+
+    match prepare_runtime_console_launch(action, internal_detached_runtime)? {
+        RuntimeConsoleDisposition::Bootstrap => {}
+        RuntimeConsoleDisposition::Exit(exit_code) => return Ok(exit_code),
+    }
 
     let application = bootstrap(primary_instance, runtime_options_for(action))?;
     run(application)?;
@@ -376,6 +392,11 @@ enum DefaultLaunchDisposition {
     Exit(i32),
 }
 
+enum RuntimeConsoleDisposition {
+    Bootstrap,
+    Exit(i32),
+}
+
 fn prepare_default_launch(
     primary_instance: InstanceGuard,
     internal_elevated_relaunch: bool,
@@ -408,6 +429,30 @@ fn prepare_default_launch(
         ElevationLaunchResult::Cancelled => {
             info!("Wardoff default startup was canceled at the UAC prompt.");
             Ok(DefaultLaunchDisposition::Exit(1))
+        }
+    }
+}
+
+fn prepare_runtime_console_launch(
+    action: RequestedAction,
+    internal_detached_runtime: bool,
+) -> Result<RuntimeConsoleDisposition, Box<dyn Error>> {
+    match windows_util::console_launch_context().map_err(other_error)? {
+        ConsoleLaunchContext::None => Ok(RuntimeConsoleDisposition::Bootstrap),
+        ConsoleLaunchContext::Owned => {
+            windows_util::hide_and_free_console().map_err(other_error)?;
+            Ok(RuntimeConsoleDisposition::Bootstrap)
+        }
+        ConsoleLaunchContext::Inherited if internal_detached_runtime => {
+            Ok(RuntimeConsoleDisposition::Bootstrap)
+        }
+        ConsoleLaunchContext::Inherited => {
+            windows_util::relaunch_self_detached().map_err(other_error)?;
+            info!(
+                "Wardoff detached its {} runtime launch from the current shell console.",
+                runtime_request_label(action)
+            );
+            Ok(RuntimeConsoleDisposition::Exit(0))
         }
     }
 }
@@ -1006,12 +1051,20 @@ fn should_show_graphical_startup_error() -> bool {
         return false;
     }
 
-    let mut args = std::env::args_os().skip(1);
-    match (args.next(), args.next()) {
-        (None, None) => true,
-        (Some(arg), None) => arg == OsStr::new(INTERNAL_ELEVATED_RELAUNCH_ARG),
-        _ => false,
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let startup_context = args.is_empty()
+        || args.iter().all(|arg| {
+            arg == OsStr::new(INTERNAL_ELEVATED_RELAUNCH_ARG)
+                || arg == OsStr::new(INTERNAL_DETACHED_RUNTIME_ARG)
+        });
+    if !startup_context {
+        return false;
     }
+
+    !matches!(
+        windows_util::console_launch_context(),
+        Ok(ConsoleLaunchContext::Inherited)
+    )
 }
 
 fn mode_label(mode: BlockerMode) -> &'static str {
@@ -1035,6 +1088,17 @@ fn on_off_label(enabled: bool) -> &'static str {
         "on"
     } else {
         "off"
+    }
+}
+
+fn runtime_request_label(action: RequestedAction) -> &'static str {
+    match action {
+        RequestedAction::Default => "default",
+        RequestedAction::Block => "block",
+        RequestedAction::Allow => "allow",
+        RequestedAction::Hide => "hidden block",
+        RequestedAction::Autostart { .. } => "autostart",
+        RequestedAction::Status | RequestedAction::Log { .. } => "read-only",
     }
 }
 
