@@ -143,6 +143,15 @@ If no primary runtime is running:
 {"state":"inactive"}
 ```
 
+### Exit codes
+
+- `wardoff --help` exits `0`
+- `wardoff --version` exits `0`
+- `wardoff --status` exits `0` when Wardoff is active, exits `1` when no primary runtime is active, and exits `1` on errors
+- `wardoff --log --tail N` exits `0` on success and `1` on errors
+- `wardoff --block` and `wardoff --allow` exit `0` on success, including when they start a runtime or switch the running runtime, and exit `1` when they fail
+- `wardoff --autostart on|off` exits `0` on success and `1` on failure
+
 ## Running as Administrator
 
 Wardoff is explicit about elevation:
