@@ -22,6 +22,13 @@ pub enum RequestedAction {
     Log { tail: usize },
 }
 
+impl RequestedAction {
+    /// Returns whether this action is a read-only CLI path that must stay non-elevating.
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::Status | Self::Log { .. })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum CliAutostartState {
     On,
@@ -205,5 +212,29 @@ mod tests {
             error.to_string().trim(),
             format!("wardoff {}", env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    #[test]
+    fn help_flag_short_circuits_argument_parsing() {
+        let error = WardoffCli::try_parse_from(["wardoff", "--help"])
+            .expect_err("--help should short-circuit argument parsing");
+
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        assert!(error
+            .to_string()
+            .contains("Open-source Windows shutdown/reboot/sleep blocker"));
+    }
+
+    #[test]
+    fn read_only_actions_are_classified_explicitly() {
+        let status = WardoffCli::parse_from(["wardoff", "--status"]);
+        let log = WardoffCli::parse_from(["wardoff", "--log", "--tail", "3"]);
+        let default_launch = WardoffCli::parse_from(["wardoff"]);
+        let autostart = WardoffCli::parse_from(["wardoff", "--autostart", "on"]);
+
+        assert!(status.requested_action().is_read_only());
+        assert!(log.requested_action().is_read_only());
+        assert!(!default_launch.requested_action().is_read_only());
+        assert!(!autostart.requested_action().is_read_only());
     }
 }

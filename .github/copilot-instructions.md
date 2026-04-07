@@ -40,6 +40,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
 - The product has two control surfaces that should stay aligned:
   - a tray/background app with Block/Allow state and optional hidden mode
   - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, `--autostart on|off`, and `--version`, with `--status` expected to produce JSON for scripting
+- Keep the read-only CLI contract explicit: `--help`, `--version`, `--status`, and `--log --tail N` must remain non-elevating/local-or-read-only paths, while the default no-argument startup may still use the existing self-elevation path when needed.
 - Logging and observability are first-class:
   - rotating JSON lines file logs
   - shared counters and metadata such as total blocked attempts, last blocked attempt, and likely source
