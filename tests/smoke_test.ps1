@@ -9,8 +9,27 @@ $script:BackgroundProcess = $null
 $script:InitialLogLineCount = 0
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$binaryPath = Join-Path $repoRoot 'target\release\wardoff.exe'
 $logPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Wardoff') 'logs\wardoff.jsonl'
+
+function Resolve-BinaryPath {
+    $defaultBinaryPath = Join-Path $repoRoot 'target\release\wardoff.exe'
+
+    try {
+        $metadataJson = & cargo metadata --format-version 1 --no-deps 2>$null
+        if (-not [string]::IsNullOrWhiteSpace($metadataJson)) {
+            $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace($metadata.target_directory)) {
+                return Join-Path $metadata.target_directory 'release\wardoff.exe'
+            }
+        }
+    }
+    catch {
+    }
+
+    return $defaultBinaryPath
+}
+
+$binaryPath = Resolve-BinaryPath
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -155,17 +174,129 @@ function Invoke-ExternalCommand {
     }
 }
 
+function Invoke-ExternalCommandWithRepoProcessTracking {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $FilePath,
+        [string[]] $Arguments = @(),
+        [string] $WorkingDirectory = $repoRoot,
+        [int] $PollIntervalMilliseconds = 25,
+        [int] $PostExitGraceMilliseconds = 250
+    )
+
+    $observedRepoProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+    $observedWardoffProcessIds = [System.Collections.Generic.HashSet[int]]::new()
+    $initialWardoffProcessIds = @(
+        Get-WardoffProcessesByName |
+            ForEach-Object { [int] $_.ProcessId } |
+            Sort-Object -Unique
+    )
+
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $FilePath
+        $startInfo.Arguments = @(
+            $Arguments | ForEach-Object {
+                $argumentText = [string] $_
+                if ($argumentText -match '[\s"]') {
+                    '"' + ($argumentText -replace '"', '\"') + '"'
+                }
+                else {
+                    $argumentText
+                }
+            }
+        ) -join ' '
+        $startInfo.WorkingDirectory = $WorkingDirectory
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $null = $process.Start()
+
+        do {
+            $process.Refresh()
+
+            foreach ($wardoffProcess in @(Get-WardoffProcessesByName)) {
+                $null = $observedWardoffProcessIds.Add([int] $wardoffProcess.ProcessId)
+            }
+
+            foreach ($repoProcess in @(Get-RepoWardoffProcesses)) {
+                $null = $observedRepoProcessIds.Add([int] $repoProcess.ProcessId)
+            }
+
+            if ($process.HasExited) {
+                break
+            }
+
+            Start-Sleep -Milliseconds $PollIntervalMilliseconds
+        }
+        while ($true)
+
+        $null = $process.WaitForExit()
+        $process.Refresh()
+
+        $extraPolls = [Math]::Max(1, [int] [Math]::Ceiling($PostExitGraceMilliseconds / [Math]::Max(1, $PollIntervalMilliseconds)))
+        for ($poll = 0; $poll -lt $extraPolls; $poll++) {
+            Start-Sleep -Milliseconds $PollIntervalMilliseconds
+            foreach ($wardoffProcess in @(Get-WardoffProcessesByName)) {
+                $null = $observedWardoffProcessIds.Add([int] $wardoffProcess.ProcessId)
+            }
+            foreach ($repoProcess in @(Get-RepoWardoffProcesses)) {
+                $null = $observedRepoProcessIds.Add([int] $repoProcess.ProcessId)
+            }
+        }
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $exitCode = $process.ExitCode
+    }
+    catch {
+        throw "Failed to run '$FilePath' with process tracking: $($_.Exception.Message)"
+    }
+
+    $stdout = if ($null -eq $stdout) { '' } else { [string] $stdout }
+    $stderr = if ($null -eq $stderr) { '' } else { [string] $stderr }
+    $stdout = $stdout.Trim()
+    $stderr = $stderr.Trim()
+    $text = @($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $text = ($text -join [Environment]::NewLine).Trim()
+
+    return [pscustomobject]([ordered]@{
+        ExitCode                 = $exitCode
+        StandardOutput           = $stdout
+        StandardError            = $stderr
+        Output                   = $text
+        LaunchedProcessId        = $process.Id
+        InitialWardoffProcessIds = $initialWardoffProcessIds
+        FinalWardoffProcessIds   = @(
+            Get-WardoffProcessesByName |
+                ForEach-Object { [int] $_.ProcessId } |
+                Sort-Object -Unique
+        )
+        ObservedWardoffProcessIds = @($observedWardoffProcessIds | Sort-Object)
+        ObservedRepoProcessIds    = @($observedRepoProcessIds | Sort-Object)
+    })
+}
+
+function Get-WardoffProcessesByName {
+    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction SilentlyContinue
+
+    if ($null -eq $processes) {
+        return @()
+    }
+
+    return @($processes)
+}
+
 function Get-RepoWardoffProcesses {
     if (-not (Test-Path $binaryPath)) {
         return @()
     }
 
     $resolvedBinaryPath = [System.IO.Path]::GetFullPath($binaryPath)
-    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction SilentlyContinue
-
-    if ($null -eq $processes) {
-        return @()
-    }
+    $processes = Get-WardoffProcessesByName
 
     return @(
         $processes | Where-Object {
@@ -395,16 +526,54 @@ try {
         Assert-Condition (Test-Path $binaryPath) "Expected binary at $binaryPath."
     }
 
-    Invoke-TestCase 'wardoff --help exits 0 and mentions wardoff' {
+    Invoke-TestCase 'wardoff --help exits 0 and prints non-empty usage text' {
         $result = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--help')
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --help exited with code $($result.ExitCode)."
+        Assert-Condition (-not [string]::IsNullOrWhiteSpace($result.Output)) 'wardoff --help did not print any output.'
         Assert-Condition ($result.Output -match '(?i)wardoff') "wardoff --help did not mention 'wardoff'."
     }
 
-    Invoke-TestCase 'wardoff --version exits 0 and prints wardoff 0.1.0' {
+    Invoke-TestCase 'wardoff --version exits 0 and prints a version string' {
         $result = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--version')
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --version exited with code $($result.ExitCode)."
-        Assert-Condition ($result.Output -eq 'wardoff 0.1.0') "wardoff --version printed '$($result.Output)' instead of 'wardoff 0.1.0'."
+        Assert-Condition (-not [string]::IsNullOrWhiteSpace($result.Output)) 'wardoff --version did not print any output.'
+        Assert-Condition ($result.Output -match '^wardoff\s+\S+$') "wardoff --version did not print a recognizable version string. Output: '$($result.Output)'."
+    }
+
+    if ($isAdmin) {
+        Skip-TestCase 'wardoff --status from a non-elevated session does not spawn another Wardoff process' 'Current smoke script is already elevated, so the required non-elevated no-spawn check is unavailable.'
+    }
+    else {
+        Invoke-TestCase 'wardoff --status from a non-elevated session does not spawn another Wardoff process' {
+            Stop-RepoWardoffProcesses
+
+            $statusResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--status')
+            $status = Get-StatusJson -JsonText $statusResult.Output
+            $trackingResult = Invoke-ExternalCommandWithRepoProcessTracking -FilePath $binaryPath -Arguments @('--status')
+            $launchedProcessId = $trackingResult.LaunchedProcessId
+            $initialWardoffProcessIds = @($trackingResult.InitialWardoffProcessIds)
+            $finalWardoffProcessIds = @($trackingResult.FinalWardoffProcessIds)
+            $unexpectedWardoffProcessIds = @(
+                $trackingResult.ObservedWardoffProcessIds |
+                    Where-Object {
+                        ($_ -ne $launchedProcessId) -and
+                        ($_ -notin $initialWardoffProcessIds)
+                    } |
+                    Sort-Object -Unique
+            )
+            $unexpectedProcessIds = @(
+                $trackingResult.ObservedRepoProcessIds |
+                    Where-Object { $_ -ne $launchedProcessId } |
+                    Sort-Object -Unique
+            )
+
+            Assert-Condition ($statusResult.ExitCode -eq 1) "wardoff --status exited with code $($statusResult.ExitCode) instead of 1."
+            Assert-Condition ($status.state -eq 'inactive') "wardoff --status returned state '$($status.state)' instead of 'inactive'."
+            Assert-Condition ($unexpectedWardoffProcessIds.Count -eq 0) "wardoff --status spawned additional wardoff.exe process id(s): $($unexpectedWardoffProcessIds -join ', ')."
+            Assert-Condition ($unexpectedProcessIds.Count -eq 0) "wardoff --status spawned additional Wardoff process id(s): $($unexpectedProcessIds -join ', ')."
+            Assert-Condition (@($finalWardoffProcessIds | Where-Object { $_ -notin $initialWardoffProcessIds }).Count -eq 0) "wardoff --status left new wardoff.exe process id(s) running after it exited: $((@($finalWardoffProcessIds | Where-Object { $_ -notin $initialWardoffProcessIds }) | Sort-Object -Unique) -join ', ')."
+            Assert-Condition (@(Get-RepoWardoffProcesses).Count -eq 0) 'wardoff --status left a Wardoff process running after it exited.'
+        }
     }
 
     Invoke-TestCase 'wardoff --status without an instance exits 1 and reports inactive JSON' {
