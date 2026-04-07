@@ -307,7 +307,7 @@ Release-elevation behavior is controlled by:
 
 Current design:
 
-- in release builds on Windows, `build.rs` embeds the application manifest
+- in release builds on Windows, `build.rs` uses `winres` to compile `wardoff.manifest` into the normal Win32 manifest resource
 - `wardoff.manifest` requests `asInvoker`, so Windows does not force elevation before CLI argument parsing
 - clap still short-circuits `--help` and `--version` locally before Wardoff reaches any runtime bootstrap logic
 - `src/main.rs` now routes `--status` and `--log --tail N` through an explicit read-only dispatch before calling `prepare_default_launch(...)` or any default-runtime bootstrap path
@@ -315,6 +315,7 @@ Current design:
 - explicit CLI commands such as `--help`, `--version`, `--status`, and `--log --tail N` stay non-elevated unless the command itself later checks for administrator rights
 - `--status` reaches an elevated primary runtime through the dedicated read-only status pipe instead of the bidirectional control pipe
 - state-changing commands such as `--block`, `--allow`, `--hide`, and `--autostart on|off` remain on the normal runtime/control-pipe path rather than the read-only status path
+- `tests/smoke_test.ps1` now includes a release-binary guard that reads the embedded manifest resource directly and asserts `requestedExecutionLevel level="asInvoker"`
 
 That design preserves scriptable non-elevated CLI usage while still letting the default runtime path request elevation so admin-only protections such as Update Orchestrator task control can be available.
 

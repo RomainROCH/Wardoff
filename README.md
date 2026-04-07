@@ -169,6 +169,7 @@ If no primary runtime is running:
 Wardoff is explicit about elevation:
 
 - the release manifest now stays at `asInvoker`, so explicit CLI invocations can start in a normal non-elevated console
+- the release build now embeds that `asInvoker` manifest through the normal Windows resource path instead of ad-hoc linker flags, which makes the launch contract more predictable for shell invocations
 - if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
 - `src/main.rs` now keeps an explicit non-elevating read-only dispatch for `--status` and `--log --tail N` before any runtime bootstrap logic
 - `wardoff --status` uses a dedicated read-only status pipe, and `wardoff --log --tail N` reads structured log files directly, so both commands stay non-elevated even when the primary runtime is already elevated

@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - Tightened autostart tray-sync honesty so elevated task changes are reflected accurately in the tray menu state.
 - Improved secondary handoff recovery when a follower reaches Wardoff during a primary restart or handoff window.
 - Expanded validation guidance for tray sync, Explorer restart, secondary handoff, and admin-only autostart scenarios.
+- Switched Windows release-manifest embedding from manual linker flags to `winres` resource compilation and added a smoke guard that asserts the built release binary still embeds `requestedExecutionLevel level="asInvoker"`.
 
 ## [0.1.0] - 2026-03-22
 
