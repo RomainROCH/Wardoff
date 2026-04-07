@@ -23,6 +23,7 @@ At runtime, the primary instance coordinates several worker-backed protection la
 Owns application bootstrap and shutdown:
 
 - parses CLI intent
+- routes explicit read-only CLI actions through a dedicated non-elevating path
 - claims or defers to the primary instance
 - handles elevation behavior for the default launch path
 - initializes structured logging
@@ -306,7 +307,9 @@ Current design:
 
 - in release builds on Windows, `build.rs` embeds the application manifest
 - `wardoff.manifest` requests `asInvoker`, so Windows does not force elevation before CLI argument parsing
-- `src/main.rs` calls `prepare_default_launch(...)` when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
+- clap still short-circuits `--help` and `--version` locally before Wardoff reaches any runtime bootstrap logic
+- `src/main.rs` now routes `--status` and `--log --tail N` through an explicit read-only dispatch before calling `prepare_default_launch(...)` or any default-runtime bootstrap path
+- `src/main.rs` calls `prepare_default_launch(...)` only when a no-arguments launch is bootstrapping a new primary runtime and selectively relaunches through `relaunch_self_elevated()` when admin-only protections are desired
 - explicit CLI commands such as `--help`, `--version`, `--status`, and `--log --tail N` stay non-elevated unless the command itself later checks for administrator rights
 - `--status` reaches an elevated primary runtime through the dedicated read-only status pipe instead of the bidirectional control pipe
 

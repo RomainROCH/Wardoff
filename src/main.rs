@@ -213,15 +213,30 @@ fn run_main() -> Result<i32, Box<dyn Error>> {
     let cli = parse_cli();
     let action = cli.requested_action();
 
+    if action.is_read_only() {
+        return handle_read_only_request(action);
+    }
+
     match action {
         RequestedAction::Autostart { enabled } => handle_autostart_request(enabled),
-        RequestedAction::Status => handle_status_request(),
-        RequestedAction::Log { tail } => handle_log_request(tail),
         action @ (RequestedAction::Default
         | RequestedAction::Block
         | RequestedAction::Allow
         | RequestedAction::Hide) => {
             handle_runtime_request(action, cli.is_internal_elevated_relaunch())
+        }
+        RequestedAction::Status | RequestedAction::Log { .. } => {
+            unreachable!("read-only CLI actions are handled before runtime and elevation dispatch")
+        }
+    }
+}
+
+fn handle_read_only_request(action: RequestedAction) -> Result<i32, Box<dyn Error>> {
+    match action {
+        RequestedAction::Status => handle_status_request(),
+        RequestedAction::Log { tail } => handle_log_request(tail),
+        _ => {
+            unreachable!("only read-only CLI actions should reach the non-elevating dispatch path")
         }
     }
 }
@@ -445,10 +460,9 @@ fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
         RequestedAction::Autostart { .. } => {
             unreachable!("autostart changes do not start the primary runtime")
         }
-        RequestedAction::Status | RequestedAction::Log { .. } => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Visible,
-        },
+        RequestedAction::Status | RequestedAction::Log { .. } => {
+            unreachable!("read-only CLI actions never start the runtime")
+        }
     }
 }
 
@@ -463,7 +477,9 @@ fn ipc_request_for(action: RequestedAction) -> IpcRequest {
             mode: PipeMode::Allow,
         },
         RequestedAction::Autostart { enabled } => IpcRequest::SetAutostart { enabled },
-        RequestedAction::Status | RequestedAction::Log { .. } => IpcRequest::Status,
+        RequestedAction::Status | RequestedAction::Log { .. } => {
+            unreachable!("read-only CLI actions do not use the control IPC request helper")
+        }
     }
 }
 
