@@ -139,6 +139,7 @@ Read-only commands stay non-elevated:
 - `--status` reads status through the dedicated `\\.\pipe\WardoffStatus` pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
+- today, `--status` can still take a few seconds to return `{"state":"inactive"}` when no primary runtime is running; when a runtime is active, the status-pipe path should return quickly
 
 State-changing/default behavior uses the normal runtime path:
 
