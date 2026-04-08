@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Clarified in README, architecture notes, and agent guidance that Layer 3 is skipped normally on editions such as LTSC when `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent.
 - Aligned docs on the non-elevated read-only CLI contract, the `\\.\pipe\WardoffControl` and `\\.\pipe\WardoffStatus` split, default startup honesty, and current exit-code wording.
+- Clarified in the docs that `wardoff --status` is quick when a runtime is active but can currently take roughly 4 seconds to return `{"state":"inactive"}` when no instance is running because the client exhausts sequential status-pipe and control-pipe retry loops.
 - Refreshed the documentation truth-source and read order so new contributors and agents can identify the current MVP status, documentation entrypoints, and likely next work from the repository alone.
 - Hardened Allow-mode deactivation so switching to Allow clears Block-mode behavior more cleanly.
 - Tightened autostart tray-sync honesty so elevated task changes are reflected accurately in the tray menu state.
