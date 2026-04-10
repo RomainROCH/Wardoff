@@ -5,6 +5,7 @@ use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+use std::mem::size_of;
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -13,16 +14,25 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use windows::core::{w, Error as WindowsError};
+use windows::core::{w, Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, HANDLE, LPARAM, WPARAM,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
+    HLOCAL, LPARAM, WPARAM,
+};
+use windows::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows::Win32::Security::{
+    GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, PIPE_ACCESS_OUTBOUND};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 
 const CONTROL_PIPE_PATH: &str = r"\\.\pipe\WardoffControl";
@@ -32,6 +42,8 @@ const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
+const CONTROL_PIPE_SECURITY_SDDL_PREFIX: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;";
+const CONTROL_PIPE_SECURITY_SDDL_SUFFIX: &str = ")S:(ML;;NW;;;ME)";
 
 /// Wakes the UI thread when the IPC server has queued a new request.
 pub(crate) const IPC_WAKE_MESSAGE: u32 = WM_APP + 1;
@@ -141,7 +153,8 @@ impl IpcServer {
 
     /// Stops accepting new status-pipe clients before the main runtime begins shutdown work.
     pub(crate) fn begin_shutdown(&self) {
-        self.status_shutdown_requested.store(true, Ordering::Release);
+        self.status_shutdown_requested
+            .store(true, Ordering::Release);
         let _ = wake_status_server();
     }
 
@@ -174,9 +187,9 @@ impl IpcServer {
                 .map_err(|_| "Wardoff IPC server thread panicked during shutdown.".to_string())?;
         }
         if let Some(join_handle) = self.status_join_handle.take() {
-            join_handle
-                .join()
-                .map_err(|_| "Wardoff status server thread panicked during shutdown.".to_string())?;
+            join_handle.join().map_err(|_| {
+                "Wardoff status server thread panicked during shutdown.".to_string()
+            })?;
         }
 
         Ok(())
@@ -286,9 +299,52 @@ impl Drop for PipeHandle {
     }
 }
 
+struct LocalSecurityDescriptor(*mut core::ffi::c_void);
+
+impl Drop for LocalSecurityDescriptor {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(self.0)));
+            }
+        }
+    }
+}
+
+struct HandleGuard(HANDLE);
+
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+struct ControlPipeSecurityAttributes {
+    security_attributes: SECURITY_ATTRIBUTES,
+    _security_descriptor: LocalSecurityDescriptor,
+}
+
 fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
+    let control_pipe_security = match build_control_pipe_security_attributes() {
+        Ok(security) => security,
+        Err(error) => {
+            warn!("Wardoff stopped its named-pipe server before startup: {error}");
+            logger::log_event(
+                "ipc_server_stopped",
+                EventSource::Ipc,
+                format!("Wardoff stopped its named-pipe control server before startup: {error}"),
+                false,
+            );
+            return;
+        }
+    };
+
     loop {
-        let mut pipe = match accept_control_client() {
+        let mut pipe = match accept_control_client(&control_pipe_security) {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
@@ -405,7 +461,9 @@ fn run_status_server_loop(
                 logger::log_event(
                     "status_server_stopped",
                     EventSource::Ipc,
-                    format!("Wardoff stopped its read-only status pipe after an IPC error: {error}"),
+                    format!(
+                        "Wardoff stopped its read-only status pipe after an IPC error: {error}"
+                    ),
                     false,
                 );
                 break;
@@ -475,17 +533,17 @@ fn run_status_server_loop(
     );
 }
 
-fn accept_control_client() -> Result<File, String> {
+fn accept_control_client(security: &ControlPipeSecurityAttributes) -> Result<File, String> {
     let pipe = unsafe {
         CreateNamedPipeW(
             w!("\\\\.\\pipe\\WardoffControl"),
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             PIPE_BUFFER_SIZE,
             PIPE_BUFFER_SIZE,
             0,
-            None,
+            Some(&security.security_attributes),
         )
     };
     if pipe.is_invalid() {
@@ -672,20 +730,195 @@ fn map_connect_error(path: &str, error: std::io::Error, raw_code: Option<i32>) -
         {
             ClientError::Unavailable
         }
+        Some(code) if code == ERROR_ACCESS_DENIED.0 as i32 && path == CONTROL_PIPE_PATH => {
+            ClientError::Transport(control_pipe_access_denied_message())
+        }
         Some(code) if code == ERROR_PIPE_BUSY.0 as i32 => ClientError::Transport(format!(
             "Wardoff found a primary instance, but {path} is busy: {error}"
         )),
-        _ => ClientError::Transport(format!(
-            "Wardoff could not connect to {path}: {error}"
-        )),
+        _ => ClientError::Transport(format!("Wardoff could not connect to {path}: {error}")),
+    }
+}
+
+fn build_control_pipe_security_attributes() -> Result<ControlPipeSecurityAttributes, String> {
+    let current_user_sid = current_process_user_sid_string()?;
+    let control_pipe_security_sddl =
+        wide_null(&build_control_pipe_security_sddl(&current_user_sid)?);
+    let mut security_descriptor = PSECURITY_DESCRIPTOR::default();
+
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(control_pipe_security_sddl.as_ptr()),
+            SDDL_REVISION_1 as u32,
+            &mut security_descriptor,
+            None,
+        )
+        .map_err(|error| {
+            format!("Wardoff could not prepare {CONTROL_PIPE_PATH} security attributes: {error}")
+        })?;
+    }
+
+    Ok(ControlPipeSecurityAttributes {
+        security_attributes: SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: security_descriptor.0,
+            bInheritHandle: false.into(),
+        },
+        _security_descriptor: LocalSecurityDescriptor(security_descriptor.0),
+    })
+}
+
+fn build_control_pipe_security_sddl(current_user_sid: &str) -> Result<String, String> {
+    if current_user_sid.trim().is_empty() {
+        return Err(format!(
+            "Wardoff could not build {CONTROL_PIPE_PATH} security attributes because the current-user SID was empty."
+        ));
+    }
+
+    Ok(format!(
+        "{CONTROL_PIPE_SECURITY_SDDL_PREFIX}{current_user_sid}{CONTROL_PIPE_SECURITY_SDDL_SUFFIX}"
+    ))
+}
+
+fn control_pipe_access_denied_message() -> String {
+    "Wardoff could not send that control command to the active primary runtime. Non-elevated shells can control an elevated Wardoff runtime only for the same interactive Windows user. If Wardoff is running as a different user, close that runtime or relaunch the command from the matching account.".to_string()
+}
+
+fn current_process_user_sid_string() -> Result<String, String> {
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|error| {
+            format!("Wardoff could not query its process token for {CONTROL_PIPE_PATH}: {error}")
+        })?;
+        let token = HandleGuard(token);
+
+        let mut required_length = 0u32;
+        let _ = GetTokenInformation(token.0, TokenUser, None, 0, &mut required_length);
+        let probe_error = GetLastError();
+        if required_length == 0 || probe_error != ERROR_INSUFFICIENT_BUFFER {
+            return Err(format!(
+                "Wardoff could not determine the token-user size for {CONTROL_PIPE_PATH} (Win32 error {}).",
+                probe_error.0
+            ));
+        }
+
+        let mut token_information = vec![0u8; required_length as usize];
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            Some(token_information.as_mut_ptr() as *mut _),
+            required_length,
+            &mut required_length,
+        )
+        .map_err(|error| {
+            format!(
+                "Wardoff could not read its process token user for {CONTROL_PIPE_PATH}: {error}"
+            )
+        })?;
+
+        let token_user = &*(token_information.as_ptr() as *const TOKEN_USER);
+        if token_user.User.Sid.0.is_null() {
+            return Err(format!(
+                "Wardoff could not read a token-user SID for {CONTROL_PIPE_PATH}."
+            ));
+        }
+        let mut string_sid = PWSTR::null();
+        ConvertSidToStringSidW(token_user.User.Sid, &mut string_sid).map_err(|error| {
+            format!(
+                "Wardoff could not stringify its token-user SID for {CONTROL_PIPE_PATH}: {error}"
+            )
+        })?;
+
+        let string_sid = LocalAllocatedWideString(string_sid);
+        let sid = string_sid.to_string();
+        if sid.is_empty() {
+            return Err(format!(
+                "Wardoff could not stringify a non-empty token-user SID for {CONTROL_PIPE_PATH}."
+            ));
+        }
+
+        Ok(sid)
     }
 }
 
 fn wake_status_server() -> std::io::Result<()> {
-    OpenOptions::new().read(true).open(STATUS_PIPE_PATH).map(|_| ())
+    OpenOptions::new()
+        .read(true)
+        .open(STATUS_PIPE_PATH)
+        .map(|_| ())
 }
 
 fn wake_ui_thread(ui_thread_id: u32) -> Result<(), String> {
     unsafe { PostThreadMessageW(ui_thread_id, IPC_WAKE_MESSAGE, WPARAM(0), LPARAM(0)) }
         .map_err(|error| format!("Wardoff could not wake its UI thread for IPC: {error}"))
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+struct LocalAllocatedWideString(PWSTR);
+
+impl LocalAllocatedWideString {
+    fn to_string(&self) -> String {
+        if self.0.is_null() {
+            return String::new();
+        }
+
+        unsafe {
+            let mut length = 0usize;
+            while *self.0 .0.add(length) != 0 {
+                length += 1;
+            }
+
+            String::from_utf16_lossy(std::slice::from_raw_parts(self.0 .0, length))
+        }
+    }
+}
+
+impl Drop for LocalAllocatedWideString {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                let _ = LocalFree(Some(HLOCAL(self.0 .0 as *mut _)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_pipe_access_denied_maps_to_product_message() {
+        let error = std::io::Error::from_raw_os_error(ERROR_ACCESS_DENIED.0 as i32);
+
+        match map_connect_error(CONTROL_PIPE_PATH, error, Some(ERROR_ACCESS_DENIED.0 as i32)) {
+            ClientError::Transport(message) => {
+                assert_eq!(message, control_pipe_access_denied_message());
+            }
+            ClientError::Unavailable => panic!("expected a transport error"),
+        }
+    }
+
+    #[test]
+    fn control_pipe_security_descriptor_stays_same_user_and_medium_integrity_only() {
+        let sddl = build_control_pipe_security_sddl("S-1-5-21-123-456-789-1001")
+            .expect("expected a valid same-user control-pipe SDDL");
+
+        assert_eq!(
+            sddl,
+            "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;S-1-5-21-123-456-789-1001)S:(ML;;NW;;;ME)"
+        );
+        assert!(!sddl.contains("OW"));
+    }
+
+    #[test]
+    fn control_pipe_security_descriptor_rejects_empty_sid() {
+        let error =
+            build_control_pipe_security_sddl("").expect_err("expected an empty SID to be rejected");
+
+        assert!(error.contains("current-user SID was empty"));
+    }
 }

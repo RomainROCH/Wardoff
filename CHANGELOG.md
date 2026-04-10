@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Hardened `\\.\pipe\WardoffControl` with explicit local-only security that grants the current user SID, SYSTEM, and Builtin Administrators access so the same interactive user can send `--block`/`--allow` across elevation boundaries, while remaining access-denied cases now surface a clear Wardoff message instead of raw `os error 5`.
 - Clarified in README, architecture notes, and agent guidance that Layer 3 is skipped normally on editions such as LTSC when `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent.
 - Aligned docs on the non-elevated read-only CLI contract, the `\\.\pipe\WardoffControl` and `\\.\pipe\WardoffStatus` split, default startup honesty, and current exit-code wording.
 - Clarified in the docs that `wardoff --status` is quick when a runtime is active but can currently take roughly 4 seconds to return `{"state":"inactive"}` when no instance is running because the client exhausts sequential status-pipe and control-pipe retry loops.

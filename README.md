@@ -145,6 +145,8 @@ State-changing/default behavior uses the normal runtime path:
 
 - default `wardoff` startup bootstraps a new visible Block-mode primary runtime and may trigger Wardoff's built-in self-elevation path when admin-only protections are desired
 - `--block`, `--allow`, `--hide`, and `--autostart on|off` are not read-only commands; they either start a runtime locally or talk to the primary runtime over the state-changing control pipe `\\.\pipe\WardoffControl`
+- when that primary runtime is already elevated, the same interactive Windows user can still send control-pipe commands from a normal non-elevated shell
+- if the active primary runtime belongs to a different Windows user context, Wardoff reports that product mismatch clearly instead of surfacing a raw pipe access-denied error
 - when a CLI launch would create a new long-lived primary runtime from an existing shell console, Wardoff relaunches that runtime in a detached background process so the shell prompt is not left hanging
 - when the long-lived runtime starts from Explorer, autostart, or another launch path without an inherited shell console, Wardoff hides and frees any dedicated console window during startup
 
@@ -179,7 +181,8 @@ Wardoff is explicit about elevation:
 - if `wardoff` needs to bootstrap a new primary runtime with no explicit command, it still triggers Wardoff's built-in self-elevation path when administrator rights are needed for that default startup
 - `src/main.rs` now keeps an explicit non-elevating read-only dispatch for `--status` and `--log --tail N` before any runtime bootstrap logic
 - `wardoff --status` uses a dedicated read-only status pipe, and `wardoff --log --tail N` reads structured log files directly, so both commands stay non-elevated even when the primary runtime is already elevated
-- state-changing secondary commands still use the control pipe `\\.\pipe\WardoffControl`
+- state-changing secondary commands still use the control pipe `\\.\pipe\WardoffControl`, but Wardoff now creates that pipe as local-only and explicitly grants control access to the current Windows user SID so same-user control still works across elevation boundaries
+- a non-elevated shell can send `--block` and `--allow` to an elevated primary runtime when both belong to the same interactive Windows user; if Wardoff is running as a different user context, the CLI returns a clear product message instead of raw `os error 5`
 - `--help` and `--version` still short-circuit inside clap and remain pure local console output
 - if a new long-lived primary runtime is launched from an existing console, Wardoff detaches and relaunches that runtime so the console session can return immediately
 - if a new long-lived primary runtime starts without an inherited shell console, Wardoff hides and frees the standalone console early so Explorer-style launches do not leave an empty console window behind
