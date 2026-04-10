@@ -205,6 +205,13 @@ Current request types include:
 
 `wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use `\\.\pipe\WardoffControl`.
 
+The control pipe is now created with explicit local-only security instead of the process-default descriptor:
+
+- remote named-pipe clients are rejected
+- the object grants control access to the current process token's user SID plus the normal elevated admin/system identities Wardoff already runs under
+- a medium-integrity mandatory label allows the same interactive Windows user to send control commands to an elevated primary runtime
+- if a caller still hits access denied, Wardoff maps that to a clear product message instead of returning a raw Win32 pipe error
+
 At the moment, the inactive `wardoff --status` path is intentionally conservative but slow: when no primary runtime is present, the client first retries the read-only status pipe and then retries the control pipe before concluding that Wardoff is inactive. Each pipe path currently uses 20 attempts with a 100 ms delay, so the fully inactive path accumulates to roughly 4 seconds before returning `{"state":"inactive"}`. This current delay comes from the sequential named-pipe retry loops, not from UAC.
 
 ### Why the UI thread handles requests
