@@ -13,6 +13,12 @@ When you start work in this repo, read in this order:
 5. `CONTRIBUTING.md` for workflow and documentation expectations
 6. this file for agent-specific guardrails
 
+## Architecture authority guardrail
+
+- Treat `docs/ARCHITECTURE.md` as the canonical architecture source of truth.
+- Do not "align `docs/ARCHITECTURE.md` to the code" just because implementation drift exists.
+- Only update that file to record intentional architectural changes, implementation deviations plus rationale, impossibilities discovered during implementation, or current status.
+
 ## How to answer "what's next?"
 
 If a user asks only **"what's next?"**, answer from repo docs instead of inventing a roadmap:

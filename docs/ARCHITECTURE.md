@@ -1,5 +1,11 @@
 # Architecture
 
+> [!IMPORTANT]
+> `docs/ARCHITECTURE.md` is the canonical source of truth for Wardoff's intended architecture.
+> The codebase is expected to follow this document; do **not** rewrite this file just to mirror incidental implementation drift.
+> Allowed updates include recording when a planned approach proved impossible, when the implementation had to differ from the intended architecture and why, and the current implementation status.
+> Not allowed: passive "align the architecture doc to the current code" edits that silently redefine the architecture without calling out the change and rationale.
+
 This document explains how the current Wardoff runtime is organized so a new developer can understand where startup, shutdown protection, tray behavior, logging, and IPC live.
 
 For current shipped-status messaging and roadmap priority, start with `README.md` and `PLAN.md`; this file is the code-structure companion.
