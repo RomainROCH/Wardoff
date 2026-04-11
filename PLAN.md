@@ -9,6 +9,8 @@ If you are new here, read in this order:
 3. `docs/ARCHITECTURE.md` for the code map
 4. `CONTRIBUTING.md` and `.github/copilot-instructions.md` for workflow and scope guardrails
 
+For monetization, sponsorship, signed-binary, paid-support, or broader commercialization decisions, follow `docs/BUSINESS_MODEL.md` rather than inferring policy from engineering docs.
+
 ## Current repository status
 
 Wardoff is currently a shipped, source-first **0.1.0-style MVP** for Windows.

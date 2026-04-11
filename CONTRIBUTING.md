@@ -12,6 +12,10 @@ If you are new to the repo, read these before making changes:
 2. `PLAN.md` for scope boundaries and the current "what's next" answer
 3. `docs/ARCHITECTURE.md` for the code map
 
+## Business-model messaging guardrail
+
+If your change touches sponsor, funding, signed-binary, paid-support, consulting, or commercialization messaging, read `docs/BUSINESS_MODEL.md` first and keep the wording aligned with it. Do not invent offers or promises ad hoc.
+
 ## Prerequisites
 
 For local development on Windows, use:
