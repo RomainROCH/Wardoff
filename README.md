@@ -48,6 +48,8 @@ These are **not** part of the current documented MVP and should not be treated a
 - settings UI
 - packaged distribution via Winget, Scoop, Chocolatey, or a polished installer
 
+For why IFEO stays out of the current MVP, see [`docs/IFEO_WARNING.md`](docs/IFEO_WARNING.md).
+
 ## Honest limits
 
 - **Wardoff does not promise to stop `shutdown /t 0 /f`.** A forced zero-second local shutdown is outside what a normal user-space app can reliably block.
@@ -229,6 +231,8 @@ The current implementation keeps up to 3 log files and rotates when the active f
 | ShutdownGuard | Open-source MIT | Historical injection-based approach | Archived / unsupported |
 | Don't Sleep | Closed freeware | Focused mainly on sleep/power-state prevention, not transparent shutdown control | Actively maintained |
 | PreventTurnOff | Closed freeware | Similar positioning, simplified | Actively maintained |
+
+For the fuller product comparison, see [`docs/COMPARISON.md`](docs/COMPARISON.md).
 
 ## Contributing
 
