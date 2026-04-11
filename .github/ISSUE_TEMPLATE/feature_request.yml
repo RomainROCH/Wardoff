@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a focused Wardoff improvement that fits the current conservative MVP direction.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: feature_description
+    attributes:
+      label: Feature description
+      description: Describe the feature you want to see.
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Explain why you need this feature and what problem it would solve.
+    validations:
+      required: true
+  - type: textarea
+    id: suggested_approach
+    attributes:
+      label: Suggested implementation approach
+      description: Optional. Share a possible approach if you have one.
+    validations:
+      required: false
