@@ -1,6 +1,7 @@
 /target
 *.pdb
 *.rs.bk
+EXECUTION_STATUS.txt
 prompt.md
 DEV_NEXT_STEPS.md
 PUBLIC_COMMUNICATION_PLAN.md
