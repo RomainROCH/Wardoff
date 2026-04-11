@@ -1,10 +1,10 @@
 # Wardoff
 
-*The first modern open-source tool for taking control of Windows shutdowns.*
-
 ![MIT License](https://img.shields.io/badge/license-MIT-green)
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
+
+*The first modern open-source tool for taking control of Windows shutdowns.*
 
 Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
@@ -237,6 +237,12 @@ For the fuller product comparison, see [`docs/COMPARISON.md`](docs/COMPARISON.md
 ## Contributing
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then [PLAN.md](PLAN.md), and keep changes aligned with the current MVP boundaries.
+
+## Support the project
+
+If Wardoff saves you time, consider supporting the project.
+
+You can support Wardoff on [GitHub Sponsors](https://github.com/sponsors/RomainROCH). Signed binaries will be available soon for people who want SmartScreen-free deployment.
 
 ## License
 
