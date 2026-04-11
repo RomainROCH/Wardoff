@@ -13,11 +13,19 @@ When you start work in this repo, read in this order:
 5. `CONTRIBUTING.md` for workflow and documentation expectations
 6. this file for agent-specific guardrails
 
+Also read `docs/BUSINESS_MODEL.md` before changing any README, changelog, contributor guidance, support copy, or other repo messaging that touches monetization, signed binaries, sponsorship, consulting/support, or commercialization decisions.
+
 ## Architecture authority guardrail
 
 - Treat `docs/ARCHITECTURE.md` as the canonical architecture source of truth.
 - Do not "align `docs/ARCHITECTURE.md` to the code" just because implementation drift exists.
 - Only update that file to record intentional architectural changes, implementation deviations plus rationale, impossibilities discovered during implementation, or current status.
+
+## Business-model authority guardrail
+
+- Treat `docs/BUSINESS_MODEL.md` as the canonical business-model source of truth.
+- Do not invent or "normalize" sponsorship, funding, signed-binary, paid-support, consulting, or commercialization messaging from scattered repo hints.
+- Read `docs/BUSINESS_MODEL.md` before changing README, changelog, contributor guidance, release messaging, funding/support copy, or any other documentation that could imply a business decision.
 
 ## How to answer "what's next?"
 
