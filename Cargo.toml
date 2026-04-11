@@ -3,11 +3,13 @@ name = "wardoff"
 version = "0.1.0"
 edition = "2021"
 authors = ["Romain ROCH"]
-description = "Open-source Windows shutdown/reboot/sleep blocker"
+description = "The first modern open-source tool for taking control of Windows shutdowns."
 license = "MIT"
 repository = "https://github.com/RomainROCH/Wardoff"
-keywords = ["windows", "shutdown", "blocker", "system", "tray"]
+homepage = "https://github.com/RomainROCH/Wardoff"
+keywords = ["windows", "shutdown", "blocker", "tray", "sysadmin"]
 categories = ["os::windows-apis", "command-line-utilities"]
+readme = "README.md"
 
 [dependencies]
 chrono = "0.4.44"
