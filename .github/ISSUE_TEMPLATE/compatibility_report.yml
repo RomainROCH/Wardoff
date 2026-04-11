@@ -1,0 +1,67 @@
+name: Compatibility report
+description: Report Windows edition or environment-specific behavior that differs from the documented Wardoff MVP.
+title: "[Compat] "
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for platform or environment compatibility findings. For confirmed reproducible product bugs, use the bug report form instead.
+  - type: input
+    id: windows_version
+    attributes:
+      label: Windows version and edition
+      description: Include the edition and note whether it is LTSC, IoT, or Server when applicable.
+      placeholder: e.g. Windows 10 Enterprise LTSC 2021
+    validations:
+      required: true
+  - type: dropdown
+    id: session_privilege
+    attributes:
+      label: Session privilege
+      description: Was Wardoff running from an administrator or non-administrator session?
+      options:
+        - Administrator session
+        - Non-administrator session
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional. Tell us whether this was on a VM or a physical machine.
+      placeholder: e.g. Physical machine, Hyper-V VM, VMware VM
+    validations:
+      required: false
+  - type: input
+    id: security_software
+    attributes:
+      label: Antivirus or security software running
+      description: Optional. Include third-party security software that may affect behavior.
+      placeholder: e.g. Microsoft Defender only, CrowdStrike, Bitdefender
+    validations:
+      required: false
+  - type: textarea
+    id: layers_working
+    attributes:
+      label: Which layers work
+      description: Include the current `wardoff --status` output and any notes about the layers that behave as expected.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: layers_not_working
+    attributes:
+      label: Which layers do not work or behave unexpectedly
+      description: Describe the specific layer or behavior that differs from what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: log_lines
+    attributes:
+      label: Relevant log lines
+      description: Optional. Paste any relevant Wardoff log lines.
+      render: text
+    validations:
+      required: false
