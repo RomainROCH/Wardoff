@@ -51,6 +51,10 @@ jobs:
       - name: Cargo build --release
         run: cargo build --release
 
+      - name: Smoke tests
+        shell: pwsh
+        run: .\tests\smoke_test.ps1
+
       - name: Upload release binary
         uses: actions/upload-artifact@v4
         with:
