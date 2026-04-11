@@ -1,6 +1,7 @@
 # Wardoff
 
 ![MIT License](https://img.shields.io/badge/license-MIT-green)
+![CI](https://github.com/RomainROCH/Wardoff/actions/workflows/ci.yml/badge.svg?branch=dev)
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
 
