@@ -1,6 +1,7 @@
 # Contributing to Wardoff
 
-Thanks for contributing to Wardoff.
+Thanks for contributing to Wardoff. Please also review the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 This repository now contains a working Windows MVP runtime, but the docs should remain conservative: describe what is clearly implemented and supported, and do not turn later-phase ideas into shipped features.
 
