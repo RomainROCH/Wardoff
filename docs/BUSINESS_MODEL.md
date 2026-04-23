@@ -28,7 +28,7 @@ Wardoff's differentiation is not features — it is transparency, honesty about 
 
 **Status:** to activate immediately.
 
-**What:** GitHub Sponsors profile + Buy Me a Coffee link in README.
+**What:** GitHub Sponsors profile + sponsor link in README.
 
 **Why it fits:** lowest friction, zero cost to set up, compatible with MIT, does not conflict with any other layer. Normalized path for OSS funding.
 
@@ -37,9 +37,8 @@ Wardoff's differentiation is not features — it is transparency, honesty about 
 **Setup checklist:**
 
 - [ ] Create GitHub Sponsors profile
-- [ ] Create Buy Me a Coffee page
 - [ ] Add sponsor button to repo (`.github/FUNDING.yml`)
-- [ ] Add "Support the project" section in README with both links
+- [ ] Add "Support the project" section in README with GitHub Sponsors link
 - [ ] Keep messaging simple: "If Wardoff saves you time or headaches, consider supporting the project."
 
 **Rules:**
@@ -139,7 +138,7 @@ This section tracks when to reassess or add new monetization elements.
 
 | Trigger | Action |
 | --- | --- |
-| GitHub Sponsors + BMAC set up | Layer 1 is live. Monitor monthly. |
+| GitHub Sponsors set up | Layer 1 is live. Monitor monthly. |
 | Authenticode certificate acquired | Layer 2 is live. Ship first signed binary with next release. |
 | First 10 signed binary sales | Reassess pricing. Consider adding a "pay what you want" option. |
 | First 3 consulting requests | Layer 3 is live. Define rates and booking flow. |
