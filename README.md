@@ -95,6 +95,14 @@ The compiled binary is:
 target\release\wardoff.exe
 ```
 
+## Signed binaries
+
+The source code is free and open under the MIT license. Anyone can build Wardoff from source.
+
+For users who want a verified binary without SmartScreen warnings, officially signed release binaries will be available for purchase. This is a convenience purchase that supports the project — the signed binary is functionally identical to what you build from source.
+
+Pricing and download link: coming soon.
+
 ## Usage
 
 ### Quick start
