@@ -241,9 +241,11 @@ Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then [
 
 ## Support the project
 
-If Wardoff saves you time, consider supporting the project.
+Wardoff is free and open source. If it saves you time or headaches, consider supporting the project:
 
-You can support Wardoff on [GitHub Sponsors](https://github.com/sponsors/RomainROCH). Signed binaries will be available soon for people who want SmartScreen-free deployment.
+- [Sponsor on GitHub](https://github.com/sponsors/RomainROCH)
+
+Signed release binaries will be available soon for users who want SmartScreen-free deployment and verified authenticity. Details will appear on the [Releases](https://github.com/RomainROCH/Wardoff/releases) page.
 
 ## License
 
