@@ -53,6 +53,7 @@ struct Application {
     ipc_server: IpcServer,
     started_at: Instant,
     forced_shutdown_cleanup_completed: bool,
+    pending_block_restore_after_wake: Option<PendingWakeRestore>,
     _primary_instance: InstanceGuard,
 }
 
@@ -67,6 +68,25 @@ enum TraySurface {
 struct RuntimeOptions {
     initial_mode: BlockerMode,
     tray_surface: TraySurface,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingWakeRestore {
+    PendingSuspend(PowerAction),
+    WaitingForResume(PowerAction),
+}
+
+impl PendingWakeRestore {
+    fn action(self) -> PowerAction {
+        match self {
+            PendingWakeRestore::PendingSuspend(action)
+            | PendingWakeRestore::WaitingForResume(action) => action,
+        }
+    }
+
+    fn mark_system_suspended(self) -> Self {
+        PendingWakeRestore::WaitingForResume(self.action())
+    }
 }
 
 /// Bootstraps logging, the central state manager, and the tray surface.
@@ -128,6 +148,7 @@ fn bootstrap(
         ipc_server,
         started_at: Instant::now(),
         forced_shutdown_cleanup_completed: false,
+        pending_block_restore_after_wake: None,
         _primary_instance: primary_instance,
     };
     application.refresh_autostart_tray_state();
@@ -139,6 +160,7 @@ fn bootstrap(
 fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
     ACTIVE_APPLICATION.store(&mut application as *mut Application, Ordering::Release);
     blocker::shutdown::set_end_session_cleanup_callback(forced_shutdown_cleanup_callback);
+    blocker::shutdown::set_power_broadcast_callback(power_broadcast_callback);
 
     let mut message = MSG::default();
 
@@ -176,6 +198,7 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
     }
 
     blocker::shutdown::clear_end_session_cleanup_callback();
+    blocker::shutdown::clear_power_broadcast_callback();
     ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
     application.shutdown()?;
     Ok(())
@@ -561,6 +584,7 @@ impl Application {
         match request {
             IpcRequest::SetMode { mode } => {
                 let requested_mode: BlockerMode = mode.into();
+                self.clear_pending_block_restore_after_wake();
 
                 match self.set_mode(requested_mode, EventSource::Ipc) {
                     Ok(()) => {
@@ -671,6 +695,7 @@ impl Application {
     fn handle_tray_action(&mut self, action: TrayAction) -> Result<bool, String> {
         match action {
             TrayAction::Block => {
+                self.clear_pending_block_restore_after_wake();
                 self.set_mode(BlockerMode::Block, EventSource::Tray)?;
                 logger::log_event(
                     "tray_action",
@@ -681,6 +706,7 @@ impl Application {
                 Ok(false)
             }
             TrayAction::Allow => {
+                self.clear_pending_block_restore_after_wake();
                 self.set_mode(BlockerMode::Allow, EventSource::Tray)?;
                 logger::log_event(
                     "tray_action",
@@ -733,7 +759,12 @@ impl Application {
 
     fn run_power_action(&mut self, action: PowerAction) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
-        self.set_mode(BlockerMode::Allow, EventSource::Tray)?;
+        self.pending_block_restore_after_wake =
+            pending_wake_restore_for_tray_power_action(previous_mode, action);
+        if let Err(error) = self.set_mode(BlockerMode::Allow, EventSource::Tray) {
+            self.clear_pending_block_restore_after_wake();
+            return Err(error);
+        }
 
         match execute_power_action(action) {
             Ok(()) => {
@@ -754,12 +785,13 @@ impl Application {
                     && previous_mode == BlockerMode::Block
                 {
                     info!(
-                        "Wardoff will remain in Allow mode after wake. Use the tray menu to return to Block mode when you need shutdown protection again."
+                        "Wardoff will restore Block mode automatically after wake because the tray requested {action:?} from Block mode."
                     );
                 }
                 Ok(())
             }
             Err(message) => {
+                self.clear_pending_block_restore_after_wake();
                 logger::log_event(
                     "power_action_issued",
                     EventSource::Tray,
@@ -1020,6 +1052,7 @@ impl Application {
         }
 
         self.forced_shutdown_cleanup_completed = true;
+        self.clear_pending_block_restore_after_wake();
         self.blocker_coordinator.forced_shutdown_cleanup();
         info!("Wardoff shutting down due to user-forced shutdown");
         logger::log_event(
@@ -1028,6 +1061,92 @@ impl Application {
             "Wardoff shutting down due to user-forced shutdown",
             true,
         );
+    }
+
+    fn clear_pending_block_restore_after_wake(&mut self) {
+        self.pending_block_restore_after_wake = None;
+    }
+
+    fn handle_power_broadcast(&mut self, event: blocker::shutdown::PowerBroadcastEvent) {
+        match event {
+            blocker::shutdown::PowerBroadcastEvent::Suspend => {
+                if let Some(pending_restore) = self.pending_block_restore_after_wake {
+                    self.pending_block_restore_after_wake =
+                        Some(pending_restore.mark_system_suspended());
+                }
+            }
+            blocker::shutdown::PowerBroadcastEvent::Resume => {
+                self.restore_block_after_wake_if_needed();
+            }
+        }
+    }
+
+    fn restore_block_after_wake_if_needed(&mut self) {
+        let Some(action) =
+            pending_wake_restore_ready_for_resume(self.pending_block_restore_after_wake)
+        else {
+            return;
+        };
+        self.clear_pending_block_restore_after_wake();
+        let previous_mode = self.blocker_coordinator.mode();
+
+        if let Err(error) = self.blocker_coordinator.set_mode(BlockerMode::Block) {
+            let message = format!(
+                "Wardoff could not restore Block mode after the tray-initiated {} request woke the system: {error}",
+                power_action_label(action)
+            );
+            error!("{message}");
+            logger::log_event(
+                "block_restored_after_wake",
+                EventSource::Tray,
+                message,
+                false,
+            );
+            return;
+        }
+
+        if previous_mode != BlockerMode::Block {
+            logger::log_event(
+                "state_changed",
+                EventSource::Tray,
+                format!(
+                    "Wardoff switched from {} mode to Block mode.",
+                    mode_label(previous_mode)
+                ),
+                true,
+            );
+        }
+
+        match self.sync_tray(self.blocker_coordinator.mode()) {
+            Ok(()) => {
+                info!(
+                    "Wardoff restored Block mode after the tray-initiated {:?} request woke the system.",
+                    action
+                );
+                logger::log_event(
+                    "block_restored_after_wake",
+                    EventSource::Tray,
+                    format!(
+                        "Wardoff restored Block mode after the tray-initiated {} request woke the system.",
+                        power_action_label(action)
+                    ),
+                    true,
+                );
+            }
+            Err(tray_error) => {
+                let message = format!(
+                    "Wardoff restored Block mode after the tray-initiated {} request woke the system, but could not refresh the tray UI immediately: {tray_error}",
+                    power_action_label(action)
+                );
+                warn!("{message}");
+                logger::log_event(
+                    "block_restored_after_wake",
+                    EventSource::Tray,
+                    message,
+                    true,
+                );
+            }
+        }
     }
 }
 
@@ -1039,6 +1158,17 @@ fn forced_shutdown_cleanup_callback() {
 
     unsafe {
         (*application_ptr).handle_forced_shutdown_cleanup();
+    }
+}
+
+fn power_broadcast_callback(event: blocker::shutdown::PowerBroadcastEvent) {
+    let application_ptr = ACTIVE_APPLICATION.load(Ordering::Acquire);
+    if application_ptr.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*application_ptr).handle_power_broadcast(event);
     }
 }
 
@@ -1102,6 +1232,30 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
     }
 }
 
+fn pending_wake_restore_for_tray_power_action(
+    previous_mode: BlockerMode,
+    action: PowerAction,
+) -> Option<PendingWakeRestore> {
+    match (previous_mode, action) {
+        (BlockerMode::Block, PowerAction::Sleep) => {
+            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
+        }
+        (BlockerMode::Block, PowerAction::Hibernate) => {
+            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
+        }
+        _ => None,
+    }
+}
+
+fn pending_wake_restore_ready_for_resume(
+    pending_restore: Option<PendingWakeRestore>,
+) -> Option<PowerAction> {
+    match pending_restore {
+        Some(PendingWakeRestore::WaitingForResume(action)) => Some(action),
+        _ => None,
+    }
+}
+
 fn resolved_autostart_state_for_tray(
     previous_state: Option<bool>,
     actual_state: Result<bool, String>,
@@ -1114,7 +1268,10 @@ fn resolved_autostart_state_for_tray(
 
 #[cfg(test)]
 mod tests {
-    use super::resolved_autostart_state_for_tray;
+    use super::{
+        pending_wake_restore_for_tray_power_action, pending_wake_restore_ready_for_resume,
+        resolved_autostart_state_for_tray, BlockerMode, PendingWakeRestore, PowerAction,
+    };
 
     #[test]
     fn prefers_current_autostart_state_when_available() {
@@ -1137,6 +1294,52 @@ mod tests {
         assert_eq!(
             resolved_autostart_state_for_tray(None, Err("read failed".to_string())),
             Err("read failed".to_string())
+        );
+    }
+
+    #[test]
+    fn only_block_mode_sleep_and_hibernate_queue_restore_after_wake() {
+        assert_eq!(
+            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Sleep),
+            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
+        );
+        assert_eq!(
+            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Hibernate),
+            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
+        );
+        assert_eq!(
+            pending_wake_restore_for_tray_power_action(BlockerMode::Allow, PowerAction::Sleep),
+            None
+        );
+        assert_eq!(
+            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Shutdown),
+            None
+        );
+    }
+
+    #[test]
+    fn pending_restore_marks_suspend_and_preserves_requested_action() {
+        let pending = PendingWakeRestore::PendingSuspend(PowerAction::Hibernate);
+        assert_eq!(
+            pending.mark_system_suspended(),
+            PendingWakeRestore::WaitingForResume(PowerAction::Hibernate)
+        );
+        assert_eq!(pending.action(), PowerAction::Hibernate);
+    }
+
+    #[test]
+    fn resume_requires_an_observed_suspend_before_restoring_block_mode() {
+        assert_eq!(
+            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::PendingSuspend(
+                PowerAction::Sleep
+            ))),
+            None
+        );
+        assert_eq!(
+            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::WaitingForResume(
+                PowerAction::Sleep
+            ))),
+            Some(PowerAction::Sleep)
         );
     }
 }

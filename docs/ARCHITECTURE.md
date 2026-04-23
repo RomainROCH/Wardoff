@@ -37,6 +37,7 @@ Owns application bootstrap and shutdown:
 - starts the tray service when needed
 - starts the named-pipe IPC server
 - runs the Win32 message loop
+- temporarily switches tray-initiated sleep and hibernate requests to Allow mode, then restores Block mode on `WM_POWERBROADCAST` resume when the tray action began from Block mode
 - coordinates orderly shutdown and forced-shutdown cleanup
 
 This is the best entry point for understanding the whole runtime.
@@ -235,6 +236,7 @@ The tray runs on its own thread with its own Windows message handling and menu e
 - create the tray icon and menu
 - reflect Block versus Allow state
 - expose tray actions back to the main runtime
+- keep tray-initiated sleep and hibernate transitions honest by reflecting the temporary Allow state before suspend and the automatic Block restore after wake
 - keep the autostart checkbox synchronized
 - retry creation when Explorer is not ready yet
 - recreate the tray icon after Explorer restarts

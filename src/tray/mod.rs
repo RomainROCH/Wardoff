@@ -27,6 +27,7 @@ const TRAY_THREAD_NAME: &str = "wardoff-tray";
 const TRAY_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const TRAY_UNAVAILABLE_WARNING_INTERVAL: Duration = Duration::from_secs(30);
 const TRAY_THREAD_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const TRAY_COMMAND_RESULT_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const TRAY_ACTION_WAKE_MESSAGE: u32 = WM_APP + 2;
 const TASKBAR_CREATED_WINDOW_CLASS_NAME: windows::core::PCWSTR =
     w!("WardoffTrayTaskbarCreatedWindow");
@@ -72,9 +73,12 @@ pub(crate) struct TrayServiceHandle {
     join_handle: Option<JoinHandle<()>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum TrayCommand {
-    SetMode(BlockerMode),
+    SetMode {
+        mode: BlockerMode,
+        result_tx: Sender<Result<(), String>>,
+    },
     SetAutostart(bool),
     Shutdown,
 }
@@ -297,9 +301,21 @@ impl TrayController {
 
 impl TrayServiceHandle {
     pub(crate) fn set_mode(&self, mode: BlockerMode) -> Result<(), String> {
+        let (result_tx, result_rx) = mpsc::channel();
         self.command_tx
-            .send(TrayCommand::SetMode(mode))
-            .map_err(|_| "Wardoff lost contact with its tray thread.".to_string())
+            .send(TrayCommand::SetMode { mode, result_tx })
+            .map_err(|_| "Wardoff lost contact with its tray thread.".to_string())?;
+
+        match result_rx.recv_timeout(TRAY_COMMAND_RESULT_TIMEOUT) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(
+                "Wardoff timed out while waiting for the tray thread to apply the latest blocker mode."
+                    .to_string(),
+            ),
+            Err(RecvTimeoutError::Disconnected) => {
+                Err("Wardoff lost contact with its tray thread.".to_string())
+            }
+        }
     }
 
     pub(crate) fn set_autostart_enabled(&self, enabled: bool) -> Result<(), String> {
@@ -493,9 +509,10 @@ fn wake_main_thread_for_tray_action(main_thread_id: u32) -> Result<(), String> {
 
 fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> bool {
     match command {
-        TrayCommand::SetMode(mode) => {
+        TrayCommand::SetMode { mode, result_tx } => {
             state.mode = mode;
-            if let Err(error) = apply_current_tray_state(state) {
+            let result = apply_current_tray_state(state);
+            if let Err(error) = result.as_ref() {
                 log_tray_update_failure_and_reset(
                     state,
                     format!(
@@ -503,6 +520,7 @@ fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> boo
                     ),
                 );
             }
+            let _ = result_tx.send(result);
             false
         }
         TrayCommand::SetAutostart(enabled) => {

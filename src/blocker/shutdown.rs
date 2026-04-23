@@ -24,17 +24,28 @@ use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockR
 use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, HWND_MESSAGE,
-    ENDSESSION_LOGOFF, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION,
-    WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, ENDSESSION_LOGOFF,
+    HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW,
+    WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static WINDOW_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 static END_SESSION_CLEANUP_CALLBACK: Mutex<Option<fn()>> = Mutex::new(None);
 static END_SESSION_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+static POWER_BROADCAST_CALLBACK: Mutex<Option<fn(PowerBroadcastEvent)>> = Mutex::new(None);
 
 const SHUTDOWN_PRIORITY: u32 = 0x3FF;
+
+/// Represents the suspend/resume notifications Wardoff listens for on its hidden window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PowerBroadcastEvent {
+    /// Windows is entering a suspend state.
+    Suspend,
+    /// Windows resumed from suspend or hibernate.
+    Resume,
+}
 
 /// Owns the Layer 1 windows used for interactive shutdown blocking.
 pub struct ShutdownBlocker {
@@ -175,6 +186,20 @@ pub(crate) fn clear_end_session_cleanup_callback() {
     END_SESSION_CLEANUP_STARTED.store(false, Ordering::Release);
 }
 
+/// Registers the callback invoked for power broadcast suspend and resume notifications.
+pub(crate) fn set_power_broadcast_callback(callback: fn(PowerBroadcastEvent)) {
+    if let Ok(mut slot) = POWER_BROADCAST_CALLBACK.lock() {
+        *slot = Some(callback);
+    }
+}
+
+/// Clears the power broadcast callback.
+pub(crate) fn clear_power_broadcast_callback() {
+    if let Ok(mut slot) = POWER_BROADCAST_CALLBACK.lock() {
+        *slot = None;
+    }
+}
+
 fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     if wparam.0 != 0 {
         BLOCKER_ACTIVE.store(false, Ordering::Release);
@@ -190,6 +215,25 @@ fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
     }
 
     LRESULT(0)
+}
+
+fn handle_power_broadcast(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let event = match wparam.0 as u32 {
+        PBT_APMSUSPEND => Some(PowerBroadcastEvent::Suspend),
+        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => Some(PowerBroadcastEvent::Resume),
+        _ => None,
+    };
+
+    if let Some(event) = event {
+        if let Ok(slot) = POWER_BROADCAST_CALLBACK.lock() {
+            if let Some(callback) = *slot {
+                callback(event);
+            }
+        }
+        return LRESULT(1);
+    }
+
+    unsafe { DefWindowProcW(hwnd, WM_POWERBROADCAST, wparam, lparam) }
 }
 
 fn current_instance() -> WindowsResult<HINSTANCE> {
@@ -276,6 +320,7 @@ unsafe extern "system" fn shutdown_window_proc(
     match message {
         WM_QUERYENDSESSION => handle_query_end_session(wparam, lparam),
         WM_ENDSESSION => handle_end_session(hwnd, wparam),
+        WM_POWERBROADCAST => handle_power_broadcast(hwnd, wparam, lparam),
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
