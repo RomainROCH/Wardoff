@@ -26,7 +26,7 @@ Wardoff's differentiation is not features — it is transparency, honesty about 
 
 ### Layer 1 — Donations and sponsorship
 
-**Status:** to activate immediately.
+**Status:** active.
 
 **What:** GitHub Sponsors profile + sponsor link in README.
 
@@ -36,10 +36,10 @@ Wardoff's differentiation is not features — it is transparency, honesty about 
 
 **Setup checklist:**
 
-- [ ] Create GitHub Sponsors profile
-- [ ] Add sponsor button to repo (`.github/FUNDING.yml`)
-- [ ] Add "Support the project" section in README with GitHub Sponsors link
-- [ ] Keep messaging simple: "If Wardoff saves you time or headaches, consider supporting the project."
+- [x] Create GitHub Sponsors profile
+- [x] Add sponsor button to repo (`.github/FUNDING.yml`)
+- [x] Add "Support the project" section in README with GitHub Sponsors link
+- [x] Keep messaging simple: "If Wardoff saves you time or headaches, consider supporting the project."
 
 **Rules:**
 
@@ -92,7 +92,7 @@ Wardoff's differentiation is not features — it is transparency, honesty about 
 
 ### Layer 3 — Paid consulting and validation
 
-**Status:** to activate once real users exist and start requesting help.
+**Status:** deferred until the maintainer has completed a full product knowledge review. Do not advertise consulting services until this is done.
 
 **What:** paid sessions for environment review, deployment guidance, log interpretation, and compatibility validation. Fixed-fee or hourly.
 
