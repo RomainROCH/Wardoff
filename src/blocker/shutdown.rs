@@ -220,7 +220,8 @@ fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
 fn handle_power_broadcast(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let event = match wparam.0 as u32 {
         PBT_APMSUSPEND => Some(PowerBroadcastEvent::Suspend),
-        PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND => Some(PowerBroadcastEvent::Resume),
+        PBT_APMRESUMEAUTOMATIC => Some(PowerBroadcastEvent::Resume),
+        PBT_APMRESUMESUSPEND => Some(PowerBroadcastEvent::Resume),
         _ => None,
     };
 

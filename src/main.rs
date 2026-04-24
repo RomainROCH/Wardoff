@@ -1250,8 +1250,12 @@ fn pending_wake_restore_for_tray_power_action(
 fn pending_wake_restore_ready_for_resume(
     pending_restore: Option<PendingWakeRestore>,
 ) -> Option<PowerAction> {
+    // Windows can deliver a resume notification to this runtime without an earlier
+    // suspend broadcast reaching the hidden window, so any queued tray wake-restore
+    // must still restore Block mode on resume even if Wardoff never observed suspend.
     match pending_restore {
-        Some(PendingWakeRestore::WaitingForResume(action)) => Some(action),
+        Some(PendingWakeRestore::PendingSuspend(action))
+        | Some(PendingWakeRestore::WaitingForResume(action)) => Some(action),
         _ => None,
     }
 }
@@ -1328,12 +1332,12 @@ mod tests {
     }
 
     #[test]
-    fn resume_requires_an_observed_suspend_before_restoring_block_mode() {
+    fn resume_restores_block_mode_even_if_suspend_was_not_observed() {
         assert_eq!(
             pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::PendingSuspend(
                 PowerAction::Sleep
             ))),
-            None
+            Some(PowerAction::Sleep)
         );
         assert_eq!(
             pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::WaitingForResume(
