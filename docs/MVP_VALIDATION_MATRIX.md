@@ -93,8 +93,10 @@ Do these only in a disposable VM or similarly safe environment.
 | Area | Check | Expected result |
 | --- | --- | --- |
 | Layer 1 interactive shutdown | With Wardoff in Block mode, attempt a normal interactive shutdown or sign-out from Windows | Windows gives Wardoff the chance to block the interactive path |
-| Sleep blocking | With Wardoff in Block mode, trigger Sleep from Windows or the tray | The VM stays awake while blocking is active |
-| Hibernate blocking | With Wardoff in Block mode, trigger Hibernate from Windows or the tray | The VM does not hibernate while blocking is active |
+| Windows Sleep blocking | With Wardoff in Block mode, trigger Sleep from the Windows power menu | The VM stays awake while Block mode is active |
+| Windows Hibernate blocking | With Wardoff in Block mode, trigger Hibernate from the Windows power menu | The VM does not hibernate while Block mode is active |
+| Tray Sleep wake-restore | With Wardoff in Block mode, trigger Sleep from the tray menu, then wake the VM | Wardoff temporarily switches to Allow so Sleep can proceed, then returns to Block after wake and records the wake restore behavior with a `block_restored_after_wake` log event |
+| Tray Hibernate wake-restore | With Wardoff in Block mode, trigger Hibernate from the tray menu, then resume the VM | Wardoff temporarily switches to Allow so Hibernate can proceed, then returns to Block after resume and records the wake restore behavior with a `block_restored_after_wake` log event |
 | Allow-mode release | Switch to Allow mode and retry Sleep or Hibernate | Windows proceeds normally once Wardoff is no longer blocking |
 | Remote shutdown abort | From a second machine or remote management session, issue a timed remote shutdown while Wardoff is running elevated in Block mode | Wardoff attempts to abort the shutdown while Windows still exposes an abortable timeout window |
 | Tray power actions | If validating tray Shutdown or Reboot directly, do it only in the VM | The action reaches Windows without risking the host workstation |
