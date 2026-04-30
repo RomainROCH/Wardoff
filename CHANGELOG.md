@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
-- Tray-initiated sleep and hibernate requests now restore Block mode automatically on wake when Wardoff was in Block mode before the tray action, including resume paths where Windows does not deliver an earlier suspend broadcast to Wardoff's hidden window, and emit a `block_restored_after_wake` structured log event.
+- Tray-initiated sleep and hibernate requests now restore Block mode automatically on wake when Wardoff was in Block mode before the tray action, and emit a `block_restored_after_wake` structured log event. The hidden Layer 1 session window now explicitly registers for suspend/resume notifications via `RegisterSuspendResumeNotification`; without that registration, since Windows 8 `WM_POWERBROADCAST` with `PBT_APMSUSPEND`/`PBT_APMRESUMEAUTOMATIC`/`PBT_APMRESUMESUSPEND` is no longer broadcast to top-level windows automatically, so the previous restore-after-wake state machine never fired.
 - Explicitly documented `docs/ARCHITECTURE.md` as the canonical architecture authority and added guardrails against silently rewriting it to match incidental implementation drift.
 - Explicitly documented `docs/BUSINESS_MODEL.md` as the canonical business-model authority and linked repo guidance back to it for monetization and commercialization messaging.
 - Hardened `\\.\pipe\WardoffControl` with explicit local-only security that grants the current user SID, SYSTEM, and Builtin Administrators access so the same interactive user can send `--block`/`--allow` across elevation boundaries, while remaining access-denied cases now surface a clear Wardoff message instead of raw `os error 5`.
