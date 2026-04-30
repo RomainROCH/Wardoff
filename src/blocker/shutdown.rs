@@ -18,16 +18,19 @@ use std::sync::OnceLock;
 
 use log::warn;
 use windows::core::{w, Error as WindowsError, Result as WindowsResult, HSTRING};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::{
+    RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification, HPOWERNOTIFY,
+};
 use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockReasonDestroy};
 use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW, ENDSESSION_LOGOFF,
-    HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW,
-    WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW,
+    DEVICE_NOTIFY_WINDOW_HANDLE, ENDSESSION_LOGOFF, HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC,
+    PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION,
+    WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -51,6 +54,7 @@ pub(crate) enum PowerBroadcastEvent {
 pub struct ShutdownBlocker {
     message_window: HWND,
     session_window: HWND,
+    suspend_resume_notification: Option<HPOWERNOTIFY>,
     reason: HSTRING,
     reason_registered: bool,
 }
@@ -80,9 +84,23 @@ impl ShutdownBlocker {
             return Err(error);
         }
 
+        // Since Windows 8, PBT_APMSUSPEND/PBT_APMRESUMEAUTOMATIC/PBT_APMRESUMESUSPEND are no longer
+        // broadcast to top-level windows automatically; the recipient must register explicitly,
+        // otherwise WM_POWERBROADCAST never reaches `shutdown_window_proc` for those events.
+        let suspend_resume_notification =
+            match register_suspend_resume_notification(session_window) {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    destroy_window(session_window);
+                    destroy_window(message_window);
+                    return Err(error);
+                }
+            };
+
         Ok(Self {
             message_window,
             session_window,
+            suspend_resume_notification,
             reason: HSTRING::from(reason),
             reason_registered: false,
         })
@@ -134,6 +152,11 @@ impl ShutdownBlocker {
 impl Drop for ShutdownBlocker {
     fn drop(&mut self) {
         let _ = self.deactivate();
+        if let Some(handle) = self.suspend_resume_notification.take() {
+            unsafe {
+                let _ = UnregisterSuspendResumeNotification(handle);
+            }
+        }
         destroy_window(self.session_window);
         destroy_window(self.message_window);
         BLOCKER_ACTIVE.store(false, Ordering::Release);
@@ -239,6 +262,10 @@ fn handle_power_broadcast(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT
 
 fn current_instance() -> WindowsResult<HINSTANCE> {
     unsafe { Ok(GetModuleHandleW(None)?.into()) }
+}
+
+fn register_suspend_resume_notification(window: HWND) -> WindowsResult<HPOWERNOTIFY> {
+    unsafe { RegisterSuspendResumeNotification(HANDLE(window.0), DEVICE_NOTIFY_WINDOW_HANDLE) }
 }
 
 fn register_window_class(hinstance: HINSTANCE) -> WindowsResult<()> {
