@@ -749,7 +749,7 @@ fn build_control_pipe_security_attributes() -> Result<ControlPipeSecurityAttribu
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             PCWSTR(control_pipe_security_sddl.as_ptr()),
-            SDDL_REVISION_1 as u32,
+            SDDL_REVISION_1,
             &mut security_descriptor,
             None,
         )
@@ -859,20 +859,22 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 struct LocalAllocatedWideString(PWSTR);
 
-impl LocalAllocatedWideString {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for LocalAllocatedWideString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0.is_null() {
-            return String::new();
+            return Ok(());
         }
 
-        unsafe {
+        let s = unsafe {
             let mut length = 0usize;
             while *self.0 .0.add(length) != 0 {
                 length += 1;
             }
 
             String::from_utf16_lossy(std::slice::from_raw_parts(self.0 .0, length))
-        }
+        };
+
+        f.write_str(&s)
     }
 }
 
