@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - Expanded validation guidance for tray sync, Explorer restart, secondary handoff, and admin-only autostart scenarios.
 - Switched Windows release-manifest embedding from manual linker flags to `winres` resource compilation and added a smoke guard that asserts the built release binary still embeds `requestedExecutionLevel level="asInvoker"`.
 - Made the release binary console-friendly for direct PowerShell CLI use, while detaching or hiding console state for long-lived tray/runtime launches so read-only commands stay inline without regressing background UX.
+- Hidden the console window immediately at startup when Wardoff owns a freshly allocated console (double-click, autostart spawn, elevated relaunch child) so the brief console flash is no longer visible before the runtime bootstrap reaches its existing late hide. Inherited shell consoles are still left untouched so read-only CLI commands keep writing to the user's terminal.
 
 ## [0.1.0] - 2026-03-22
 
