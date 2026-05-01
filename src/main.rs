@@ -231,6 +231,19 @@ fn main() {
 }
 
 fn run_main() -> Result<i32, Box<dyn Error>> {
+    // An Owned console means Windows allocated a new console for this process
+    // (typically a double-click or an autostart spawn). Hide and free it before
+    // anything else so the console window does not flash before the runtime
+    // bootstrap path reaches its existing late hide in prepare_runtime_console_launch.
+    // Inherited consoles are left intact so read-only CLI commands still write
+    // to the user's shell.
+    if matches!(
+        windows_util::console_launch_context(),
+        Ok(ConsoleLaunchContext::Owned)
+    ) {
+        let _ = windows_util::hide_and_free_console();
+    }
+
     logger::initialize_human_logging()?;
     let cli = parse_cli();
     let action = cli.requested_action();
