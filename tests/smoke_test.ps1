@@ -811,16 +811,22 @@ try {
 
             try {
                 $enableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on')
-                Assert-Condition ($enableResult.ExitCode -eq 0) "wardoff --autostart on exited with code $($enableResult.ExitCode)."
+                if ($enableResult.ExitCode -eq 0) {
+                    $queryEnabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
+                    Assert-Condition ($queryEnabled.ExitCode -eq 0) 'schtasks /query /tn "Wardoff" did not find the task after --autostart on.'
 
-                $queryEnabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
-                Assert-Condition ($queryEnabled.ExitCode -eq 0) 'schtasks /query /tn "Wardoff" did not find the task after --autostart on.'
+                    $disableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
+                    Assert-Condition ($disableResult.ExitCode -eq 0) "wardoff --autostart off exited with code $($disableResult.ExitCode)."
 
-                $disableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
-                Assert-Condition ($disableResult.ExitCode -eq 0) "wardoff --autostart off exited with code $($disableResult.ExitCode)."
+                    $queryDisabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
+                    Assert-Condition ($queryDisabled.ExitCode -ne 0) 'schtasks /query /tn "Wardoff" still found the task after --autostart off.'
+                }
+                else {
+                    Assert-Condition ($enableResult.Output -match 'untrusted location') "wardoff --autostart on failed without the expected trusted-location refusal. Output: $($enableResult.Output)"
 
-                $queryDisabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
-                Assert-Condition ($queryDisabled.ExitCode -ne 0) 'schtasks /query /tn "Wardoff" still found the task after --autostart off.'
+                    $queryAfterRefusal = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
+                    Assert-Condition (($queryAfterRefusal.ExitCode -eq 0) -eq $taskOriginallyPresent) 'wardoff --autostart on changed the Wardoff task state even though it refused an untrusted executable location.'
+                }
             }
             finally {
                 try {
