@@ -38,6 +38,7 @@ Source: `src/blocker/shutdown.rs`
 
 - creates both a message-only window and a hidden top-level session window
 - registers the shutdown-block reason on the hidden top-level window because `HWND_MESSAGE` windows do not receive `WM_QUERYENDSESSION`
+- registers suspend/resume notifications on the hidden top-level session window so tray-initiated Sleep/Hibernate can restore Block mode after wake or resume
 - calls `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` during setup
 - calls `ShutdownBlockReasonCreate(...)` when Block mode is enabled
 - returns `FALSE` from `WM_QUERYENDSESSION` while Layer 1 is active
@@ -50,6 +51,7 @@ The plan-level wording around a message-only window is incomplete by itself. The
 
 - `message_window` exists for the hidden runtime plumbing
 - `session_window` is the hidden top-level window that receives `WM_QUERYENDSESSION`
+- that same hidden `session_window` also registers for suspend/resume notifications because modern Windows does not reliably broadcast the needed `WM_POWERBROADCAST` suspend/resume events to top-level windows unless the process opts in
 
 That distinction matters because Windows does not broadcast session-end messages to message-only windows.
 
@@ -67,6 +69,7 @@ What users should expect:
 - standard Windows "this app is preventing shutdown" behavior
 - visible block reason text
 - normal interactive shutdown and sign-out attempts can be refused while Block mode is active
+- if Sleep or Hibernate is launched from the tray while Wardoff is already in Block mode, Wardoff temporarily switches to Allow so the power transition can proceed, then restores Block after wake or resume
 
 What Layer 1 does **not** solve:
 
