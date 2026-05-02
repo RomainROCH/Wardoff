@@ -144,16 +144,16 @@ If a Block-mode transition fails partway through, `BlockerCoordinator` rolls bac
 
 ## Process model and single-instance behavior
 
-Wardoff is designed to have one primary runtime per machine session boundary enforced by a named mutex.
+Wardoff is designed to have one primary runtime per Windows session boundary enforced by a named mutex.
 
 ### Singleton mutex
 
 Source: `src/instance.rs`
 
-Wardoff uses:
+Wardoff uses a session-scoped mutex name derived from the current Windows session ID:
 
 ```text
-Global\WardoffInstance
+Local\WardoffInstance-Session-{session_id}
 ```
 
 Behavior:
@@ -169,11 +169,11 @@ This prevents multiple tray-owning, blocker-owning runtimes from competing with 
 
 Source: `src/ipc.rs`
 
-Secondary commands use two local named-pipe paths:
+Secondary commands use two session-scoped local named-pipe paths derived from the same current-session ID source as the mutex:
 
 ```text
-\\.\pipe\WardoffControl
-\\.\pipe\WardoffStatus
+\\.\pipe\WardoffControl-Session-{session_id}
+\\.\pipe\WardoffStatus-Session-{session_id}
 ```
 
 ### Why IPC exists
@@ -210,7 +210,7 @@ Current request types include:
 - autostart changes
 - internal server shutdown during orderly app exit
 
-`wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use `\\.\pipe\WardoffControl`.
+`wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use the session-scoped `WardoffControl` pipe for the current Windows session.
 
 The control pipe is now created with explicit local-only security instead of the process-default descriptor:
 
