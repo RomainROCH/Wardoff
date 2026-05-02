@@ -1252,13 +1252,15 @@ mod tests {
 
     #[test]
     fn initial_pipe_claim_retry_reports_bounded_startup_window_exhaustion() {
-        let error = claim_initial_pipe_instance(r"\\.\pipe\WardoffStatus-Session-7", || {
+        let error = match claim_initial_pipe_instance(r"\\.\pipe\WardoffStatus-Session-7", || {
             Err((
                 "Wardoff could not create the status pipe.".to_string(),
                 ERROR_ACCESS_DENIED.0,
             ))
-        })
-        .expect_err("expected startup retry exhaustion to fail closed");
+        }) {
+            Ok(_) => panic!("expected startup retry exhaustion to fail closed"),
+            Err(error) => error,
+        };
 
         assert!(error.contains("startup retry window"));
     }
