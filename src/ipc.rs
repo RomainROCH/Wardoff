@@ -1,6 +1,7 @@
 use crate::blocker::BlockerMode;
 use crate::cli::StatusOutput;
 use crate::logger::{self, EventSource};
+use crate::session_scope::{current_control_pipe_path, current_status_pipe_path};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -14,7 +15,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use windows::core::{w, Error as WindowsError, PCWSTR, PWSTR};
+use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
     ERROR_INSUFFICIENT_BUFFER, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
@@ -35,8 +36,6 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 
-const CONTROL_PIPE_PATH: &str = r"\\.\pipe\WardoffControl";
-const STATUS_PIPE_PATH: &str = r"\\.\pipe\WardoffStatus";
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
 const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
@@ -113,6 +112,8 @@ impl IpcServer {
         request_tx: Sender<PendingRequest>,
         ui_thread_id: u32,
     ) -> Result<Self, String> {
+        let control_pipe_path = current_control_pipe_path()?;
+        let status_pipe_path = current_status_pipe_path()?;
         let status_shutdown_requested = Arc::new(AtomicBool::new(false));
         let control_request_tx = request_tx.clone();
         let control_join_handle = thread::Builder::new()
@@ -129,18 +130,18 @@ impl IpcServer {
                 format!("Wardoff could not start its status server thread: {error}")
             })?;
 
-        info!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}.");
+        info!("Wardoff started its named-pipe control server on {control_pipe_path}.");
         logger::log_event(
             "ipc_server_started",
             EventSource::Ipc,
-            format!("Wardoff started its named-pipe control server on {CONTROL_PIPE_PATH}."),
+            format!("Wardoff started its named-pipe control server on {control_pipe_path}."),
             true,
         );
-        info!("Wardoff started its read-only status pipe on {STATUS_PIPE_PATH}.");
+        info!("Wardoff started its read-only status pipe on {status_pipe_path}.");
         logger::log_event(
             "status_server_started",
             EventSource::Ipc,
-            format!("Wardoff started its read-only status pipe on {STATUS_PIPE_PATH}."),
+            format!("Wardoff started its read-only status pipe on {status_pipe_path}."),
             true,
         );
 
@@ -198,7 +199,8 @@ impl IpcServer {
 
 /// Sends a JSON control request to the primary Wardoff runtime.
 pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientError> {
-    let mut pipe = connect_control_pipe()?;
+    let control_pipe_path = current_control_pipe_path().map_err(ClientError::Transport)?;
+    let mut pipe = connect_control_pipe(&control_pipe_path)?;
     let payload = serde_json::to_string(request).map_err(|error| {
         ClientError::Transport(format!(
             "Wardoff could not serialize its IPC request: {error}"
@@ -207,17 +209,17 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
 
     pipe.write_all(payload.as_bytes()).map_err(|error| {
         ClientError::Transport(format!(
-            "Wardoff could not write to {CONTROL_PIPE_PATH}: {error}"
+            "Wardoff could not write to {control_pipe_path}: {error}"
         ))
     })?;
     pipe.write_all(b"\n").map_err(|error| {
         ClientError::Transport(format!(
-            "Wardoff could not finish writing to {CONTROL_PIPE_PATH}: {error}"
+            "Wardoff could not finish writing to {control_pipe_path}: {error}"
         ))
     })?;
     pipe.flush().map_err(|error| {
         ClientError::Transport(format!(
-            "Wardoff could not flush {CONTROL_PIPE_PATH}: {error}"
+            "Wardoff could not flush {control_pipe_path}: {error}"
         ))
     })?;
 
@@ -226,46 +228,47 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
         let mut reader = BufReader::new(&mut pipe);
         reader.read_line(&mut response_line).map_err(|error| {
             ClientError::Transport(format!(
-                "Wardoff could not read the reply from {CONTROL_PIPE_PATH}: {error}"
+                "Wardoff could not read the reply from {control_pipe_path}: {error}"
             ))
         })?
     };
 
     if bytes_read == 0 {
         return Err(ClientError::Transport(format!(
-            "Wardoff did not receive any reply from {CONTROL_PIPE_PATH}."
+            "Wardoff did not receive any reply from {control_pipe_path}."
         )));
     }
 
     serde_json::from_str(response_line.trim_end()).map_err(|error| {
         ClientError::Transport(format!(
-            "Wardoff received malformed IPC JSON from {CONTROL_PIPE_PATH}: {error}"
+            "Wardoff received malformed IPC JSON from {control_pipe_path}: {error}"
         ))
     })
 }
 
 /// Reads the current runtime status through the dedicated read-only status pipe.
 pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
-    let mut pipe = connect_status_pipe()?;
+    let status_pipe_path = current_status_pipe_path().map_err(ClientError::Transport)?;
+    let mut pipe = connect_status_pipe(&status_pipe_path)?;
     let mut status_line = String::new();
     let bytes_read = {
         let mut reader = BufReader::new(&mut pipe);
         reader.read_line(&mut status_line).map_err(|error| {
             ClientError::Transport(format!(
-                "Wardoff could not read the status reply from {STATUS_PIPE_PATH}: {error}"
+                "Wardoff could not read the status reply from {status_pipe_path}: {error}"
             ))
         })?
     };
 
     if bytes_read == 0 {
         return Err(ClientError::Transport(format!(
-            "Wardoff did not receive any status reply from {STATUS_PIPE_PATH}."
+            "Wardoff did not receive any status reply from {status_pipe_path}."
         )));
     }
 
     serde_json::from_str(status_line.trim_end()).map_err(|error| {
         ClientError::Transport(format!(
-            "Wardoff received malformed status JSON from {STATUS_PIPE_PATH}: {error}"
+            "Wardoff received malformed status JSON from {status_pipe_path}: {error}"
         ))
     })
 }
@@ -329,7 +332,21 @@ struct ControlPipeSecurityAttributes {
 }
 
 fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
-    let control_pipe_security = match build_control_pipe_security_attributes() {
+    let control_pipe_path = match current_control_pipe_path() {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("Wardoff stopped its named-pipe server before startup: {error}");
+            logger::log_event(
+                "ipc_server_stopped",
+                EventSource::Ipc,
+                format!("Wardoff stopped its named-pipe control server before startup: {error}"),
+                false,
+            );
+            return;
+        }
+    };
+
+    let control_pipe_security = match build_control_pipe_security_attributes(&control_pipe_path) {
         Ok(security) => security,
         Err(error) => {
             warn!("Wardoff stopped its named-pipe server before startup: {error}");
@@ -344,7 +361,7 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
     };
 
     loop {
-        let mut pipe = match accept_control_client(&control_pipe_security) {
+        let mut pipe = match accept_control_client(&control_pipe_security, &control_pipe_path) {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
@@ -439,7 +456,7 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
     logger::log_event(
         "ipc_server_stopped",
         EventSource::Ipc,
-        format!("Wardoff stopped its named-pipe control server on {CONTROL_PIPE_PATH}."),
+        format!("Wardoff stopped its named-pipe control server on {control_pipe_path}."),
         true,
     );
 }
@@ -449,12 +466,26 @@ fn run_status_server_loop(
     ui_thread_id: u32,
     shutdown_requested: Arc<AtomicBool>,
 ) {
+    let status_pipe_path = match current_status_pipe_path() {
+        Ok(path) => path,
+        Err(error) => {
+            warn!("Wardoff stopped its status server before startup: {error}");
+            logger::log_event(
+                "status_server_stopped",
+                EventSource::Ipc,
+                format!("Wardoff stopped its read-only status pipe before startup: {error}"),
+                false,
+            );
+            return;
+        }
+    };
+
     loop {
         if shutdown_requested.load(Ordering::Acquire) {
             break;
         }
 
-        let mut pipe = match accept_status_client() {
+        let mut pipe = match accept_status_client(&status_pipe_path) {
             Ok(pipe) => pipe,
             Err(error) => {
                 warn!("Wardoff stopped its status server after an IPC error: {error}");
@@ -528,15 +559,19 @@ fn run_status_server_loop(
     logger::log_event(
         "status_server_stopped",
         EventSource::Ipc,
-        format!("Wardoff stopped its read-only status pipe on {STATUS_PIPE_PATH}."),
+        format!("Wardoff stopped its read-only status pipe on {status_pipe_path}."),
         true,
     );
 }
 
-fn accept_control_client(security: &ControlPipeSecurityAttributes) -> Result<File, String> {
+fn accept_control_client(
+    security: &ControlPipeSecurityAttributes,
+    control_pipe_path: &str,
+) -> Result<File, String> {
+    let control_pipe_path_wide = wide_null(control_pipe_path);
     let pipe = unsafe {
         CreateNamedPipeW(
-            w!("\\\\.\\pipe\\WardoffControl"),
+            PCWSTR(control_pipe_path_wide.as_ptr()),
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
@@ -548,7 +583,7 @@ fn accept_control_client(security: &ControlPipeSecurityAttributes) -> Result<Fil
     };
     if pipe.is_invalid() {
         return Err(format!(
-            "Wardoff could not create {CONTROL_PIPE_PATH}: {}",
+            "Wardoff could not create {control_pipe_path}: {}",
             WindowsError::from_thread()
         ));
     }
@@ -559,7 +594,7 @@ fn accept_control_client(security: &ControlPipeSecurityAttributes) -> Result<Fil
         Err(_) if unsafe { GetLastError() } == ERROR_PIPE_CONNECTED => {}
         Err(error) => {
             return Err(format!(
-                "Wardoff could not accept a client on {CONTROL_PIPE_PATH}: {error}"
+                "Wardoff could not accept a client on {control_pipe_path}: {error}"
             ));
         }
     }
@@ -567,10 +602,11 @@ fn accept_control_client(security: &ControlPipeSecurityAttributes) -> Result<Fil
     Ok(pipe.into_file())
 }
 
-fn accept_status_client() -> Result<File, String> {
+fn accept_status_client(status_pipe_path: &str) -> Result<File, String> {
+    let status_pipe_path_wide = wide_null(status_pipe_path);
     let pipe = unsafe {
         CreateNamedPipeW(
-            w!("\\\\.\\pipe\\WardoffStatus"),
+            PCWSTR(status_pipe_path_wide.as_ptr()),
             PIPE_ACCESS_OUTBOUND,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
@@ -582,7 +618,7 @@ fn accept_status_client() -> Result<File, String> {
     };
     if pipe.is_invalid() {
         return Err(format!(
-            "Wardoff could not create {STATUS_PIPE_PATH}: {}",
+            "Wardoff could not create {status_pipe_path}: {}",
             WindowsError::from_thread()
         ));
     }
@@ -593,7 +629,7 @@ fn accept_status_client() -> Result<File, String> {
         Err(_) if unsafe { GetLastError() } == ERROR_PIPE_CONNECTED => {}
         Err(error) => {
             return Err(format!(
-                "Wardoff could not accept a client on {STATUS_PIPE_PATH}: {error}"
+                "Wardoff could not accept a client on {status_pipe_path}: {error}"
             ));
         }
     }
@@ -643,14 +679,14 @@ fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), Str
         .map_err(|error| format!("Wardoff could not flush its status reply: {error}"))
 }
 
-fn connect_control_pipe() -> Result<File, ClientError> {
+fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
         match OpenOptions::new()
             .read(true)
             .write(true)
-            .open(CONTROL_PIPE_PATH)
+            .open(control_pipe_path)
         {
             Ok(pipe) => return Ok(pipe),
             Err(error) => {
@@ -669,19 +705,19 @@ fn connect_control_pipe() -> Result<File, ClientError> {
                     continue;
                 }
 
-                return Err(map_connect_error(CONTROL_PIPE_PATH, error, raw_code));
+                return Err(map_connect_error(control_pipe_path, true, error, raw_code));
             }
         }
     }
 
-    final_connect_error(CONTROL_PIPE_PATH, last_error_code)
+    final_connect_error(control_pipe_path, last_error_code)
 }
 
-fn connect_status_pipe() -> Result<File, ClientError> {
+fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
-        match OpenOptions::new().read(true).open(STATUS_PIPE_PATH) {
+        match OpenOptions::new().read(true).open(status_pipe_path) {
             Ok(pipe) => return Ok(pipe),
             Err(error) => {
                 let raw_code = error.raw_os_error();
@@ -699,12 +735,12 @@ fn connect_status_pipe() -> Result<File, ClientError> {
                     continue;
                 }
 
-                return Err(map_connect_error(STATUS_PIPE_PATH, error, raw_code));
+                return Err(map_connect_error(status_pipe_path, false, error, raw_code));
             }
         }
     }
 
-    final_connect_error(STATUS_PIPE_PATH, last_error_code)
+    final_connect_error(status_pipe_path, last_error_code)
 }
 
 fn final_connect_error(path: &str, last_error_code: Option<i32>) -> Result<File, ClientError> {
@@ -723,14 +759,19 @@ fn final_connect_error(path: &str, last_error_code: Option<i32>) -> Result<File,
     }
 }
 
-fn map_connect_error(path: &str, error: std::io::Error, raw_code: Option<i32>) -> ClientError {
+fn map_connect_error(
+    path: &str,
+    is_control_pipe: bool,
+    error: std::io::Error,
+    raw_code: Option<i32>,
+) -> ClientError {
     match raw_code {
         Some(code)
             if code == ERROR_FILE_NOT_FOUND.0 as i32 || code == ERROR_PATH_NOT_FOUND.0 as i32 =>
         {
             ClientError::Unavailable
         }
-        Some(code) if code == ERROR_ACCESS_DENIED.0 as i32 && path == CONTROL_PIPE_PATH => {
+        Some(code) if code == ERROR_ACCESS_DENIED.0 as i32 && is_control_pipe => {
             ClientError::Transport(control_pipe_access_denied_message())
         }
         Some(code) if code == ERROR_PIPE_BUSY.0 as i32 => ClientError::Transport(format!(
@@ -740,10 +781,14 @@ fn map_connect_error(path: &str, error: std::io::Error, raw_code: Option<i32>) -
     }
 }
 
-fn build_control_pipe_security_attributes() -> Result<ControlPipeSecurityAttributes, String> {
-    let current_user_sid = current_process_user_sid_string()?;
-    let control_pipe_security_sddl =
-        wide_null(&build_control_pipe_security_sddl(&current_user_sid)?);
+fn build_control_pipe_security_attributes(
+    control_pipe_path: &str,
+) -> Result<ControlPipeSecurityAttributes, String> {
+    let current_user_sid = current_process_user_sid_string(control_pipe_path)?;
+    let control_pipe_security_sddl = wide_null(&build_control_pipe_security_sddl(
+        &current_user_sid,
+        control_pipe_path,
+    )?);
     let mut security_descriptor = PSECURITY_DESCRIPTOR::default();
 
     unsafe {
@@ -754,7 +799,7 @@ fn build_control_pipe_security_attributes() -> Result<ControlPipeSecurityAttribu
             None,
         )
         .map_err(|error| {
-            format!("Wardoff could not prepare {CONTROL_PIPE_PATH} security attributes: {error}")
+            format!("Wardoff could not prepare {control_pipe_path} security attributes: {error}")
         })?;
     }
 
@@ -768,10 +813,13 @@ fn build_control_pipe_security_attributes() -> Result<ControlPipeSecurityAttribu
     })
 }
 
-fn build_control_pipe_security_sddl(current_user_sid: &str) -> Result<String, String> {
+fn build_control_pipe_security_sddl(
+    current_user_sid: &str,
+    control_pipe_path: &str,
+) -> Result<String, String> {
     if current_user_sid.trim().is_empty() {
         return Err(format!(
-            "Wardoff could not build {CONTROL_PIPE_PATH} security attributes because the current-user SID was empty."
+            "Wardoff could not build {control_pipe_path} security attributes because the current-user SID was empty."
         ));
     }
 
@@ -784,11 +832,11 @@ fn control_pipe_access_denied_message() -> String {
     "Wardoff could not send that control command to the active primary runtime. Non-elevated shells can control an elevated Wardoff runtime only for the same interactive Windows user. If Wardoff is running as a different user, close that runtime or relaunch the command from the matching account.".to_string()
 }
 
-fn current_process_user_sid_string() -> Result<String, String> {
+fn current_process_user_sid_string(control_pipe_path: &str) -> Result<String, String> {
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|error| {
-            format!("Wardoff could not query its process token for {CONTROL_PIPE_PATH}: {error}")
+            format!("Wardoff could not query its process token for {control_pipe_path}: {error}")
         })?;
         let token = HandleGuard(token);
 
@@ -797,7 +845,7 @@ fn current_process_user_sid_string() -> Result<String, String> {
         let probe_error = GetLastError();
         if required_length == 0 || probe_error != ERROR_INSUFFICIENT_BUFFER {
             return Err(format!(
-                "Wardoff could not determine the token-user size for {CONTROL_PIPE_PATH} (Win32 error {}).",
+                "Wardoff could not determine the token-user size for {control_pipe_path} (Win32 error {}).",
                 probe_error.0
             ));
         }
@@ -812,20 +860,20 @@ fn current_process_user_sid_string() -> Result<String, String> {
         )
         .map_err(|error| {
             format!(
-                "Wardoff could not read its process token user for {CONTROL_PIPE_PATH}: {error}"
+                "Wardoff could not read its process token user for {control_pipe_path}: {error}"
             )
         })?;
 
         let token_user = &*(token_information.as_ptr() as *const TOKEN_USER);
         if token_user.User.Sid.0.is_null() {
             return Err(format!(
-                "Wardoff could not read a token-user SID for {CONTROL_PIPE_PATH}."
+                "Wardoff could not read a token-user SID for {control_pipe_path}."
             ));
         }
         let mut string_sid = PWSTR::null();
         ConvertSidToStringSidW(token_user.User.Sid, &mut string_sid).map_err(|error| {
             format!(
-                "Wardoff could not stringify its token-user SID for {CONTROL_PIPE_PATH}: {error}"
+                "Wardoff could not stringify its token-user SID for {control_pipe_path}: {error}"
             )
         })?;
 
@@ -833,7 +881,7 @@ fn current_process_user_sid_string() -> Result<String, String> {
         let sid = string_sid.to_string();
         if sid.is_empty() {
             return Err(format!(
-                "Wardoff could not stringify a non-empty token-user SID for {CONTROL_PIPE_PATH}."
+                "Wardoff could not stringify a non-empty token-user SID for {control_pipe_path}."
             ));
         }
 
@@ -842,9 +890,11 @@ fn current_process_user_sid_string() -> Result<String, String> {
 }
 
 fn wake_status_server() -> std::io::Result<()> {
+    let status_pipe_path =
+        current_status_pipe_path().map_err(|error| std::io::Error::other(error))?;
     OpenOptions::new()
         .read(true)
-        .open(STATUS_PIPE_PATH)
+        .open(status_pipe_path)
         .map(|_| ())
 }
 
@@ -896,7 +946,12 @@ mod tests {
     fn control_pipe_access_denied_maps_to_product_message() {
         let error = std::io::Error::from_raw_os_error(ERROR_ACCESS_DENIED.0 as i32);
 
-        match map_connect_error(CONTROL_PIPE_PATH, error, Some(ERROR_ACCESS_DENIED.0 as i32)) {
+        match map_connect_error(
+            r"\\.\pipe\WardoffControl-Session-7",
+            true,
+            error,
+            Some(ERROR_ACCESS_DENIED.0 as i32),
+        ) {
             ClientError::Transport(message) => {
                 assert_eq!(message, control_pipe_access_denied_message());
             }
@@ -906,8 +961,11 @@ mod tests {
 
     #[test]
     fn control_pipe_security_descriptor_stays_same_user_and_medium_integrity_only() {
-        let sddl = build_control_pipe_security_sddl("S-1-5-21-123-456-789-1001")
-            .expect("expected a valid same-user control-pipe SDDL");
+        let sddl = build_control_pipe_security_sddl(
+            "S-1-5-21-123-456-789-1001",
+            r"\\.\pipe\WardoffControl-Session-7",
+        )
+        .expect("expected a valid same-user control-pipe SDDL");
 
         assert_eq!(
             sddl,
@@ -918,8 +976,8 @@ mod tests {
 
     #[test]
     fn control_pipe_security_descriptor_rejects_empty_sid() {
-        let error =
-            build_control_pipe_security_sddl("").expect_err("expected an empty SID to be rejected");
+        let error = build_control_pipe_security_sddl("", r"\\.\pipe\WardoffControl-Session-7")
+            .expect_err("expected an empty SID to be rejected");
 
         assert!(error.contains("current-user SID was empty"));
     }

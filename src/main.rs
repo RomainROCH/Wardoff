@@ -5,6 +5,7 @@ mod config;
 mod instance;
 mod ipc;
 mod logger;
+mod session_scope;
 mod tray;
 mod windows_util;
 

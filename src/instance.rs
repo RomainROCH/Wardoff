@@ -1,12 +1,14 @@
 use std::thread;
 use std::time::Duration;
-use windows::core::{w, Error as WindowsError, HRESULT};
+use windows::core::{Error as WindowsError, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, E_ACCESSDENIED, HANDLE,
 };
 use windows::Win32::System::Threading::{CreateMutexExW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 
-/// Owns the global mutex used to enforce a single primary Wardoff runtime.
+use crate::session_scope::current_mutex_name;
+
+/// Owns the session-scoped mutex used to enforce a single primary Wardoff runtime.
 pub(crate) struct InstanceGuard(HANDLE);
 
 /// Describes whether the current process became the primary Wardoff runtime.
@@ -25,10 +27,13 @@ enum ClaimDisposition {
 
 /// Attempts to claim the named Wardoff mutex for the current process.
 pub(crate) fn claim_primary_instance() -> Result<InstanceClaim, String> {
+    let mutex_name = current_mutex_name()?;
+    let mutex_name_wide = wide_null(&mutex_name);
+
     let handle = match unsafe {
         CreateMutexExW(
             None,
-            w!("Global\\WardoffInstance"),
+            PCWSTR(mutex_name_wide.as_ptr()),
             0,
             SYNCHRONIZATION_SYNCHRONIZE.0,
         )
@@ -36,12 +41,13 @@ pub(crate) fn claim_primary_instance() -> Result<InstanceClaim, String> {
         Ok(handle) => handle,
         Err(create_error) if is_access_denied_error(&create_error) => {
             return match classify_access_denied_probe(
+                &mutex_name,
                 &create_error,
                 match unsafe {
                     OpenMutexW(
                         SYNCHRONIZATION_SYNCHRONIZE,
                         false,
-                        w!("Global\\WardoffInstance"),
+                        PCWSTR(mutex_name_wide.as_ptr()),
                     )
                 } {
                     Ok(handle) => {
@@ -61,7 +67,7 @@ pub(crate) fn claim_primary_instance() -> Result<InstanceClaim, String> {
         }
         Err(error) => {
             return Err(format!(
-                "Wardoff could not create or open its single-instance mutex (Global\\WardoffInstance): {error}"
+                "Wardoff could not create or open its single-instance mutex ({mutex_name}): {error}"
             ));
         }
     };
@@ -92,13 +98,14 @@ fn is_access_denied_error(error: &WindowsError) -> bool {
 }
 
 fn classify_access_denied_probe(
+    mutex_name: &str,
     create_error: &WindowsError,
     open_result: Result<(), WindowsError>,
 ) -> Result<ClaimDisposition, String> {
     match open_result {
         Ok(()) => Ok(ClaimDisposition::Secondary),
         Err(open_error) => Err(format!(
-            "Wardoff could not create or open its single-instance mutex (Global\\WardoffInstance). The environment or an existing owner may be restricting access. CreateMutexExW: {create_error}; OpenMutexW probe: {open_error}"
+            "Wardoff could not create or open its single-instance mutex ({mutex_name}). The environment or an existing owner may be restricting access. CreateMutexExW: {create_error}; OpenMutexW probe: {open_error}"
         )),
     }
 }
@@ -132,6 +139,10 @@ impl Drop for InstanceGuard {
     }
 }
 
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -158,7 +169,11 @@ mod tests {
     #[test]
     fn access_denied_with_successful_open_is_secondary() {
         assert_eq!(
-            classify_access_denied_probe(&win32_error(ERROR_ACCESS_DENIED.0), Ok(())),
+            classify_access_denied_probe(
+                r"Local\WardoffInstance-Session-1",
+                &win32_error(ERROR_ACCESS_DENIED.0),
+                Ok(())
+            ),
             Ok(ClaimDisposition::Secondary)
         );
     }
@@ -166,6 +181,7 @@ mod tests {
     #[test]
     fn access_denied_with_failed_open_is_actionable_error() {
         let error = classify_access_denied_probe(
+            r"Local\WardoffInstance-Session-1",
             &win32_error(ERROR_ACCESS_DENIED.0),
             Err(win32_error(ERROR_ACCESS_DENIED.0)),
         )
@@ -174,6 +190,7 @@ mod tests {
         assert!(error.contains("may be restricting access"));
         assert!(error.contains("CreateMutexExW"));
         assert!(error.contains("OpenMutexW probe"));
+        assert!(error.contains(r"Local\WardoffInstance-Session-1"));
     }
 
     #[test]
