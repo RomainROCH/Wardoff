@@ -3,14 +3,18 @@ use env_logger::{Builder, Env};
 use log::{error, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File, Metadata, OpenOptions};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{
     mpsc::{self, Receiver, Sender},
     Mutex, OnceLock,
 };
 use std::thread::{self, JoinHandle};
+use windows::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+};
 
 const DEFAULT_LOG_FILE_NAME: &str = "wardoff.jsonl";
 const WRITER_THREAD_NAME: &str = "wardoff-structured-logger";
@@ -169,12 +173,11 @@ pub(crate) fn read_recent_lines(limit: usize) -> Result<Vec<String>, String> {
     let mut recent_lines = VecDeque::with_capacity(limit);
 
     for path in log_paths_oldest_to_newest(default_log_path()) {
-        if !path.exists() {
+        if log_file_metadata_if_exists(&path)?.is_none() {
             continue;
         }
 
-        let file = File::open(&path)
-            .map_err(|error| format!("Wardoff could not open {}: {error}", path.display()))?;
+        let file = open_plain_log_file_for_read(&path)?;
         let reader = BufReader::new(file);
 
         for line_result in reader.lines() {
@@ -234,20 +237,13 @@ fn run_writer_loop(receiver: Receiver<LogCommand>, log_path: PathBuf) {
 }
 
 fn write_record(path: &Path, record: &LogRecord) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Wardoff could not create {}: {error}", parent.display()))?;
-    }
+    ensure_managed_log_directory(path)?;
 
     let line = serde_json::to_string(record)
         .map_err(|error| format!("Wardoff could not serialize a log record: {error}"))?;
     rotate_if_needed(path, line.len() as u64 + 1)?;
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| format!("Wardoff could not open {}: {error}", path.display()))?;
+    let mut file = open_plain_log_file_for_append(path)?;
 
     file.write_all(line.as_bytes())
         .map_err(|error| format!("Wardoff could not write {}: {error}", path.display()))?;
@@ -264,15 +260,9 @@ fn write_record(path: &Path, record: &LogRecord) -> Result<(), String> {
 }
 
 fn rotate_if_needed(path: &Path, incoming_bytes: u64) -> Result<(), String> {
-    let current_size = match fs::metadata(path) {
-        Ok(metadata) => metadata.len(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(error) => {
-            return Err(format!(
-                "Wardoff could not inspect {} before rotation: {error}",
-                path.display()
-            ));
-        }
+    let current_size = match log_file_metadata_if_exists(path)? {
+        Some(metadata) => metadata.len(),
+        None => 0,
     };
 
     if current_size + incoming_bytes <= MAX_LOG_BYTES {
@@ -302,9 +292,13 @@ fn rotate_logs(path: &Path) -> Result<(), String> {
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    if log_file_metadata_if_exists(path)?.is_none() {
+        return Ok(());
+    }
+
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
             "Wardoff could not remove {}: {error}",
             path.display()
@@ -313,15 +307,159 @@ fn remove_file_if_exists(path: &Path) -> Result<(), String> {
 }
 
 fn rename_if_exists(from: &Path, to: &Path) -> Result<(), String> {
+    if log_file_metadata_if_exists(from)?.is_none() {
+        return Ok(());
+    }
+    let _ = log_file_metadata_if_exists(to)?;
+
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
             "Wardoff could not rotate {} to {}: {error}",
             from.display(),
             to.display()
         )),
     }
+}
+
+fn ensure_managed_log_directory(path: &Path) -> Result<(), String> {
+    let log_directory = path.parent().ok_or_else(|| {
+        format!(
+            "Wardoff could not resolve the parent directory for {}.",
+            path.display()
+        )
+    })?;
+    let wardoff_directory = log_directory.parent().ok_or_else(|| {
+        format!(
+            "Wardoff could not resolve the managed log root for {}.",
+            path.display()
+        )
+    })?;
+    let local_app_data = wardoff_directory.parent().ok_or_else(|| {
+        format!(
+            "Wardoff could not resolve the LOCALAPPDATA parent for {}.",
+            path.display()
+        )
+    })?;
+
+    ensure_managed_directory_component(local_app_data, wardoff_directory)?;
+    ensure_managed_directory_component(wardoff_directory, log_directory)
+}
+
+fn ensure_managed_directory_component(parent: &Path, path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => validate_plain_directory(path, &metadata),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            fs::create_dir(path)
+                .or_else(|create_error| {
+                    if create_error.kind() == ErrorKind::AlreadyExists {
+                        Ok(())
+                    } else {
+                        Err(create_error)
+                    }
+                })
+                .map_err(|error| {
+                    format!(
+                        "Wardoff could not create managed log directory {} under {}: {error}",
+                        path.display(),
+                        parent.display()
+                    )
+                })?;
+
+            let metadata = fs::symlink_metadata(path).map_err(|error| {
+                format!(
+                    "Wardoff could not inspect managed log directory {} after creation: {error}",
+                    path.display()
+                )
+            })?;
+            validate_plain_directory(path, &metadata)
+        }
+        Err(error) => Err(format!(
+            "Wardoff could not inspect managed log directory {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn open_plain_log_file_for_read(path: &Path) -> Result<File, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .map_err(|error| format!("Wardoff could not open {}: {error}", path.display()))?;
+    validate_open_plain_file(path, &file)?;
+    Ok(file)
+}
+
+fn open_plain_log_file_for_append(path: &Path) -> Result<File, String> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .map_err(|error| format!("Wardoff could not open {}: {error}", path.display()))?;
+    validate_open_plain_file(path, &file)?;
+    Ok(file)
+}
+
+fn validate_open_plain_file(path: &Path, file: &File) -> Result<(), String> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Wardoff could not inspect {}: {error}", path.display()))?;
+    validate_plain_file(path, &metadata)
+}
+
+fn log_file_metadata_if_exists(path: &Path) -> Result<Option<Metadata>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_plain_file(path, &metadata)?;
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "Wardoff could not inspect {} before rotation: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn validate_plain_directory(path: &Path, metadata: &Metadata) -> Result<(), String> {
+    if has_reparse_point(metadata) {
+        return Err(format!(
+            "Wardoff refused to follow a reparse point at managed log directory {}.",
+            path.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Wardoff expected a directory at managed log path {}.",
+            path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_plain_file(path: &Path, metadata: &Metadata) -> Result<(), String> {
+    if has_reparse_point(metadata) {
+        return Err(format!(
+            "Wardoff refused to follow a reparse point at managed log file {}.",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Wardoff expected a plain file at managed log path {}.",
+            path.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn has_reparse_point(metadata: &Metadata) -> bool {
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
 }
 
 fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
@@ -350,4 +488,65 @@ fn log_paths_oldest_to_newest(base_path: PathBuf) -> Vec<PathBuf> {
 
     paths.push(base_path);
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn ensure_managed_log_directory_creates_missing_components() {
+        let base = unique_test_root("creates-managed-log-directory");
+        fs::create_dir_all(&base).unwrap();
+
+        let log_path = base
+            .join("Wardoff")
+            .join("logs")
+            .join(DEFAULT_LOG_FILE_NAME);
+        ensure_managed_log_directory(&log_path).unwrap();
+
+        assert!(base.join("Wardoff").is_dir());
+        assert!(base.join("Wardoff").join("logs").is_dir());
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn ensure_managed_log_directory_rejects_non_directory_components() {
+        let base = unique_test_root("rejects-non-directory-component");
+        fs::create_dir_all(&base).unwrap();
+        File::create(base.join("Wardoff")).unwrap();
+
+        let log_path = base
+            .join("Wardoff")
+            .join("logs")
+            .join(DEFAULT_LOG_FILE_NAME);
+        let error = ensure_managed_log_directory(&log_path).unwrap_err();
+
+        assert!(error.contains("expected a directory"));
+
+        fs::remove_file(base.join("Wardoff")).unwrap();
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn log_file_metadata_if_exists_rejects_directories() {
+        let base = unique_test_root("rejects-directory-log-file");
+        let directory_path = base.join("Wardoff");
+        fs::create_dir_all(&directory_path).unwrap();
+
+        let error = log_file_metadata_if_exists(&directory_path).unwrap_err();
+        assert!(error.contains("expected a plain file"));
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    fn unique_test_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("wardoff-{name}-{unique}"))
+    }
 }
