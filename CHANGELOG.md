@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Hardened structured JSONL logging under `%LOCALAPPDATA%\Wardoff\logs` so Wardoff now creates its managed log directories one component at a time, refuses reparse points in the managed log tree and rotated files, and uses reparse-aware no-follow opens for active and read-only log file access.
 - Hardened highest-runlevel autostart registration so Wardoff canonicalizes its executable path, refuses `--autostart on` from user-writable install locations, and derives the scheduled-task principal from the process token instead of `USERNAME`/`USERDOMAIN`.
 - Tray-initiated sleep and hibernate requests now restore Block mode automatically on wake when Wardoff was in Block mode before the tray action, and emit a `block_restored_after_wake` structured log event. The hidden Layer 1 session window now explicitly registers for suspend/resume notifications via `RegisterSuspendResumeNotification`; without that registration, since Windows 8 `WM_POWERBROADCAST` with `PBT_APMSUSPEND`/`PBT_APMRESUMEAUTOMATIC`/`PBT_APMRESUMESUSPEND` is no longer broadcast to top-level windows automatically, so the previous restore-after-wake state machine never fired.
 - Explicitly documented `docs/ARCHITECTURE.md` as the canonical architecture authority and added guardrails against silently rewriting it to match incidental implementation drift.
