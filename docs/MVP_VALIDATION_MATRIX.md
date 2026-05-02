@@ -30,6 +30,7 @@ Keep validation language conservative:
 | Build target | `cargo build --release` then validate `target\release\wardoff.exe` |
 | Logs | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` |
 | Admin rights | Required for Layer 3, Layer 4, Update Orchestrator task checks, and autostart task changes |
+| Trusted install path | Required if you expect `wardoff --autostart on` to create or update the `Wardoff` task; from an untrusted or user-writable path Wardoff should refuse safely and leave the scheduled-task state unchanged |
 | Disposable VM | Required for shutdown, reboot, sign-out, sleep, hibernate, or remote-shutdown checks that could disrupt the host |
 
 ## Automated checks already covered by `tests\smoke_test.ps1`
@@ -45,10 +46,10 @@ Keep validation language conservative:
 | Active status JSON | `wardoff --status` exits `0`, returns `state=block`, and includes `layers.local_shutdown` as a boolean | No |
 | Sleep/display request visibility | `powercfg /requests` mentions Wardoff while blocking is active, when the session allows that query | No |
 | Structured logging | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` exists, appends new lines, and contains valid JSON | No |
-| Layer 3 status | Elevated status reports `layers.update=true` | Yes |
+| Layer 3 status | Elevated status reports `layers.update=true` when `\Microsoft\Windows\UpdateOrchestrator\Reboot` exists; if the task is absent, note the normal skip/defer case instead of treating it as a failure | Yes |
 | Layer 4 status | Elevated status reports `layers.remote=true` | Yes |
-| Update task access | `schtasks /query /tn Microsoft\Windows\UpdateOrchestrator\Reboot` completes | Yes |
-| Autostart task lifecycle | `wardoff --autostart on` creates the `Wardoff` task and `--autostart off` removes it | Yes |
+| Update task access | `schtasks /query /tn Microsoft\Windows\UpdateOrchestrator\Reboot` either succeeds or shows the task is absent on this machine; absence is a normal Layer 3 skip/defer case | Yes |
+| Autostart task lifecycle | From a trusted admin-writable location, `wardoff --autostart on` creates the `Wardoff` task and `--autostart off` removes it; from an untrusted or user-writable path Wardoff refuses safely and leaves the task state unchanged | Yes |
 | Cleanup path | `wardoff --allow` plus process cleanup stops the background instance | No |
 | Sleep/display cleanup | `powercfg /requests` no longer mentions Wardoff after cleanup, when the session allows that query | No |
 
@@ -78,12 +79,13 @@ Run these in an elevated session when you want manual confidence beyond the auto
 
 | Area | Check | Expected result |
 | --- | --- | --- |
-| Layer 3 | Start Wardoff in Block mode and run `wardoff --status` | Status reports `layers.update=true` |
+| Layer 3 | Start Wardoff in Block mode, check whether `\Microsoft\Windows\UpdateOrchestrator\Reboot` exists, then run `wardoff --status` | If the task exists, status reports `layers.update=true`; if the task is absent, record the normal skip/defer case |
 | Layer 4 | Keep Wardoff running elevated in Block mode and run `wardoff --status` | Status reports `layers.remote=true` |
-| Update task access | Run `schtasks /query /tn "Microsoft\Windows\UpdateOrchestrator\Reboot"` | Task query succeeds |
-| Autostart on | Run `wardoff --autostart on`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task exists |
-| Autostart off | Run `wardoff --autostart off`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task is removed |
-| Autostart tray/menu honesty | In an elevated session, change autostart with `wardoff --autostart on|off` or the tray `Start with Windows` checkbox, then reopen the tray menu and confirm with `schtasks /query /tn "Wardoff"` | The tray checkbox reflects the real scheduled-task state after the change and does not keep a stale checked or unchecked state |
+| Update task access | Run `schtasks /query /tn "Microsoft\Windows\UpdateOrchestrator\Reboot"` | Task query succeeds, or the machine reports the task is absent and you record Layer 3 as a normal skip/defer case |
+| Autostart on | From a trusted admin-writable install location, run `wardoff --autostart on`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task exists |
+| Autostart off | From a trusted admin-writable install location, run `wardoff --autostart off`, then query `schtasks /query /tn "Wardoff"` | The `Wardoff` task is removed |
+| Autostart safe refusal from untrusted path | Run the same autostart command from an untrusted or user-writable path | Wardoff refuses with the trusted-location warning and does not create, delete, or silently alter the `Wardoff` task |
+| Autostart tray/menu honesty | In an elevated session, change autostart with `wardoff --autostart on|off` or the tray `Start with Windows` checkbox, then reopen the tray menu and confirm with `schtasks /query /tn "Wardoff"` | The tray checkbox reflects the real scheduled-task state after the change, and after an untrusted-location refusal it does not pretend autostart changed |
 | Honest non-admin behavior | Retry an admin-only command from a non-elevated console | Wardoff reports the requirement instead of pretending success |
 
 ## Disruptive manual checks for a disposable VM
