@@ -27,10 +27,10 @@ use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockR
 use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, RegisterClassW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, IsWindow, RegisterClassW,
     DEVICE_NOTIFY_WINDOW_HANDLE, ENDSESSION_LOGOFF, HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC,
-    PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION,
-    WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, SM_SHUTTINGDOWN, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -193,6 +193,14 @@ fn is_logoff_query(lparam: LPARAM) -> bool {
     (lparam.0 & ENDSESSION_LOGOFF as isize) != 0
 }
 
+fn is_shutdown_or_session_end_in_progress() -> bool {
+    unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+}
+
+fn should_run_end_session_cleanup(wparam: WPARAM, shutdown_in_progress: bool) -> bool {
+    wparam.0 != 0 && shutdown_in_progress
+}
+
 /// Registers the callback invoked when Windows forces session shutdown.
 pub(crate) fn set_end_session_cleanup_callback(callback: fn()) {
     if let Ok(mut slot) = END_SESSION_CLEANUP_CALLBACK.lock() {
@@ -224,7 +232,7 @@ pub(crate) fn clear_power_broadcast_callback() {
 }
 
 fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
-    if wparam.0 != 0 {
+    if should_run_end_session_cleanup(wparam, is_shutdown_or_session_end_in_progress()) {
         BLOCKER_ACTIVE.store(false, Ordering::Release);
         let _ = unsafe { ShutdownBlockReasonDestroy(hwnd) };
 
@@ -351,5 +359,27 @@ unsafe extern "system" fn shutdown_window_proc(
         WM_POWERBROADCAST => handle_power_broadcast(hwnd, wparam, lparam),
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_run_end_session_cleanup;
+    use windows::Win32::Foundation::WPARAM;
+
+    #[test]
+    fn end_session_cleanup_ignores_false_wparam() {
+        assert!(!should_run_end_session_cleanup(WPARAM(0), false));
+        assert!(!should_run_end_session_cleanup(WPARAM(0), true));
+    }
+
+    #[test]
+    fn end_session_cleanup_ignores_spoof_like_end_session_without_shutdown_state() {
+        assert!(!should_run_end_session_cleanup(WPARAM(1), false));
+    }
+
+    #[test]
+    fn end_session_cleanup_runs_only_for_real_session_end() {
+        assert!(should_run_end_session_cleanup(WPARAM(1), true));
     }
 }
