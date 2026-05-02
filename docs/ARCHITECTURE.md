@@ -359,7 +359,9 @@ In normal exit paths, `src/main.rs` coordinates:
 
 Layer 1 receives `WM_ENDSESSION` through `src/blocker/shutdown.rs`.
 
-That triggers a callback into `src/main.rs`, where the application:
+Wardoff only treats that message as authoritative when `wParam != 0` and Windows reports that shutdown or sign-out is actually in progress via `GetSystemMetrics(SM_SHUTTINGDOWN)`.
+
+When both checks pass, Layer 1 triggers a callback into `src/main.rs`, where the application:
 
 - marks forced cleanup as completed
 - asks `BlockerCoordinator` to run reduced cleanup
