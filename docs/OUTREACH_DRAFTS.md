@@ -32,7 +32,7 @@ I am looking for early feedback from people who actually manage Windows machines
 
 I made a small Windows utility called Wardoff for times when I want a machine to stay in a clear Block state instead of shutting down, signing out, sleeping, or rebooting at the wrong moment.
 
-The current MVP is simple on purpose: tray icon, right-click to switch between Block and Allow, plus a CLI if I want status or logs. It is Windows-only and right now you need to build it from source or grab the binary from the Releases page, so I am mainly looking for technically comfortable early adopters rather than trying to do a broad launch.
+The current MVP is simple on purpose: tray icon, right-click to switch between Block and Allow, plus a CLI if I want status or logs. It is Windows-only and right now you need to build it from source, so I am mainly looking for technically comfortable early adopters rather than trying to do a broad launch.
 
 I want to keep the limits explicit. I do **not** claim it can stop `shutdown /t 0 /f`, and I am not pretending this is a polished installer-style app yet. What it already does is give me a visible state, basic control, autostart support, and logs I can inspect when something behaves differently than expected.
 
@@ -42,6 +42,6 @@ If you try tools like this on Windows and have opinions about where the rough ed
 
 **Title:** `Show HN: Wardoff – Open-source Windows shutdown blocker in Rust`
 
-I built Wardoff, a Windows-only Rust utility for keeping a machine in a visible Block state when I do not want shutdown, sign-out, sleep, hibernate, or certain reboot paths to interrupt work. The current MVP has a tray app, CLI control, structured JSONL logs, interactive shutdown/sign-out blocking, multiple blocking layers including ETW-based local shutdown detection.
+I built Wardoff, a Windows-only Rust utility for keeping a machine in a visible Block state when I do not want shutdown, sign-out, sleep, hibernate, or certain reboot paths to interrupt work. The current MVP has a tray app, CLI control, structured JSONL logs, interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection when that task exists, remote shutdown abort polling, and sleep / hibernate / display-idle blocking.
 
-I am keeping the claims narrow: it is source-first today, aimed at technically comfortable early adopters, and it does **not** claim to stop `shutdown /t 0 /f`. Source is MIT and free. Signed binaries will be available as a convenience purchase. I would value feedback on Windows edge cases, docs clarity, and whether the current tray + CLI shape is the right one. Here's the project : https://github.com/RomainROCH/Wardoff
+I am keeping the claims narrow: it is source-first today, aimed at technically comfortable early adopters, and it does **not** claim to stop `shutdown /t 0 /f`. Source is MIT and free. Signed binaries are planned later as a convenience purchase, not a paywall. I would value feedback on Windows edge cases, docs clarity, and whether the current tray + CLI shape is the right one. Here's the project : https://github.com/RomainROCH/Wardoff

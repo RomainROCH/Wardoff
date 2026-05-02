@@ -59,8 +59,9 @@ appointed representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-[TO BE FILLED].
+reported to the community leaders responsible for enforcement through a
+private GitHub reporting channel if one is available for this repository;
+otherwise, a private channel will be arranged with the maintainer later.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the

@@ -99,9 +99,9 @@ target\release\wardoff.exe
 
 The source code is free and open under the MIT license. Anyone can build Wardoff from source.
 
-For users who want a verified binary without SmartScreen warnings, officially signed release binaries will be available for purchase. This is a convenience purchase that supports the project — the signed binary is functionally identical to what you build from source.
+For users who want a verified binary without SmartScreen warnings, officially signed release binaries may be offered later as a convenience purchase. The signed binary would be functionally identical to what you build from source.
 
-Pricing and download link: coming soon.
+Pricing and download details are not active yet.
 
 ## Usage
 
@@ -252,8 +252,9 @@ Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then [
 Wardoff is free and open source. If it saves you time or headaches, consider supporting the project:
 
 - [Sponsor on GitHub](https://github.com/sponsors/RomainROCH)
+- For community questions, issue routing, and current support scope, see [SUPPORT.md](SUPPORT.md)
 
-Signed release binaries will be available soon for users who want SmartScreen-free deployment and verified authenticity. Details will appear on the [Releases](https://github.com/RomainROCH/Wardoff/releases) page.
+If officially signed release binaries become available later for SmartScreen-free deployment and verified authenticity, details will appear on the [Releases](https://github.com/RomainROCH/Wardoff/releases) page.
 
 ## License
 

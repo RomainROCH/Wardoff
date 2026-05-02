@@ -55,7 +55,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
   - a tray/background app with Block/Allow state and optional hidden mode
   - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, `--autostart on|off`, and `--version`, with `--status` expected to produce JSON for scripting
 - Keep the read-only CLI contract explicit: `--help`, `--version`, `--status`, and `--log --tail N` must remain non-elevating/local-or-read-only paths, while the default no-argument startup may still use the existing self-elevation path when needed.
-- Keep the IPC split explicit when documenting CLI behavior: `\\.\pipe\WardoffControl` is the state-changing pipe and `\\.\pipe\WardoffStatus` is the dedicated read-only status pipe.
+- Keep the IPC split explicit when documenting CLI behavior: the session-scoped `WardoffControl` pipe is the state-changing path and the session-scoped `WardoffStatus` pipe is the dedicated read-only status path.
 - Logging and observability are first-class:
   - rotating JSON lines file logs
   - shared counters and metadata such as total blocked attempts, last blocked attempt, and likely source
@@ -135,12 +135,12 @@ Only these features belong in the current phase:
 ### Behavior rules for every commit
 1. **No unrequested work.** Do not add features, files, configs, or infrastructure not explicitly asked for. No CI configs. No release workflows. No architectural refactoring beyond the current task.
 2. **PLAN.md is the source of truth.** If a task contradicts PLAN.md, stop and ask. Do not silently deviate.
-3. **One branch per fix/feature.** Create a branch named `feat/description` or `fix/description`, implement the change, then provide instructions to merge into the dev branch.
+3. **One branch per fix/feature when a task actually requires repo changes.** If the task is explicitly read-only or branchless, follow that instruction instead of creating a branch. Otherwise create a focused branch such as `feat/description` or `fix/description`, implement the change, then provide instructions to merge into the dev branch.
 4. **No scope creep into v1.0 features.** If a task seems to require a v1.0 feature, flag it explicitly: "This requires [feature X] which is marked as v1.0 in PLAN.md. Should I proceed?"
 5. **Document limitations honestly.** If something cannot be done (e.g., blocking `shutdown /t 0 /f`), document it in comments and README instead of implementing a hacky workaround.
 6. **Admin boundaries are explicit.** Features requiring elevation must check for admin rights and fail with a clear message, not silently degrade.
 7. **Document user-facing status conservatively.** Do not describe IFEO, ETW local shutdown interception, Windows Event Log, toasts, timers, profiles, or settings as shipped user-facing features unless the plan is updated and the task explicitly asks for that.
-8. **Test what you build.** After implementing a feature, compile it (`cargo build`) and verify it runs. If it requires Windows APIs that can only be tested at runtime, document what to test manually.
+8. **Test what you build.** After implementing a feature, compile it (`cargo build --release`) and verify it runs. If it requires Windows APIs that can only be tested at runtime, document what to test manually.
 
 ### Code conventions
 - All public items must have `///` doc comments

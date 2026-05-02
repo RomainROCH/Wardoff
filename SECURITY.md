@@ -15,8 +15,8 @@ Older versions are not supported for security reporting.
 
 Please report suspected vulnerabilities privately:
 
-- Email: `[TO BE FILLED]`
 - GitHub private vulnerability reporting / Security Advisories: use it if it is enabled for this repository
+- If that private GitHub path is not enabled yet, do not post vulnerability details publicly; wait for a private reporting channel to be arranged with the maintainer
 
 Please include affected version or commit, reproduction steps, impact, and any proof-of-concept details needed to validate the report.
 
