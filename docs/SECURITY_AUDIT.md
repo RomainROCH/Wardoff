@@ -37,6 +37,7 @@ Wardoff is not yet safe to distribute even as a source-first MVP for technical e
 - **Exploitability:** Any local process running before Wardoff can squat the pipe names and cause denial of service, spoofed replies, or wrong-server connections.
 - **Risk for early-adopter release:** **blocker**
 - **Recommended fix:** Treat this as a release blocker. Add a robust first-instance claim for pipe ownership, authenticate the server/client identity, and fail closed when the peer is not the expected Wardoff instance.
+- **Follow-up status on `dev`:** Session-scoped pipe names plus `FILE_FLAG_FIRST_PIPE_INSTANCE`, bounded initial-claim retries, fail-closed IPC startup, and singleton-first `--status` probing now address the pre-start squatting/hijack blocker without changing the IPC message format.
 
 ### [HIGH] Same-user medium-integrity clients can control an elevated runtime over the control pipe
 

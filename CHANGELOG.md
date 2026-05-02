@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Hardened the session-scoped `WardoffControl` and `WardoffStatus` pipes against same-session squatting by claiming first pipe instances with bounded startup retries, failing closed until both IPC servers own their initial instances, and probing the singleton before `wardoff --status` opens IPC endpoints.
 - Scoped the singleton mutex plus the `WardoffControl` and `WardoffStatus` named pipes to the current Windows session so cross-session mutex or pipe squatting no longer breaks Wardoff's single-instance model across all sessions.
 - Hardened structured JSONL logging under `%LOCALAPPDATA%\Wardoff\logs` so Wardoff now creates its managed log directories one component at a time, refuses reparse points in the managed log tree and rotated files, and uses reparse-aware no-follow opens for active and read-only log file access.
 - Hardened highest-runlevel autostart registration so Wardoff canonicalizes its executable path, refuses `--autostart on` from user-writable install locations, and derives the scheduled-task principal from the process token instead of `USERNAME`/`USERDOMAIN`.
