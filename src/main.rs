@@ -315,17 +315,28 @@ fn handle_runtime_request(
 }
 
 fn handle_status_request() -> Result<i32, Box<dyn Error>> {
+    match claim_primary_instance().map_err(other_error)? {
+        InstanceClaim::Primary(primary_instance) => {
+            drop(primary_instance);
+            println!("{}", StatusOutput::inactive().to_json()?);
+            Ok(1)
+        }
+        InstanceClaim::Secondary => handle_secondary_status_request(),
+    }
+}
+
+fn handle_secondary_status_request() -> Result<i32, Box<dyn Error>> {
     match read_status() {
         Ok(status) => {
             println!("{}", status.to_json()?);
             Ok(0)
         }
-        Err(ClientError::Unavailable) => handle_status_request_via_control_pipe(),
+        Err(ClientError::Unavailable) => handle_secondary_status_request_via_control_pipe(),
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
     }
 }
 
-fn handle_status_request_via_control_pipe() -> Result<i32, Box<dyn Error>> {
+fn handle_secondary_status_request_via_control_pipe() -> Result<i32, Box<dyn Error>> {
     match send_request(&IpcRequest::Status) {
         Ok(IpcResponse::Status { status }) => {
             println!("{}", status.to_json()?);
@@ -335,21 +346,10 @@ fn handle_status_request_via_control_pipe() -> Result<i32, Box<dyn Error>> {
         Ok(IpcResponse::Ok) => Err(Box::new(other_error(
             "Wardoff received an unexpected empty response for --status.".to_string(),
         ))),
-        Err(ClientError::Unavailable) => handle_unavailable_status_request(),
-        Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
-    }
-}
-
-fn handle_unavailable_status_request() -> Result<i32, Box<dyn Error>> {
-    match claim_primary_instance().map_err(other_error)? {
-        InstanceClaim::Primary(primary_instance) => {
-            drop(primary_instance);
-            println!("{}", StatusOutput::inactive().to_json()?);
-            Ok(1)
-        }
-        InstanceClaim::Secondary => Err(Box::new(other_error(
+        Err(ClientError::Unavailable) => Err(Box::new(other_error(
             active_primary_pipe_unavailable_message(),
         ))),
+        Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
     }
 }
 

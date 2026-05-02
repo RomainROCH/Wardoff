@@ -28,7 +28,10 @@ use windows::Win32::Security::{
     GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
     TOKEN_USER,
 };
-use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, PIPE_ACCESS_OUTBOUND};
+use windows::Win32::Storage::FileSystem::{
+    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+    PIPE_ACCESS_OUTBOUND,
+};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_MESSAGE, PIPE_WAIT,
@@ -41,6 +44,8 @@ const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
+const INITIAL_PIPE_CLAIM_ATTEMPTS: usize = 10;
+const INITIAL_PIPE_CLAIM_DELAY: Duration = Duration::from_millis(100);
 const CONTROL_PIPE_SECURITY_SDDL_PREFIX: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;";
 const CONTROL_PIPE_SECURITY_SDDL_SUFFIX: &str = ")S:(ML;;NW;;;ME)";
 
@@ -115,20 +120,44 @@ impl IpcServer {
         let control_pipe_path = current_control_pipe_path()?;
         let status_pipe_path = current_status_pipe_path()?;
         let status_shutdown_requested = Arc::new(AtomicBool::new(false));
+        let (startup_tx, startup_rx) = mpsc::channel();
         let control_request_tx = request_tx.clone();
-        let control_join_handle = thread::Builder::new()
-            .name(IPC_SERVER_THREAD_NAME.to_string())
-            .spawn(move || run_server_loop(control_request_tx, ui_thread_id))
-            .map_err(|error| format!("Wardoff could not start its IPC server thread: {error}"))?;
-        let status_join_handle = thread::Builder::new()
-            .name(STATUS_SERVER_THREAD_NAME.to_string())
-            .spawn({
-                let shutdown_requested = Arc::clone(&status_shutdown_requested);
-                move || run_status_server_loop(request_tx, ui_thread_id, shutdown_requested)
-            })
-            .map_err(|error| {
-                format!("Wardoff could not start its status server thread: {error}")
-            })?;
+        let mut control_join_handle = Some(
+            thread::Builder::new()
+                .name(IPC_SERVER_THREAD_NAME.to_string())
+                .spawn({
+                    let startup_tx = startup_tx.clone();
+                    move || run_server_loop(control_request_tx, ui_thread_id, startup_tx)
+                })
+                .map_err(|error| {
+                    format!("Wardoff could not start its IPC server thread: {error}")
+                })?,
+        );
+        let mut status_join_handle = Some(
+            thread::Builder::new()
+                .name(STATUS_SERVER_THREAD_NAME.to_string())
+                .spawn({
+                    let shutdown_requested = Arc::clone(&status_shutdown_requested);
+                    move || {
+                        run_status_server_loop(
+                            request_tx,
+                            ui_thread_id,
+                            shutdown_requested,
+                            startup_tx,
+                        )
+                    }
+                })
+                .map_err(|error| {
+                    format!("Wardoff could not start its status server thread: {error}")
+                })?,
+        );
+
+        wait_for_server_startup(
+            &startup_rx,
+            &mut control_join_handle,
+            &mut status_join_handle,
+            &status_shutdown_requested,
+        )?;
 
         info!("Wardoff started its named-pipe control server on {control_pipe_path}.");
         logger::log_event(
@@ -146,8 +175,8 @@ impl IpcServer {
         );
 
         Ok(Self {
-            control_join_handle: Some(control_join_handle),
-            status_join_handle: Some(status_join_handle),
+            control_join_handle,
+            status_join_handle,
             status_shutdown_requested,
         })
     }
@@ -331,17 +360,33 @@ struct ControlPipeSecurityAttributes {
     _security_descriptor: LocalSecurityDescriptor,
 }
 
-fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
+#[derive(Clone, Copy)]
+enum ServerStartupKind {
+    Control,
+    Status,
+}
+
+struct ServerStartupResult {
+    kind: ServerStartupKind,
+    result: Result<(), String>,
+}
+
+fn run_server_loop(
+    request_tx: Sender<PendingRequest>,
+    ui_thread_id: u32,
+    startup_tx: Sender<ServerStartupResult>,
+) {
     let control_pipe_path = match current_control_pipe_path() {
         Ok(path) => path,
         Err(error) => {
+            let message =
+                format!("Wardoff stopped its named-pipe control server before startup: {error}");
+            let _ = startup_tx.send(ServerStartupResult {
+                kind: ServerStartupKind::Control,
+                result: Err(message.clone()),
+            });
             warn!("Wardoff stopped its named-pipe server before startup: {error}");
-            logger::log_event(
-                "ipc_server_stopped",
-                EventSource::Ipc,
-                format!("Wardoff stopped its named-pipe control server before startup: {error}"),
-                false,
-            );
+            logger::log_event("ipc_server_stopped", EventSource::Ipc, message, false);
             return;
         }
     };
@@ -349,32 +394,71 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
     let control_pipe_security = match build_control_pipe_security_attributes(&control_pipe_path) {
         Ok(security) => security,
         Err(error) => {
+            let message =
+                format!("Wardoff stopped its named-pipe control server before startup: {error}");
+            let _ = startup_tx.send(ServerStartupResult {
+                kind: ServerStartupKind::Control,
+                result: Err(message.clone()),
+            });
             warn!("Wardoff stopped its named-pipe server before startup: {error}");
-            logger::log_event(
-                "ipc_server_stopped",
-                EventSource::Ipc,
-                format!("Wardoff stopped its named-pipe control server before startup: {error}"),
-                false,
-            );
+            logger::log_event("ipc_server_stopped", EventSource::Ipc, message, false);
             return;
         }
     };
 
+    let initial_pipe = match claim_initial_control_pipe(&control_pipe_security, &control_pipe_path)
+    {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            let message =
+                format!("Wardoff stopped its named-pipe control server before startup: {error}");
+            let _ = startup_tx.send(ServerStartupResult {
+                kind: ServerStartupKind::Control,
+                result: Err(message.clone()),
+            });
+            warn!("Wardoff stopped its named-pipe server before startup: {error}");
+            logger::log_event("ipc_server_stopped", EventSource::Ipc, message, false);
+            return;
+        }
+    };
+    let _ = startup_tx.send(ServerStartupResult {
+        kind: ServerStartupKind::Control,
+        result: Ok(()),
+    });
+    let mut initial_pipe = Some(initial_pipe);
+
     loop {
-        let mut pipe = match accept_control_client(&control_pipe_security, &control_pipe_path) {
-            Ok(pipe) => pipe,
-            Err(error) => {
-                warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
-                logger::log_event(
-                    "ipc_server_stopped",
-                    EventSource::Ipc,
-                    format!(
-                        "Wardoff stopped its named-pipe control server after an IPC error: {error}"
-                    ),
-                    false,
-                );
-                break;
-            }
+        let mut pipe = match initial_pipe.take() {
+            Some(pipe) => match connect_pipe_client(pipe, &control_pipe_path) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
+                    logger::log_event(
+                        "ipc_server_stopped",
+                        EventSource::Ipc,
+                        format!(
+                            "Wardoff stopped its named-pipe control server after an IPC error: {error}"
+                        ),
+                        false,
+                    );
+                    break;
+                }
+            },
+            None => match accept_control_client(&control_pipe_security, &control_pipe_path) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
+                    logger::log_event(
+                        "ipc_server_stopped",
+                        EventSource::Ipc,
+                        format!(
+                            "Wardoff stopped its named-pipe control server after an IPC error: {error}"
+                        ),
+                        false,
+                    );
+                    break;
+                }
+            },
         };
 
         match read_request(&mut pipe) {
@@ -441,7 +525,7 @@ fn run_server_loop(request_tx: Sender<PendingRequest>, ui_thread_id: u32) {
                         message: error.clone(),
                     },
                 );
-                warn!("Wardoff rejected an IPC request: {error}");
+                warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
                 logger::log_event(
                     "ipc_request_rejected",
                     EventSource::Ipc,
@@ -465,40 +549,79 @@ fn run_status_server_loop(
     request_tx: Sender<PendingRequest>,
     ui_thread_id: u32,
     shutdown_requested: Arc<AtomicBool>,
+    startup_tx: Sender<ServerStartupResult>,
 ) {
     let status_pipe_path = match current_status_pipe_path() {
         Ok(path) => path,
         Err(error) => {
+            let message =
+                format!("Wardoff stopped its read-only status pipe before startup: {error}");
+            let _ = startup_tx.send(ServerStartupResult {
+                kind: ServerStartupKind::Status,
+                result: Err(message.clone()),
+            });
             warn!("Wardoff stopped its status server before startup: {error}");
-            logger::log_event(
-                "status_server_stopped",
-                EventSource::Ipc,
-                format!("Wardoff stopped its read-only status pipe before startup: {error}"),
-                false,
-            );
+            logger::log_event("status_server_stopped", EventSource::Ipc, message, false);
             return;
         }
     };
+
+    let initial_pipe = match claim_initial_status_pipe(&status_pipe_path) {
+        Ok(pipe) => pipe,
+        Err(error) => {
+            let message =
+                format!("Wardoff stopped its read-only status pipe before startup: {error}");
+            let _ = startup_tx.send(ServerStartupResult {
+                kind: ServerStartupKind::Status,
+                result: Err(message.clone()),
+            });
+            warn!("Wardoff stopped its status server before startup: {error}");
+            logger::log_event("status_server_stopped", EventSource::Ipc, message, false);
+            return;
+        }
+    };
+    let _ = startup_tx.send(ServerStartupResult {
+        kind: ServerStartupKind::Status,
+        result: Ok(()),
+    });
+    let mut initial_pipe = Some(initial_pipe);
 
     loop {
         if shutdown_requested.load(Ordering::Acquire) {
             break;
         }
 
-        let mut pipe = match accept_status_client(&status_pipe_path) {
-            Ok(pipe) => pipe,
-            Err(error) => {
-                warn!("Wardoff stopped its status server after an IPC error: {error}");
-                logger::log_event(
-                    "status_server_stopped",
-                    EventSource::Ipc,
-                    format!(
-                        "Wardoff stopped its read-only status pipe after an IPC error: {error}"
-                    ),
-                    false,
-                );
-                break;
-            }
+        let mut pipe = match initial_pipe.take() {
+            Some(pipe) => match connect_pipe_client(pipe, &status_pipe_path) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    warn!("Wardoff stopped its status server after an IPC error: {error}");
+                    logger::log_event(
+                        "status_server_stopped",
+                        EventSource::Ipc,
+                        format!(
+                            "Wardoff stopped its read-only status pipe after an IPC error: {error}"
+                        ),
+                        false,
+                    );
+                    break;
+                }
+            },
+            None => match accept_status_client(&status_pipe_path) {
+                Ok(pipe) => pipe,
+                Err(error) => {
+                    warn!("Wardoff stopped its status server after an IPC error: {error}");
+                    logger::log_event(
+                        "status_server_stopped",
+                        EventSource::Ipc,
+                        format!(
+                            "Wardoff stopped its read-only status pipe after an IPC error: {error}"
+                        ),
+                        false,
+                    );
+                    break;
+                }
+            },
         };
 
         if shutdown_requested.load(Ordering::Acquire) {
@@ -568,33 +691,200 @@ fn accept_control_client(
     security: &ControlPipeSecurityAttributes,
     control_pipe_path: &str,
 ) -> Result<File, String> {
-    let control_pipe_path_wide = wide_null(control_pipe_path);
+    let pipe =
+        create_control_pipe_instance(security, control_pipe_path).map_err(|(error, _)| error)?;
+    connect_pipe_client(pipe, control_pipe_path)
+}
+
+fn accept_status_client(status_pipe_path: &str) -> Result<File, String> {
+    let pipe = create_status_pipe_instance(status_pipe_path).map_err(|(error, _)| error)?;
+    connect_pipe_client(pipe, status_pipe_path)
+}
+
+fn wait_for_server_startup(
+    startup_rx: &mpsc::Receiver<ServerStartupResult>,
+    control_join_handle: &mut Option<JoinHandle<()>>,
+    status_join_handle: &mut Option<JoinHandle<()>>,
+    status_shutdown_requested: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut control_ready = false;
+    let mut status_ready = false;
+
+    for _ in 0..2 {
+        let startup_result = match startup_rx.recv() {
+            Ok(startup_result) => startup_result,
+            Err(_) => {
+                cleanup_failed_server_startup(
+                    control_join_handle,
+                    status_join_handle,
+                    status_shutdown_requested,
+                    control_ready,
+                    status_ready,
+                );
+                return Err(
+                    "Wardoff could not confirm that both named-pipe servers claimed their initial instances."
+                        .to_string(),
+                );
+            }
+        };
+
+        match startup_result.kind {
+            ServerStartupKind::Control => match startup_result.result {
+                Ok(()) => control_ready = true,
+                Err(error) => {
+                    cleanup_failed_server_startup(
+                        control_join_handle,
+                        status_join_handle,
+                        status_shutdown_requested,
+                        control_ready,
+                        status_ready,
+                    );
+                    return Err(error);
+                }
+            },
+            ServerStartupKind::Status => match startup_result.result {
+                Ok(()) => status_ready = true,
+                Err(error) => {
+                    cleanup_failed_server_startup(
+                        control_join_handle,
+                        status_join_handle,
+                        status_shutdown_requested,
+                        control_ready,
+                        status_ready,
+                    );
+                    return Err(error);
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+fn cleanup_failed_server_startup(
+    control_join_handle: &mut Option<JoinHandle<()>>,
+    status_join_handle: &mut Option<JoinHandle<()>>,
+    status_shutdown_requested: &Arc<AtomicBool>,
+    control_ready: bool,
+    status_ready: bool,
+) {
+    status_shutdown_requested.store(true, Ordering::Release);
+
+    if status_ready {
+        let _ = wake_status_server();
+    }
+    if control_ready {
+        let _ = send_request(&IpcRequest::ShutdownServer);
+    }
+
+    if let Some(join_handle) = control_join_handle.take() {
+        let _ = join_handle.join();
+    }
+    if let Some(join_handle) = status_join_handle.take() {
+        let _ = join_handle.join();
+    }
+}
+
+fn claim_initial_control_pipe(
+    security: &ControlPipeSecurityAttributes,
+    control_pipe_path: &str,
+) -> Result<PipeHandle, String> {
+    claim_initial_pipe_instance(control_pipe_path, || {
+        create_control_pipe_instance(security, control_pipe_path)
+    })
+}
+
+fn claim_initial_status_pipe(status_pipe_path: &str) -> Result<PipeHandle, String> {
+    claim_initial_pipe_instance(status_pipe_path, || {
+        create_status_pipe_instance(status_pipe_path)
+    })
+}
+
+fn claim_initial_pipe_instance<F>(pipe_path: &str, mut create_pipe: F) -> Result<PipeHandle, String>
+where
+    F: FnMut() -> Result<PipeHandle, (String, u32)>,
+{
+    for attempt in 0..INITIAL_PIPE_CLAIM_ATTEMPTS {
+        match create_pipe() {
+            Ok(pipe) => return Ok(pipe),
+            Err((_error, error_code))
+                if is_retryable_initial_pipe_claim_error(error_code)
+                    && attempt + 1 < INITIAL_PIPE_CLAIM_ATTEMPTS =>
+            {
+                thread::sleep(INITIAL_PIPE_CLAIM_DELAY);
+            }
+            Err((error, error_code)) if is_retryable_initial_pipe_claim_error(error_code) => {
+                return Err(format!(
+                    "Wardoff could not claim its initial pipe instance on {pipe_path} within the startup retry window: {error}"
+                ));
+            }
+            Err((error, _)) => return Err(error),
+        }
+    }
+
+    Err(format!(
+        "Wardoff could not claim its initial pipe instance on {pipe_path}."
+    ))
+}
+
+fn create_control_pipe_instance(
+    security: &ControlPipeSecurityAttributes,
+    control_pipe_path: &str,
+) -> Result<PipeHandle, (String, u32)> {
+    create_pipe_instance(
+        control_pipe_path,
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        Some(&security.security_attributes as *const _),
+    )
+}
+
+fn create_status_pipe_instance(status_pipe_path: &str) -> Result<PipeHandle, (String, u32)> {
+    create_pipe_instance(
+        status_pipe_path,
+        PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        None,
+    )
+}
+
+fn create_pipe_instance(
+    pipe_path: &str,
+    open_mode: FILE_FLAGS_AND_ATTRIBUTES,
+    security_attributes: Option<*const SECURITY_ATTRIBUTES>,
+) -> Result<PipeHandle, (String, u32)> {
+    let pipe_path_wide = wide_null(pipe_path);
     let pipe = unsafe {
         CreateNamedPipeW(
-            PCWSTR(control_pipe_path_wide.as_ptr()),
-            PIPE_ACCESS_DUPLEX,
+            PCWSTR(pipe_path_wide.as_ptr()),
+            open_mode,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             PIPE_BUFFER_SIZE,
             PIPE_BUFFER_SIZE,
             0,
-            Some(&security.security_attributes),
+            security_attributes,
         )
     };
     if pipe.is_invalid() {
-        return Err(format!(
-            "Wardoff could not create {control_pipe_path}: {}",
-            WindowsError::from_thread()
+        let error_code = unsafe { GetLastError() }.0;
+        return Err((
+            format!(
+                "Wardoff could not create {pipe_path}: {}",
+                WindowsError::from_thread()
+            ),
+            error_code,
         ));
     }
 
-    let pipe = PipeHandle(pipe);
+    Ok(PipeHandle(pipe))
+}
+
+fn connect_pipe_client(pipe: PipeHandle, pipe_path: &str) -> Result<File, String> {
     match unsafe { ConnectNamedPipe(pipe.0, None) } {
         Ok(()) => {}
         Err(_) if unsafe { GetLastError() } == ERROR_PIPE_CONNECTED => {}
         Err(error) => {
             return Err(format!(
-                "Wardoff could not accept a client on {control_pipe_path}: {error}"
+                "Wardoff could not accept a client on {pipe_path}: {error}"
             ));
         }
     }
@@ -602,39 +892,8 @@ fn accept_control_client(
     Ok(pipe.into_file())
 }
 
-fn accept_status_client(status_pipe_path: &str) -> Result<File, String> {
-    let status_pipe_path_wide = wide_null(status_pipe_path);
-    let pipe = unsafe {
-        CreateNamedPipeW(
-            PCWSTR(status_pipe_path_wide.as_ptr()),
-            PIPE_ACCESS_OUTBOUND,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
-            PIPE_BUFFER_SIZE,
-            PIPE_BUFFER_SIZE,
-            0,
-            None,
-        )
-    };
-    if pipe.is_invalid() {
-        return Err(format!(
-            "Wardoff could not create {status_pipe_path}: {}",
-            WindowsError::from_thread()
-        ));
-    }
-
-    let pipe = PipeHandle(pipe);
-    match unsafe { ConnectNamedPipe(pipe.0, None) } {
-        Ok(()) => {}
-        Err(_) if unsafe { GetLastError() } == ERROR_PIPE_CONNECTED => {}
-        Err(error) => {
-            return Err(format!(
-                "Wardoff could not accept a client on {status_pipe_path}: {error}"
-            ));
-        }
-    }
-
-    Ok(pipe.into_file())
+fn is_retryable_initial_pipe_claim_error(error_code: u32) -> bool {
+    error_code == ERROR_ACCESS_DENIED.0
 }
 
 fn read_request(pipe: &mut File) -> Result<IpcRequest, String> {
@@ -980,5 +1239,27 @@ mod tests {
             .expect_err("expected an empty SID to be rejected");
 
         assert!(error.contains("current-user SID was empty"));
+    }
+
+    #[test]
+    fn initial_pipe_claim_retry_only_treats_access_denied_as_retryable() {
+        assert!(is_retryable_initial_pipe_claim_error(ERROR_ACCESS_DENIED.0));
+        assert!(!is_retryable_initial_pipe_claim_error(ERROR_PIPE_BUSY.0));
+        assert!(!is_retryable_initial_pipe_claim_error(
+            ERROR_FILE_NOT_FOUND.0
+        ));
+    }
+
+    #[test]
+    fn initial_pipe_claim_retry_reports_bounded_startup_window_exhaustion() {
+        let error = claim_initial_pipe_instance(r"\\.\pipe\WardoffStatus-Session-7", || {
+            Err((
+                "Wardoff could not create the status pipe.".to_string(),
+                ERROR_ACCESS_DENIED.0,
+            ))
+        })
+        .expect_err("expected startup retry exhaustion to fail closed");
+
+        assert!(error.contains("startup retry window"));
     }
 }
