@@ -7,7 +7,7 @@
 
 ## Summary
 
-Wardoff is materially safer than it was at the previous audit point, but it is still **not yet ready** for an elevated early-adopter release in a hostile local-attacker model. The original pre-release blockers around writable-path autostart, named-pipe pre-start squatting, spoofed `WM_ENDSESSION` teardown, and environment-variable task-principal spoofing are resolved in the current `dev` state, and the old global cross-session mutex problem is narrowed substantially by session scoping. The remaining release-significant concerns are the residual elevated logging file-targeting risk, the still-squattable same-session mutex, the status pipe's default DACL, and the control pipe's unbounded single-client request read path.
+Wardoff is materially safer than it was at the previous audit point and is acceptable for distribution to source-first technical early adopters on self-administered machines, but it is still **not yet hardened** for a hostile local-attacker model or multi-user deployment scenarios. The five original pre-release blockers around writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex scope, and spoofed `WM_ENDSESSION` teardown are resolved in the current `dev` state. The remaining concerns are same-session/local hardening debt: residual log file targeting, same-session mutex denial of service, the status pipe's default DACL, and the control pipe's unbounded single-client request read path.
 
 ## Findings
 
@@ -61,13 +61,13 @@ Wardoff is materially safer than it was at the previous audit point, but it is s
 - **Fix status:** **partially fixed**
 - **Recommended fix:** See the still-open same-session mutex finding below.
 
-### [HIGH] Residual elevated logging file-targeting risk remains after the reparse-point fix
+### [MEDIUM] Residual elevated logging file-targeting risk remains after the reparse-point fix
 
 - **Location:** `src/logger/mod.rs:395-463`
 - **Attack surface:** Log file handling
 - **Description:** The new logger hardening correctly rejects reparse points in the managed log tree and uses reparse-aware opens, but it still accepts any ordinary plain file at the managed log path. Because `%LOCALAPPDATA%\Wardoff\logs` remains user-writable, a same-user attacker can still plausibly pre-place a hardlinked or otherwise attacker-chosen plain file and let an elevated Wardoff runtime append to it.
 - **Exploitability:** A same-user local attacker can still target elevated file writes if they can arrange a non-reparse plain-file target inside the managed log path before Wardoff opens it.
-- **Risk for early-adopter release:** **blocker**
+- **Risk for early-adopter release:** **acceptable as local hardening debt for source-first technical early adopters**
 - **Fix status:** **partially fixed**
 - **Recommended fix:** Reject unexpected link counts or otherwise verify file identity through opened handles, or move elevated logs to a location that is not user-writable.
 
@@ -77,7 +77,7 @@ Wardoff is materially safer than it was at the previous audit point, but it is s
 - **Attack surface:** Singleton/mutex
 - **Description:** The mutex name is now session-scoped, but Wardoff still creates it with default security and still decides primary-versus-secondary ownership without an authenticated primary-instance handshake. That means another process in the same session can still create or hold the mutex first and interfere with startup.
 - **Exploitability:** A same-session local process can still mount startup denial-of-service or false-secondary behavior.
-- **Risk for early-adopter release:** **acceptable only after the logging blocker is fixed**
+- **Risk for early-adopter release:** **acceptable as local hardening debt for source-first technical early adopters**
 - **Fix status:** **partially fixed**
 - **Recommended fix:** Apply an explicit mutex security descriptor and/or pair the mutex with a stronger authenticated primary-instance check.
 
@@ -150,8 +150,8 @@ Additional notes:
 - Manual review only: `cargo audit` was not available locally during the audit sessions, so no RustSec scan was run.
 - No git, path, or alternate-registry dependencies were visible in the reviewed lockfile.
 - No obvious hardcoded secrets, tokens, or credentials were found in the reviewed source tree.
-- `SECURITY.md` still contains a placeholder private-report email, which is an operational weakness rather than a code vulnerability.
+- `SECURITY.md` should keep a concrete private GitHub reporting path when available and otherwise avoid implying a private email address that does not exist.
 
 ## Conclusion
 
-Wardoff is **closer, but still not yet ready** for an elevated early-adopter release. The most important earlier blockers are now resolved or materially narrowed: autostart path trust is enforced, task-principal spoofing is closed, named-pipe startup squatting is blocked, and spoofed `WM_ENDSESSION` teardown is no longer accepted outside a real shutdown. However, the current `dev` branch still carries one release-significant local issue in the logging path and several remaining medium-severity hardening gaps: same-session mutex squatting, the status pipe's default DACL, the control pipe's unbounded `read_line` denial-of-service path, and unresolved scheduled-task ACL validation. If the logging issue is fixed next and the remaining medium-severity items are addressed or consciously accepted, Wardoff would become a much more credible source-first technical preview for advanced early adopters.
+Wardoff is acceptable for distribution to source-first technical early adopters on self-administered machines. The five original pre-release blockers (writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex, WM_ENDSESSION spoofing) are resolved. Known remaining items (same-session mutex DoS, status pipe default DACL, control pipe unbounded read, residual log file targeting) are local hardening debt against same-session adversaries, not exploitable privilege escalation. Wardoff is not yet hardened against a hostile local-attacker model or multi-user deployment scenarios.

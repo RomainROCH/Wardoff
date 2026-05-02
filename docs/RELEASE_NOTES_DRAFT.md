@@ -1,4 +1,6 @@
-# Wardoff v0.2.0
+# Wardoff v0.2.0 (draft, unreleased)
+
+> Draft only — this version has not shipped yet.
 
 ## What's new since v0.1.0-mvp
 
@@ -8,10 +10,10 @@
 - Fixed tray/runtime rough edges around delayed startup, secondary handoff recovery, wake-capable tray actions, allow-mode teardown, and recovery-failure reporting.
 - Fixed autostart tray sync wording so admin-only behavior is reported honestly.
 - Fixed Block mode not restoring after tray-initiated sleep/hibernate wake.
-- Fixed five pre-release security blockers: writable-path autostart, log-directory symlink abuse, named-pipe squatting, mutex squatting, WM_ENDSESSION spoofing. IPC scoped to Windows session.
+- Resolved the five original pre-release security blockers: writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex exposure, and WM_ENDSESSION spoofing. Same-session mutex hardening remains local follow-up work.
 
 ### Improved
-- Added best-effort Layer 2 local `shutdown.exe` detection and abort handling in Block mode, while keeping the documented limits conservative.
+- Added best-effort internal Layer 2 local `shutdown.exe` detection and abort handling in Block mode, while keeping it out of headline MVP claims and documenting the limits conservatively.
 - Improved Windows launch UX so long-lived runtime launches detach more cleanly from shell sessions and background startup behaves more predictably.
 - Hardened the release manifest and non-elevating read-only CLI dispatch to reduce privilege surprises and keep read-only flows safer.
 - Tightened smoke and validation coverage for read-only CLI paths and process cleanup timing.
