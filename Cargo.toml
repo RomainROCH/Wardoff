@@ -1,6 +1,6 @@
 [package]
 name = "wardoff"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Romain ROCH"]
 description = "The first modern open-source tool for taking control of Windows shutdowns."
