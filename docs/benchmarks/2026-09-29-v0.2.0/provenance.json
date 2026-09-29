@@ -1,0 +1,19 @@
+{
+  "checkedUtc": "2026-09-29T02:29:58.5370137Z",
+  "branch": "main",
+  "head": "aa40e8982273fa66b86b806ec1424a547affdbd3",
+  "upstream": "origin/main",
+  "workingTreeClean": true,
+  "sourceTreeRelease": "89c6f08a6b9e010034ba312473655893b9345e69",
+  "sourceTreeMain": "89c6f08a6b9e010034ba312473655893b9345e69",
+  "sourceTreeDev": "89c6f08a6b9e010034ba312473655893b9345e69",
+  "remoteRefs": [
+    "aa40e8982273fa66b86b806ec1424a547affdbd3\tHEAD",
+    "2c6d772d4ecfcb0a30a37b5cd345cd5b39167ddf\trefs/heads/dev",
+    "aa40e8982273fa66b86b806ec1424a547affdbd3\trefs/heads/main",
+    "9f6c0375c851d0a5b933da0bd69bafc75b215cf5\trefs/tags/v0.2.0"
+  ],
+  "wardoffRunning": false,
+  "osBuild": "26100.9445",
+  "physicalRamBytes": 17179869184
+}

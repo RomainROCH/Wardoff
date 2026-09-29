@@ -9,6 +9,28 @@
 
 Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
+## Measured resource usage
+
+Wardoff is lightweight while protecting a machine in the background. In our
+v0.2.0 benchmark on an Intel Core i7-6700HQ running Windows 11 IoT Enterprise
+LTSC, Block mode averaged approximately **14 MiB of resident memory** and
+**less than 0.01% total-machine CPU** across three five-minute background runs.
+CPU is normalized across all eight logical processors.
+
+| Mean process resource usage | Allow | Block |
+|---|---:|---:|
+| Resident memory / Working Set (MiB) | 12.57 | 13.95 |
+| Private committed memory (MiB) | 1.96 | 3.25 |
+| CPU (% of total machine capacity) | 0.0024% | 0.0050% |
+
+The [dated benchmark evidence](docs/benchmarks/2026-09-29-v0.2.0/README.md)
+includes the protocol, 2,700 raw samples, system information, tested binary
+hash, per-run statistics, limitations, and an integrity/reproduction checker.
+These are measurements on **one machine**, not universal guarantees. The
+UpdateOrchestrator Reboot task was absent, so its protection layer was inactive.
+Actual shutdown blocking, startup cost, heavy command workloads, battery use,
+and long-term memory growth were not tested.
+
 ## Current MVP status
 
 Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level capabilities:

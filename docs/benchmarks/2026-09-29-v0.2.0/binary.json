@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "filename": "wardoff.exe",
+  "sizeBytes": 1825280,
+  "sha256": "96d1700c492b1689e6cb3a18847481eb9a203e30db4d4ba273d4b458ed6a84bc",
+  "releaseUrl": "https://github.com/RomainROCH/Wardoff/releases/tag/v0.2.0",
+  "downloadUrl": "https://github.com/RomainROCH/Wardoff/releases/download/v0.2.0/wardoff.exe",
+  "releasePublishedAt": "2026-05-03T10:53:31Z",
+  "sourceTag": "v0.2.0",
+  "sourceCommit": "9f6c0375c851d0a5b933da0bd69bafc75b215cf5",
+  "verification": "Downloaded executable hash matched the GitHub asset digest before measurement and again after measurement; --version returned wardoff 0.2.0.",
+  "limitation": "Source association is through the release tag; no reproducible-build claim. Local cargo build --release --locked failed because the checked-in lockfile required an update."
+}
