@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Replaced the sleep layer's periodic `SetThreadExecutionState` worker with owned system/display Power Requests and an identifiable Wardoff reason. Activation failures now reach the coordinator synchronously, and Allow/exit release the request object.
+- Kept the existing tray wake-restore flow and added only a request-pair renewal to the existing resume callback when the runtime remains in Block, based on the documented termination of requests at user-initiated sleep. No additional resume state machine, display notifications or polling was introduced.
+- Corrected sleep claims throughout maintained docs, CLI help and runtime logs: protection concerns idle sleep and automatic display timeout, subject to Windows policy. Explicit Sleep/Hibernate are not vetoed; Modern Standby on battery has additional limits. The original v0.1.0 hibernation claim below was too broad.
 - Hardened the session-scoped `WardoffControl` and `WardoffStatus` pipes against same-session squatting by claiming first pipe instances with bounded startup retries, failing closed until both IPC servers own their initial instances, and probing the singleton before `wardoff --status` opens IPC endpoints.
 - Scoped the singleton mutex plus the `WardoffControl` and `WardoffStatus` named pipes to the current Windows session so cross-session mutex or pipe squatting no longer breaks Wardoff's single-instance model across all sessions.
 - Hardened structured JSONL logging under `%LOCALAPPDATA%\Wardoff\logs` so Wardoff now creates its managed log directories one component at a time, refuses reparse points in the managed log tree and rotated files, and uses reparse-aware no-follow opens for active and read-only log file access.
@@ -34,7 +37,7 @@ All notable changes to this project will be documented in this file.
 - Layer 1 interactive shutdown and sign-out blocking
 - Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot`
 - Layer 4 best-effort remote shutdown abort polling
-- Sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
+- Idle-sleep and display-timeout prevention via `SetThreadExecutionState(...)` (wording corrected: the original release description overstated hibernation protection)
 - Tray UI with Block, Allow, Shutdown, Reboot, Sleep, Hibernate, and Quit actions
 - CLI support for `--block`, `--allow`, `--hide`, `--status`, `--log`, `--tail`, and `--autostart`
 - Structured rotating JSONL logging

@@ -1090,6 +1090,12 @@ impl Application {
                 }
             }
             blocker::shutdown::PowerBroadcastEvent::Resume => {
+                // The tray path is still Allow here and reacquires through its
+                // existing restore. Renew only a runtime that stayed in Block.
+                if let Err(error) = self.blocker_coordinator.renew_sleep_requests_after_resume() {
+                    warn!("Could not renew idle-power requests after resume: {error}");
+                    logger::log_event("sleep_resume_failed", EventSource::Sleep, error, false);
+                }
                 self.restore_block_after_wake_if_needed();
             }
         }

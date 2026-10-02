@@ -12,14 +12,18 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $logPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Wardoff') 'logs\wardoff.jsonl'
 
 function Resolve-BinaryPath {
-    $defaultBinaryPath = Join-Path $repoRoot 'target\release\wardoff.exe'
+    $releasePath = 'release\wardoff.exe'
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_BUILD_TARGET)) {
+        $releasePath = Join-Path $env:CARGO_BUILD_TARGET $releasePath
+    }
+    $defaultBinaryPath = Join-Path (Join-Path $repoRoot 'target') $releasePath
 
     try {
         $metadataJson = & cargo metadata --format-version 1 --no-deps 2>$null
         if (-not [string]::IsNullOrWhiteSpace($metadataJson)) {
             $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
             if (-not [string]::IsNullOrWhiteSpace($metadata.target_directory)) {
-                return Join-Path $metadata.target_directory 'release\wardoff.exe'
+                return Join-Path $metadata.target_directory $releasePath
             }
         }
     }
@@ -721,7 +725,7 @@ try {
     Invoke-TestCase 'Start-Process launches wardoff --block --hide in the background' {
         Stop-RepoWardoffProcesses
         $script:InitialLogLineCount = @(Get-StructuredLogLines).Count
-        $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -PassThru
+        $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
         Start-Sleep -Seconds 2
         $script:BackgroundProcess.Refresh()
         Assert-Condition (-not $script:BackgroundProcess.HasExited) "Wardoff exited early with code $($script:BackgroundProcess.ExitCode)."
@@ -734,6 +738,7 @@ try {
 
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --status exited with code $($result.ExitCode) while Wardoff was running."
         Assert-Condition ($status.state -eq 'block') "wardoff --status returned state '$($status.state)' instead of 'block'."
+        Assert-Condition ($status.layers.sleep -eq $true) 'Block mode did not acquire both idle-power requests.'
         Assert-Condition ($null -ne $status.layers) 'wardoff --status did not include a layers object while Wardoff was running.'
         Assert-Condition ($null -ne $status.layers.local_shutdown) 'wardoff --status did not include the layers.local_shutdown field.'
         Assert-Condition ($status.layers.local_shutdown -is [bool]) 'wardoff --status returned a non-boolean layers.local_shutdown field.'
@@ -760,7 +765,8 @@ try {
     if ($powercfgRequestsCheck.State -eq 'testable') {
         Invoke-TestCase 'powercfg /requests mentions Wardoff while blocking is active' {
             $result = $powercfgRequestsCheck.Result
-            Assert-Condition ($result.Output -match '(?i)wardoff') 'powercfg /requests did not mention Wardoff.'
+            $reason = 'Wardoff Block mode: prevent idle sleep and automatic display timeout.'
+            Assert-Condition ([regex]::Matches($result.Output, [regex]::Escape($reason)).Count -eq 2) 'Expected the Wardoff reason once for SYSTEM and once for DISPLAY.'
         }
     }
     elseif ($powercfgRequestsCheck.State -eq 'skip') {
@@ -852,18 +858,45 @@ try {
         Skip-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' $adminOnlyMessage
     }
 
-    Invoke-TestCase 'The background Wardoff instance can be stopped and cleaned up' {
+    Invoke-TestCase 'Allow releases idle-power requests without stopping the runtime' {
         $repoProcesses = @(Get-RepoWardoffProcesses)
-        Assert-Condition ($repoProcesses.Count -gt 0) 'No background Wardoff process was running to stop.'
+        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one background Wardoff process.'
+        $allowResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
+        Assert-Condition ($allowResult.ExitCode -eq 0) "wardoff --allow exited with code $($allowResult.ExitCode)."
+        $statusResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--status')
+        Assert-Condition ($statusResult.ExitCode -eq 0) 'Status failed after Allow.'
+        $status = $statusResult.Output | ConvertFrom-Json
+        Assert-Condition ($status.state -eq 'allow' -and $status.layers.sleep -eq $false) 'Allow did not report released idle-power requests.'
+        $remaining = @(Get-RepoWardoffProcesses)
+        Assert-Condition ($remaining.Count -eq 1 -and $remaining[0].ProcessId -eq $repoProcesses[0].ProcessId) 'Allow replaced or stopped the runtime.'
+    }
 
-        try {
-            $allowResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
-            Assert-Condition ($allowResult.ExitCode -eq 0) "wardoff --allow exited with code $($allowResult.ExitCode)."
+    $allowRequestsCheck = Resolve-PowercfgRequestsCheck
+    if ($allowRequestsCheck.State -eq 'testable') {
+        Invoke-TestCase 'powercfg /requests has no Wardoff entry in Allow mode' {
+            Assert-Condition ($allowRequestsCheck.Result.Output -notmatch '(?i)wardoff') 'Wardoff requests remained after Allow.'
         }
-        catch {
-        }
+    }
+    elseif ($allowRequestsCheck.State -eq 'skip') {
+        Skip-TestCase 'powercfg /requests has no Wardoff entry in Allow mode' $allowRequestsCheck.SkipReason
+    }
+    else {
+        Add-TestResult -Status 'FAIL' -Description 'powercfg /requests has no Wardoff entry in Allow mode' -Details $allowRequestsCheck.FailureMessage
+    }
 
-        Stop-RepoWardoffProcesses
+    Invoke-TestCase 'Repeated Block reacquires idle-power requests before abrupt process termination' {
+        foreach ($iteration in 1..2) {
+            $blockResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--block')
+            Assert-Condition ($blockResult.ExitCode -eq 0) 'Block failed after Allow.'
+            $activeStatus = Wait-ForActiveWardoffStatus
+            Assert-Condition ($activeStatus.Status.layers.sleep -eq $true) 'Block did not reacquire idle-power requests.'
+        }
+        # Deliberately do not call the normal cleanup helper: it sends --allow first.
+        $repoProcesses = @(Get-RepoWardoffProcesses)
+        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one owned runtime to terminate.'
+        $ownedProcess = Get-Process -Id $repoProcesses[0].ProcessId -ErrorAction Stop
+        Stop-Process -InputObject $ownedProcess -Force -ErrorAction Stop
+        Assert-Condition ($ownedProcess.WaitForExit(5000)) 'The terminated runtime did not exit within five seconds.'
         Assert-Condition (@(Get-RepoWardoffProcesses).Count -eq 0) 'Wardoff was still running after cleanup.'
     }
 

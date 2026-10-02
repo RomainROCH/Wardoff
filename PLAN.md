@@ -22,7 +22,7 @@ The branch already contains a working runtime plus CLI centered on one main prom
 - Layer 1 interactive shutdown and sign-out blocking
 - Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot` when that task exists on the machine
 - Layer 4 best-effort remote shutdown abort polling
-- sleep, hibernate, and display-idle blocking
+- idle-sleep and automatic display-timeout prevention through Power Requests (no explicit Sleep/Hibernate veto)
 - tray UI with Block/Allow state and power actions
 - CLI control surface
 - structured rotating JSONL logs

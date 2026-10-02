@@ -12,7 +12,7 @@ Wardoff uses multiple layers because Windows shutdown, sign-out, reboot, sleep, 
 | Layer 2 | Local `shutdown.exe` detection and best-effort abort | Implemented in code | Present in repo, but not promoted as a supported 0.1.0 headline feature | `src/blocker/local.rs`, `src/blocker/abort.rs`, `src/blocker/mod.rs` | Cannot honestly promise to stop `shutdown /t 0 /f` |
 | Layer 3 | Windows Update reboot-task protection | Implemented | Supported MVP behavior | `src/blocker/update.rs`, `src/blocker/mod.rs` | Requires elevation and periodic re-checks |
 | Layer 4 | Remote shutdown abort polling | Implemented | Supported MVP behavior | `src/blocker/remote.rs`, `src/blocker/abort.rs`, `src/blocker/mod.rs` | Only works while Windows still exposes an abortable window |
-| Separate power-state guard | Sleep, hibernate, and display-idle prevention | Implemented | Supported MVP behavior | `src/blocker/sleep.rs`, `src/blocker/mod.rs` | Uses execution-state requests, not a shutdown veto |
+| Separate power-state guard | Idle-sleep and automatic display-timeout prevention | Implemented | Subject to Windows power policy | `src/blocker/sleep.rs`, `src/blocker/mod.rs` | Power Requests do not veto explicit Sleep/Hibernate |
 
 `src/blocker/mod.rs` wires the runtime together through `BlockerCoordinator`, which activates Layer 2, Layer 3, Layer 4, sleep blocking, and finally Layer 1 when entering Block mode, then tears them down in reverse order when returning to Allow mode.
 
@@ -24,7 +24,7 @@ Windows treats these as different categories of behavior:
 - local command-line shutdowns can start through `shutdown.exe`
 - Windows Update uses scheduled-task and service-driven restart flows
 - remote shutdown requests can create a pending shutdown that another process may still abort
-- sleep and display-idle prevention are handled through execution-state hints instead of shutdown negotiation
+- idle sleep and display-timeout prevention use Power Requests instead of shutdown negotiation
 
 Because of that split, one mechanism is never enough.
 
@@ -194,23 +194,25 @@ Layer 4 helps only when:
 
 It does not rewind a shutdown after the no-return point.
 
-## Separate power-state guard — Sleep, hibernate, and display idle
+## Separate power-state guard — Idle sleep and display timeout
 
 This is not a shutdown layer, but it is a real part of the current runtime.
 
 Source: `src/blocker/sleep.rs`
 
-- starts a dedicated worker thread in Block mode
-- calls `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)`
-- refreshes the request every 30 seconds
-- clears the request with `SetThreadExecutionState(ES_CONTINUOUS)` when Block mode ends
-- logs activation, refresh failures, and cleanup failures to the JSONL logger
+- synchronously acquires system-required and display-required Power Requests on one private handle
+- rolls back partial acquisition and reports API errors
+- clears acquired requests and closes the handle when Block mode ends
+- uses the existing resume callback to replace requests terminated by explicit sleep; tray actions retain their existing Allow-to-Block restoration
+- logs acquisition and cleanup failures to the JSONL logger
 
 Current scope:
 
-- sleep blocking
-- hibernate blocking
-- display-idle prevention
+- idle-sleep and automatic display-timeout prevention, subject to Windows policy
+- no veto over explicit Sleep, Hibernate, configured lid/button actions, or critical battery transitions
+- no Away Mode, periodic refresh, persistent power-setting changes, or extra resume state machine
+
+See [architecture](ARCHITECTURE.md#idle-power-request-ownership-intentional-architecture-change) for ownership and [validation limits](MVP_VALIDATION_MATRIX.md#idle-power-behavior-and-windows-limits) for S3/Modern Standby behavior and hardware tests.
 
 ## Coordinator and lifecycle wiring
 
@@ -239,7 +241,7 @@ Supported and safe to describe as current user-facing MVP behavior:
 - Layer 1 interactive shutdown/sign-out blocking
 - Layer 3 Update Orchestrator reboot-task protection
 - Layer 4 remote shutdown abort polling
-- sleep, hibernate, and display-idle prevention
+- idle-sleep and automatic display-timeout prevention, subject to Windows power policy
 
 Present in source, but documented more cautiously:
 
