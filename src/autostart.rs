@@ -21,7 +21,7 @@ use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    AccessCheck, DuplicateTokenEx, GetTokenInformation, LookupAccountSidW, SecurityImpersonation,
+    AccessCheck, DuplicateTokenEx, GetTokenInformation, LookupAccountSidW, SecurityIdentification,
     TokenImpersonation, TokenLinkedToken, TokenUser, DACL_SECURITY_INFORMATION, GENERIC_MAPPING,
     GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, PSECURITY_DESCRIPTOR,
     PSID, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_LINKED_TOKEN, TOKEN_QUERY, TOKEN_USER,
@@ -440,12 +440,21 @@ fn current_interactive_medium_token_for_access_check() -> Result<HandleGuard, St
         })?;
 
         let linked_token = HandleGuard(linked_token.LinkedToken);
+        duplicate_access_check_token(linked_token.0)
+    }
+}
+
+fn duplicate_access_check_token(source_token: HANDLE) -> Result<HandleGuard, String> {
+    unsafe {
         let mut impersonation_token = HANDLE::default();
         DuplicateTokenEx(
-            linked_token.0,
+            source_token,
             TOKEN_QUERY,
             None,
-            SecurityImpersonation,
+            // AccessCheck only inspects the user's permissions. A linked UAC
+            // token can be identification-only and cannot be promoted to an
+            // impersonation level that would let us act as that user.
+            SecurityIdentification,
             TokenImpersonation,
             &mut impersonation_token,
         )
@@ -735,5 +744,43 @@ impl Drop for LocalAllocatedWideString {
                 let _ = LocalFree(Some(HLOCAL(self.0 .0 as *mut _)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_check_accepts_an_identification_level_source_token() {
+        let process_token = open_current_process_token(
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            "prepare the identification-token regression test",
+        )
+        .expect("open test process token");
+        let mut source_token = HANDLE::default();
+        unsafe {
+            DuplicateTokenEx(
+                process_token.0,
+                TOKEN_QUERY | TOKEN_DUPLICATE,
+                None,
+                SecurityIdentification,
+                TokenImpersonation,
+                &mut source_token,
+            )
+        }
+        .expect("create an identification-level source token");
+        let source_token = HandleGuard(source_token);
+
+        let access_token = duplicate_access_check_token(source_token.0)
+            .expect("identification-level tokens must support access checks");
+        let executable = std::env::current_exe().expect("locate the running test executable");
+        assert!(token_has_path_access(
+            access_token.0,
+            &executable,
+            FILE_GENERIC_READ.0,
+            "read the test executable",
+        )
+        .expect("evaluate file access with the identification-level token"));
     }
 }
