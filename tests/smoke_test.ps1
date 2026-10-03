@@ -41,6 +41,35 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-RebootTaskPresent {
+    $scheduler = $null
+    $folder = $null
+    $task = $null
+    try {
+        $scheduler = New-Object -ComObject 'Schedule.Service'
+        $scheduler.Connect()
+        $folder = $scheduler.GetFolder('\Microsoft\Windows\UpdateOrchestrator')
+        $task = $folder.GetTask('Reboot')
+        return $true
+    }
+    catch {
+        # Match the runtime's missing-file, missing-path and missing-object cases.
+        # Permission and other scheduler errors must still fail validation.
+        $hresult = $_.Exception.GetBaseException().HResult
+        if ($hresult -in @(-2147024894, -2147024893, -2147023728)) {
+            return $false
+        }
+        throw
+    }
+    finally {
+        foreach ($comObject in @($task, $folder, $scheduler)) {
+            if ($null -ne $comObject) {
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject)
+            }
+        }
+    }
+}
+
 $isAdmin = Test-IsAdministrator
 
 if (-not $isAdmin) {
@@ -798,9 +827,20 @@ try {
     }
 
     if ($isAdmin) {
-        Invoke-TestCase 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin' {
-            $activeStatus = Wait-ForActiveWardoffStatus
-            Assert-Condition ($activeStatus.Status.layers.update -eq $true) 'wardoff --status did not report layers.update=true in an elevated session.'
+        $layer3Description = 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin'
+        try {
+            if (Test-RebootTaskPresent) {
+                Invoke-TestCase $layer3Description {
+                    $activeStatus = Wait-ForActiveWardoffStatus
+                    Assert-Condition ($activeStatus.Status.layers.update -eq $true) 'wardoff --status did not report layers.update=true in an elevated session.'
+                }
+            }
+            else {
+                Skip-TestCase $layer3Description 'The UpdateOrchestrator Reboot task is absent on this Windows installation.'
+            }
+        }
+        catch {
+            Add-TestResult -Status 'FAIL' -Description $layer3Description -Details $_.Exception.Message
         }
 
         Invoke-TestCase 'wardoff --status reports Layer 4 AbortSystemShutdown protection as active when run as admin' {
