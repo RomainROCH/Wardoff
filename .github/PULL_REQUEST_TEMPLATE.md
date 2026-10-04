@@ -6,6 +6,7 @@
 
 - [ ] `scripts/check.ps1 -Mode Full` passes for Rust changes (or `-Mode Docs` for docs only)
 - [ ] `tests/developer_checks.ps1` passes if developer tooling changed
+- [ ] `tests/smoke_safety.ps1` passes if smoke setup or cleanup changed
 - [ ] Relevant smoke/manual checks run in an isolated environment, or skips explained
 - [ ] Docs updated if behavior changed
 

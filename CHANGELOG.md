@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Bounded `--log --tail N` to 100000 lines and made line-buffer reservation incremental and fallible, so extreme values return a readable error instead of a capacity-overflow panic.
+- Ensure the runtime unregisters callbacks and shuts down its resources even when the Windows message loop fails; preserve both errors if cleanup also fails.
+- Make the Windows smoke suite refuse existing runtime/autostart state and restrict cleanup to resources created by the test.
+- Align CI and release validation with local documentation, formatting, strict Clippy, Rust tests and PowerShell fixtures, using the existing standard Windows jobs.
 - Replaced the sleep layer's periodic `SetThreadExecutionState` worker with owned system/display Power Requests and an identifiable Wardoff reason. Activation failures now reach the coordinator synchronously, and Allow/exit release the request object.
 - Kept the existing tray wake-restore flow and added only a request-pair renewal to the existing resume callback when the runtime remains in Block, based on the documented termination of requests at user-initiated sleep. No additional resume state machine, display notifications or polling was introduced.
 - Corrected sleep claims throughout maintained docs, CLI help and runtime logs: protection concerns idle sleep and automatic display timeout, subject to Windows policy. Explicit Sleep/Hibernate are not vetoed; Modern Standby on battery has additional limits. The original v0.1.0 hibernation claim below was too broad.
@@ -19,7 +23,7 @@ All notable changes to this project will be documented in this file.
 - Hardened `\\.\pipe\WardoffControl` with explicit local-only security that grants the current user SID, SYSTEM, and Builtin Administrators access so the same interactive user can send `--block`/`--allow` across elevation boundaries, while remaining access-denied cases now surface a clear Wardoff message instead of raw `os error 5`.
 - Clarified in README, architecture notes, and agent guidance that Layer 3 is skipped normally on editions such as LTSC when `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent.
 - Aligned docs on the non-elevated read-only CLI contract, the `\\.\pipe\WardoffControl` and `\\.\pipe\WardoffStatus` split, default startup honesty, and current exit-code wording.
-- Clarified in the docs that `wardoff --status` is quick when a runtime is active but can currently take roughly 4 seconds to return `{"state":"inactive"}` when no instance is running because the client exhausts sequential status-pipe and control-pipe retry loops.
+- Clarified that `wardoff --status` returns inactive without pipe retries when the session mutex is free. Roughly four seconds of sequential pipe retries remain possible when the mutex is occupied but both IPC endpoints are unavailable.
 - Refreshed the documentation truth-source and read order so new contributors and agents can identify the current MVP status, documentation entrypoints, and likely next work from the repository alone.
 - Hardened Allow-mode deactivation so switching to Allow clears Block-mode behavior more cleanly.
 - Tightened autostart tray-sync honesty so elevated task changes are reflected accurately in the tray menu state.

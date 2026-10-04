@@ -2,9 +2,10 @@
 .SYNOPSIS
 State-changing Windows integration tests; use an isolated test environment.
 .DESCRIPTION
-Stops repo-built Wardoff processes (including a manually started development
-instance), runs Block/Allow, writes real user logs and can change scheduled tasks
-when elevated. For routine development use scripts/check.ps1 instead.
+Refuses to start when a conflicting Wardoff runtime or autostart task already
+exists, then runs Block/Allow using only processes launched by this test. It
+writes real user logs and can change scheduled tasks when elevated. For routine
+development use scripts/check.ps1 instead.
 See docs/MVP_VALIDATION_MATRIX.md for coverage and manual acceptance.
 #>
 [CmdletBinding()]
@@ -14,8 +15,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Results = [System.Collections.Generic.List[object]]::new()
+$script:OwnedProcesses = [System.Collections.Generic.List[object]]::new()
 $script:BackgroundProcess = $null
 $script:InitialLogLineCount = 0
+
+. (Join-Path $PSScriptRoot 'smoke_helpers.ps1')
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $logPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Wardoff') 'logs\wardoff.jsonl'
@@ -427,13 +431,114 @@ function Invoke-DirectPowerShellWardoffCommand {
 }
 
 function Get-WardoffProcessesByName {
-    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction SilentlyContinue
+    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction Stop
 
     if ($null -eq $processes) {
         return @()
     }
 
     return @($processes)
+}
+
+function Get-SmokePreflightWardoffProcesses {
+    try {
+        return @(Get-WardoffProcessesByName)
+    }
+    catch {
+        throw "Smoke test could not query Wardoff processes before mutation: $($_.Exception.Message)"
+    }
+}
+
+function Get-SmokeAutostartTaskExists {
+    $scheduler = $null
+    $rootFolder = $null
+    $task = $null
+    try {
+        $scheduler = New-Object -ComObject 'Schedule.Service'
+        $scheduler.Connect()
+        $rootFolder = $scheduler.GetFolder('\')
+        try {
+            $task = $rootFolder.GetTask('Wardoff')
+            return $true
+        }
+        catch {
+            $hresult = $_.Exception.GetBaseException().HResult
+            if ($hresult -in @(-2147024894, -2147024893, -2147023728)) {
+                return $false
+            }
+            throw
+        }
+    }
+    catch {
+        throw "Smoke test could not query the Wardoff autostart task before mutation: $($_.Exception.Message)"
+    }
+    finally {
+        foreach ($comObject in @($task, $rootFolder, $scheduler)) {
+            if ($null -ne $comObject) {
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject)
+            }
+        }
+    }
+}
+
+function Get-SmokeAutostartTaskIdentity {
+    $scheduler = $null
+    $rootFolder = $null
+    $task = $null
+    $definition = $null
+    $actions = $null
+    $action = $null
+    try {
+        $scheduler = New-Object -ComObject 'Schedule.Service'
+        $scheduler.Connect()
+        $rootFolder = $scheduler.GetFolder('\')
+        $task = $rootFolder.GetTask('Wardoff')
+        $definition = $task.Definition
+        $actions = $definition.Actions
+        if ($actions.Count -ne 1) {
+            throw 'Wardoff autostart task has an unexpected number of actions.'
+        }
+        $action = $actions.Item(1)
+        $expectedPath = [System.IO.Path]::GetFullPath($binaryPath)
+        $actualPath = [System.IO.Path]::GetFullPath([string]$action.Path)
+        $expectedWorkingDirectory = [System.IO.Path]::GetFullPath((Split-Path -Parent $binaryPath))
+        $actualWorkingDirectory = [System.IO.Path]::GetFullPath([string]$action.WorkingDirectory)
+        if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($actualWorkingDirectory, $expectedWorkingDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing to claim an autostart task that does not target the smoke executable and its directory.'
+        }
+        return [pscustomobject]@{
+            Xml                = [string]$task.Xml
+            Path               = $actualPath
+            WorkingDirectory   = $actualWorkingDirectory
+        }
+    }
+    catch {
+        throw "Smoke test could not verify ownership of the Wardoff autostart task: $($_.Exception.Message)"
+    }
+    finally {
+        foreach ($comObject in @($action, $actions, $definition, $task, $rootFolder, $scheduler)) {
+            if ($null -ne $comObject) {
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject)
+            }
+        }
+    }
+}
+
+function Test-SmokeOwnedAutostartTask {
+    param([Parameter(Mandatory = $true)][object]$ExpectedIdentity)
+    $actual = Get-SmokeAutostartTaskIdentity
+    return Test-SmokeAutostartTaskIdentity -ExpectedIdentity $ExpectedIdentity -ActualIdentity $actual
+}
+
+function Assert-SmokePreflight {
+    $processes = Get-SmokePreflightWardoffProcesses
+    Assert-SmokePreconditions `
+        -WardoffProcesses $processes `
+        -CurrentSessionId (Get-SmokeCurrentSessionId) `
+        -BinaryPath $binaryPath `
+        -AutostartTaskProbe { Get-SmokeAutostartTaskExists } `
+        -OwnedProcesses @($script:OwnedProcesses.ToArray())
 }
 
 function Get-RepoWardoffProcesses {
@@ -581,33 +686,15 @@ function Wait-ForBinaryUnlock {
 }
 
 function Stop-RepoWardoffProcesses {
-    $processes = @(Get-RepoWardoffProcesses)
+    $processes = @($script:OwnedProcesses.ToArray())
 
-    if ($processes.Count -gt 0 -and (Test-Path $binaryPath)) {
-        try {
-            $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
-            Start-Sleep -Seconds 1
-        }
-        catch {
-        }
-    }
-
-    foreach ($process in $processes) {
-        try {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-        }
-        catch {
-            if ($_.Exception.Message -notmatch 'cannot find') {
-                Write-Warning "Could not stop Wardoff process $($process.ProcessId): $($_.Exception.Message)"
-            }
-        }
-    }
-
-    foreach ($process in $processes) {
-        try {
-            Wait-Process -Id $process.ProcessId -Timeout 5 -ErrorAction Stop
-        }
-        catch {
+    Stop-SmokeOwnedProcesses -OwnedProcesses $processes -StopAction {
+        param($process)
+        Stop-Process -InputObject $process -Force -ErrorAction Stop
+    } -WaitAction {
+        param($process)
+        if (-not $process.WaitForExit(5000)) {
+            throw "Owned Wardoff process $($process.Id) did not exit within five seconds."
         }
     }
 
@@ -740,6 +827,8 @@ function Resolve-PowercfgRequestsCheck {
     }
 }
 
+Assert-SmokePreflight
+
 try {
     Stop-RepoWardoffProcesses
 
@@ -835,8 +924,10 @@ try {
 
     Invoke-TestCase 'Start-Process launches wardoff --block --hide in the background' {
         Stop-RepoWardoffProcesses
+        Assert-SmokePreflight
         $script:InitialLogLineCount = @(Get-StructuredLogLines).Count
         $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
+        $script:OwnedProcesses.Add($script:BackgroundProcess)
         Start-Sleep -Seconds 2
         $script:BackgroundProcess.Refresh()
         Assert-Condition (-not $script:BackgroundProcess.HasExited) "Wardoff exited early with code $($script:BackgroundProcess.ExitCode)."
@@ -960,38 +1051,38 @@ try {
         }
         else {
             Invoke-TestCase $autostartDescription {
-            $taskOriginallyPresent = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
-
+            Assert-SmokePreflight
+            $taskCreatedBySmoke = $false
+            $taskIdentity = $null
             try {
                 $enableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on')
                 if ($enableResult.ExitCode -eq 0) {
+                    $taskIdentity = Get-SmokeAutostartTaskIdentity
+                    $taskCreatedBySmoke = $true
                     $queryEnabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
                     Assert-Condition ($queryEnabled.ExitCode -eq 0) 'schtasks /query /tn "Wardoff" did not find the task after --autostart on.'
 
+                    Assert-Condition (Test-SmokeOwnedAutostartTask -ExpectedIdentity $taskIdentity) 'Refusing to remove the Wardoff task because its definition changed after creation.'
                     $disableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
                     Assert-Condition ($disableResult.ExitCode -eq 0) "wardoff --autostart off exited with code $($disableResult.ExitCode)."
-
-                    $queryDisabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
-                    Assert-Condition ($queryDisabled.ExitCode -ne 0) 'schtasks /query /tn "Wardoff" still found the task after --autostart off.'
+                    Assert-Condition (-not (Get-SmokeAutostartTaskExists)) 'The Wardoff task still exists after --autostart off.'
+                    $taskCreatedBySmoke = $false
+                    $taskIdentity = $null
                 }
                 else {
                     Assert-Condition ($enableResult.Output -match 'untrusted location') "wardoff --autostart on failed without the expected trusted-location refusal. Output: $($enableResult.Output)"
 
-                    $queryAfterRefusal = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
-                    Assert-Condition (($queryAfterRefusal.ExitCode -eq 0) -eq $taskOriginallyPresent) 'wardoff --autostart on changed the Wardoff task state even though it refused an untrusted executable location.'
+                    Assert-Condition (-not (Get-SmokeAutostartTaskExists)) 'wardoff --autostart on changed the absent Wardoff task even though it refused an untrusted executable location.'
                 }
             }
             finally {
-                try {
-                    $taskPresentAfterTest = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
-                    if ($taskOriginallyPresent -and -not $taskPresentAfterTest) {
-                        $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on')
-                    }
-                    elseif (-not $taskOriginallyPresent -and $taskPresentAfterTest) {
-                        $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
-                    }
-                }
-                catch {
+                if ($taskCreatedBySmoke -and (Get-SmokeAutostartTaskExists)) {
+                    Assert-Condition (Test-SmokeOwnedAutostartTask -ExpectedIdentity $taskIdentity) 'Refusing to remove the Wardoff task because its definition changed after creation.'
+                    $cleanupResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
+                    Assert-Condition ($cleanupResult.ExitCode -eq 0) "wardoff --autostart off cleanup failed with exit code $($cleanupResult.ExitCode)."
+                    Assert-Condition (-not (Get-SmokeAutostartTaskExists)) 'Smoke cleanup left the Wardoff task present.'
+                    $taskCreatedBySmoke = $false
+                    $taskIdentity = $null
                 }
             }
             }
@@ -1007,6 +1098,8 @@ try {
     }
 
     Invoke-TestCase 'Allow releases idle-power requests without stopping the runtime' {
+        Assert-SmokePreflight
+        Assert-Condition ($null -ne $script:BackgroundProcess -and -not $script:BackgroundProcess.HasExited) 'The smoke-owned runtime is no longer alive.'
         $repoProcesses = @(Get-RepoWardoffProcesses)
         Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one background Wardoff process.'
         $allowResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
@@ -1034,15 +1127,16 @@ try {
 
     Invoke-TestCase 'Repeated Block reacquires idle-power requests before abrupt process termination' {
         foreach ($iteration in 1..2) {
+            Assert-SmokePreflight
+            Assert-Condition ($null -ne $script:BackgroundProcess -and -not $script:BackgroundProcess.HasExited) 'The smoke-owned runtime is no longer alive.'
             $blockResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--block')
             Assert-Condition ($blockResult.ExitCode -eq 0) 'Block failed after Allow.'
             $activeStatus = Wait-ForActiveWardoffStatus
             Assert-Condition ($activeStatus.Status.layers.sleep -eq $true) 'Block did not reacquire idle-power requests.'
         }
-        # Deliberately do not call the normal cleanup helper: it sends --allow first.
-        $repoProcesses = @(Get-RepoWardoffProcesses)
-        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one owned runtime to terminate.'
-        $ownedProcess = Get-Process -Id $repoProcesses[0].ProcessId -ErrorAction Stop
+        # Deliberately terminate the owned runtime directly while it is blocked.
+        $ownedProcess = $script:BackgroundProcess
+        Assert-Condition ($null -ne $ownedProcess -and -not $ownedProcess.HasExited) 'Expected the smoke-owned runtime to remain alive before termination.'
         Stop-Process -InputObject $ownedProcess -Force -ErrorAction Stop
         Assert-Condition ($ownedProcess.WaitForExit(5000)) 'The terminated runtime did not exit within five seconds.'
         Assert-Condition (@(Get-RepoWardoffProcesses).Count -eq 0) 'Wardoff was still running after cleanup.'

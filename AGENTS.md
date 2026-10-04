@@ -36,12 +36,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Mode Docs
 
 Default `Fast` checks documentation, formatting, compilation and unit tests.
 `Full` also runs strict Clippy and builds the release binary. `Docs` only checks
-local documentation links and encoding. The scripts stop on failure and never
-launch Wardoff. Details and focused tests live in
+local documentation links and encoding. The scripts stop on failure. Cargo tests
+can launch read-only CLI commands with isolated logs; they never start the
+protection runtime. Details and focused tests live in
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#validation).
 
-`tests/smoke_test.ps1` is a separate, state-changing integration suite: it stops
-repo-built Wardoff processes, runs Block/Allow and can change scheduled tasks.
+`tests/smoke_test.ps1` is a separate, state-changing integration suite: it runs
+Block/Allow and can change scheduled tasks. It refuses an existing runtime in
+the same session or a pre-existing Wardoff autostart task and only stops its own
+test processes.
 Use an isolated Windows test environment; see the validation matrix. A successful
 build or unit test is not evidence of actual shutdown, suspend or tray behavior.
 
@@ -62,6 +65,7 @@ build or unit test is not evidence of actual shutdown, suspend or tray behavior.
 
 Run focused checks while iterating and `Full` for Rust changes. For docs-only
 changes use `Docs`; for developer-tooling changes also run
-`tests/developer_checks.ps1`. Record failures and skipped Windows/manual checks.
+`tests/developer_checks.ps1` and `tests/smoke_safety.ps1`. Record failures and
+skipped Windows/manual checks.
 Update the owning doc when its contract changes and keep links working. Do not
 duplicate this guide into harness-specific files.

@@ -28,9 +28,10 @@ focused test filters, documentation checks and troubleshooting.
 ## Runtime validation is separate
 
 The [validation matrix](docs/MVP_VALIDATION_MATRIX.md) owns runtime acceptance.
-The smoke suite stops repo-built Wardoff processes, starts Block/Allow runtimes,
-appends logs, and can change Task Scheduler entries. Run it in an isolated
-Windows test environment where those effects are acceptable:
+The smoke suite starts Block/Allow runtimes, appends logs, and can change Task
+Scheduler entries. It refuses a pre-existing runtime in the current session or
+a Wardoff autostart task, and cleans up only its own processes. Run it in an
+isolated Windows test environment where those effects are acceptable:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_test.ps1
