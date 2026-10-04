@@ -28,7 +28,7 @@
 
 ## Known limits
 - Layer 3 (UpdateOrchestrator) is automatically skipped on LTSC editions that lack the `UpdateOrchestrator\Reboot` scheduled task. This is normal.
-- Sleep/hibernate blocking requires hardware support for S1-S3 standby states. Hyper-V VMs typically do not support these.
+- Idle-power requests support S3 and Modern Standby, subject to Windows power policy. Explicit Sleep/Hibernate, lid and power-button actions are not vetoed. Hardware sleep behavior must be tested on a capable machine; VM request visibility alone is not proof.
 - `shutdown /t 0 /f` is not guaranteed blockable. This is a Windows limitation, not a Wardoff bug.
 - The product is source-first: no installer, no package manager distribution yet
 

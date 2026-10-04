@@ -25,7 +25,7 @@ Business model : @docs/BUSINESS_MODEL.md
 
 `cargo test` couvre les tests unitaires et tourne sans privilèges.
 Les couches 3 (Update Orchestrator) et 4 (remote shutdown) ne s'arment qu'en session élevée — leur validation est manuelle.
-Procédure complète et matrice : @docs/MANUAL_VALIDATION_PLAN.md
+Procédure complète et matrice : @docs/MVP_VALIDATION_MATRIX.md
 
 # Git
 

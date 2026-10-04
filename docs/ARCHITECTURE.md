@@ -51,7 +51,7 @@ Contains the layered protection logic.
 - `local.rs` — local `shutdown.exe` ETW detection and best-effort abort attempts
 - `update.rs` — Layer 3 Update Orchestrator reboot-task protection
 - `remote.rs` — Layer 4 remote shutdown abort polling
-- `sleep.rs` — sleep/hibernate/display-idle blocking
+- `sleep.rs` — idle-sleep and automatic display-timeout prevention
 - `abort.rs` — shared `AbortSystemShutdownW(None)` helpers used by local and remote shutdown code
 
 ### `src/tray/`
@@ -98,7 +98,7 @@ It holds:
 - `LocalShutdownBlocker` for local `shutdown.exe` handling
 - `UpdateRebootBlocker` for Update Orchestrator task protection
 - `RemoteShutdownBlocker` for remote shutdown polling
-- `SleepBlocker` for execution-state-based power-state blocking
+- `SleepBlocker` for process-owned idle-power requests
 
 It also owns the current `BlockerMode`:
 
@@ -141,6 +141,46 @@ When the runtime returns to Allow mode, it:
 5. stops local ETW monitoring
 
 If a Block-mode transition fails partway through, `BlockerCoordinator` rolls back the already-started layers so the process does not remain half-armed.
+
+## Idle-power request ownership (intentional architecture change)
+
+The sleep layer uses one process-owned Power Request object with
+`PowerRequestSystemRequired` and `PowerRequestDisplayRequired`, replacing the
+thread-affine `SetThreadExecutionState` worker and its 30-second refresh.
+The purpose is explicit ownership, synchronous activation errors, and a Wardoff
+reason in `powercfg /requests`; this does not add a veto over explicit sleep or
+hibernate. The existing `windows` dependency provides these APIs.
+
+Block acquires both requests transactionally. Allow, rollback, normal exit and
+forced-session cleanup release them and close the handle. The handle is private
+to this process and is never duplicated or inherited. Windows closes process
+handles on termination; forced termination must also be checked in the smoke
+test. No power plan, registry, policy, button or lid setting is written.
+
+The existing resume callback is sufficient. Microsoft's
+[PowerSetRequest contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest)
+documents termination of requests at user-initiated sleep entry. When the
+runtime remains in Block, that callback replaces the old owned request object
+and reacquires the pair. It does not assume that the handle itself becomes
+invalid. A tray power action already releases requests through Allow and
+reacquires them through the existing restore-to-Block path. There is no new
+resume state machine, display/presence subscription, timer, or battery-limit
+bypass. Duplicate resume notifications must never accumulate request counts.
+Physical S3/S4 and Modern Standby resume behavior remains a manual validation
+requirement; API lifecycle tests are not evidence of an actual sleep transition.
+
+`layers.sleep` retains its JSON name and means that Wardoff acquired the request
+pair, not that Windows guarantees every power transition is prevented. System
+policy can ignore requests. A failed initial acquisition uses the coordinator's
+existing rollback; a failed resume acquisition reports an inactive sleep layer
+and an error without disabling unrelated shutdown protections.
+
+Away Mode is intentionally excluded: it substitutes apparent sleep on eligible
+S3 systems, depends on the existing Allow Away Mode policy, and has no Modern
+Standby coverage. Execution-required requests do not add the desired idle-sleep
+guarantee. Neither the legacy API as a fallback nor obsolete suspend veto events
+are combined with this backend. See the [validation matrix](MVP_VALIDATION_MATRIX.md)
+for the power contract, source references, and hardware acceptance procedure.
 
 ## Process model and single-instance behavior
 
@@ -376,7 +416,7 @@ For current documentation and review, treat these as supported, visible runtime 
 - Layer 1 interactive blocking
 - Layer 3 update reboot-task protection
 - Layer 4 remote abort polling
-- sleep/hibernate/display-idle blocking
+- idle-sleep and automatic display-timeout prevention
 - tray UI
 - CLI plus IPC control
 - structured JSONL logging

@@ -5,7 +5,7 @@
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%2B-blue)
 
-*Open-source Windows shutdown/reboot/sleep blocker*
+*Open-source Windows shutdown/reboot protection and idle-sleep prevention*
 
 Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
@@ -17,7 +17,7 @@ Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level
 - Layer 1 interactive shutdown and sign-out blocking through `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
 - Layer 3 protection for the scheduled task `Microsoft\Windows\UpdateOrchestrator\Reboot` when that task exists
 - Layer 4 best-effort remote shutdown abort polling with `AbortSystemShutdownW(None)`
-- sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
+- idle-sleep and automatic display-timeout prevention through Windows Power Requests, subject to Windows power policy
 - structured rotating JSONL logging under `%LOCALAPPDATA%\Wardoff\logs\`
 - single-instance coordination so later CLI calls can control the primary runtime
 - Task Scheduler autostart management
@@ -53,6 +53,9 @@ For why IFEO stays out of the current MVP, see [`docs/IFEO_WARNING.md`](docs/IFE
 
 ## Honest limits
 
+- **Sleep protection means idle-sleep prevention.** Explicit Sleep or Hibernate, power-button actions and lid closure can still suspend the PC. Wardoff does not block the screen saver or promise to prevent session locking.
+- Windows power policy and request overrides can ignore keep-awake requests. On Modern Standby running on battery, system-required requests expire five minutes after the system sleep timeout expires. See the [power behavior matrix and Microsoft sources](docs/MVP_VALIDATION_MATRIX.md#idle-power-behavior-and-windows-limits).
+- `layers.sleep=true` means Wardoff acquired its system/display request pair; it is not a guarantee that Windows will refuse every power transition.
 - **Wardoff does not promise to stop `shutdown /t 0 /f`.** A forced zero-second local shutdown is outside what a normal user-space app can reliably block.
 - Windows Update reboot-task protection requires administrator rights.
 - Remote shutdown abort logic only helps when Windows still exposes a timeout window and the process has the rights required for `AbortSystemShutdownW(None)`.
