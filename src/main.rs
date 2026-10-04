@@ -139,12 +139,44 @@ fn bootstrap(
     Ok(application)
 }
 
+/// Runs an operation and always runs its cleanup, preserving both failures when needed.
+fn run_with_cleanup<T, Loop, Cleanup>(
+    state: &mut T,
+    loop_fn: Loop,
+    cleanup_fn: Cleanup,
+) -> Result<(), Box<dyn Error>>
+where
+    Loop: FnOnce(&mut T) -> Result<(), Box<dyn Error>>,
+    Cleanup: FnOnce(&mut T) -> Result<(), Box<dyn Error>>,
+{
+    let loop_result = loop_fn(state);
+    let cleanup_result = cleanup_fn(state);
+
+    match (loop_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(loop_error), Ok(())) => Err(loop_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(loop_error), Err(cleanup_error)) => Err(Box::new(other_error(format!(
+            "runtime loop failed: {loop_error}; cleanup failed: {cleanup_error}"
+        )))),
+    }
+}
+
 /// Runs the shared Win32 event loop for the hidden Layer 1 windows and the tray icon.
 fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
     ACTIVE_APPLICATION.store(&mut application as *mut Application, Ordering::Release);
     blocker::shutdown::set_end_session_cleanup_callback(forced_shutdown_cleanup_callback);
     blocker::shutdown::set_power_broadcast_callback(power_broadcast_callback);
 
+    run_with_cleanup(&mut application, run_message_loop, |application| {
+        blocker::shutdown::clear_end_session_cleanup_callback();
+        blocker::shutdown::clear_power_broadcast_callback();
+        ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
+        application.shutdown()
+    })
+}
+
+fn run_message_loop(application: &mut Application) -> Result<(), Box<dyn Error>> {
     let mut message = MSG::default();
 
     'message_loop: loop {
@@ -179,11 +211,6 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
 
         unsafe { WaitMessage()? };
     }
-
-    blocker::shutdown::clear_end_session_cleanup_callback();
-    blocker::shutdown::clear_power_broadcast_callback();
-    ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
-    application.shutdown()?;
     Ok(())
 }
 
@@ -1187,5 +1214,95 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
         RequestedAction::Hide => "hidden block",
         RequestedAction::Autostart { .. } => "autostart",
         RequestedAction::Status | RequestedAction::Log { .. } => "read-only",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_with_cleanup;
+    use std::error::Error;
+    use std::io;
+
+    #[test]
+    fn run_with_cleanup_returns_success_after_normal_loop_and_cleanup() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Ok::<(), Box<dyn Error>>(())
+            },
+            |events| {
+                events.push("cleanup");
+                Ok::<(), Box<dyn Error>>(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(events, ["loop", "cleanup"]);
+    }
+
+    #[test]
+    fn run_with_cleanup_runs_cleanup_after_loop_error() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("loop error")))
+            },
+            |events| {
+                events.push("cleanup");
+                Ok::<(), Box<dyn Error>>(())
+            },
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "loop error");
+        assert_eq!(events, ["loop", "cleanup"]);
+    }
+
+    #[test]
+    fn run_with_cleanup_propagates_shutdown_error() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Ok::<(), Box<dyn Error>>(())
+            },
+            |events| {
+                events.push("shutdown");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("shutdown error")))
+            },
+        );
+
+        assert_eq!(result.unwrap_err().to_string(), "shutdown error");
+        assert_eq!(events, ["loop", "shutdown"]);
+    }
+
+    #[test]
+    fn run_with_cleanup_preserves_both_errors_in_order() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("loop error")))
+            },
+            |events| {
+                events.push("shutdown");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("shutdown error")))
+            },
+        );
+
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "runtime loop failed: loop error; cleanup failed: shutdown error"
+        );
+        assert_eq!(events, ["loop", "shutdown"]);
     }
 }

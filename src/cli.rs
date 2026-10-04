@@ -73,7 +73,7 @@ pub struct WardoffCli {
     /// Prints the newest structured Wardoff JSON log lines.
     #[arg(long, conflicts_with_all = ["block", "allow", "status", "hide", "autostart"])]
     log: bool,
-    /// Overrides the default number of structured log lines shown by `--log`.
+    /// Overrides the default number of structured log lines shown by `--log` (maximum 100000).
     #[arg(long, value_name = "N", requires = "log")]
     tail: Option<usize>,
     /// Internal marker used to prevent default-launch elevation loops.
@@ -237,6 +237,9 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Open-source Windows shutdown/reboot protection and idle-sleep prevention"));
+        assert!(error
+            .to_string()
+            .contains(&format!("maximum {}", crate::logger::MAX_TAIL_LINE_COUNT)));
     }
 
     #[test]

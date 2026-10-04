@@ -163,8 +163,9 @@ wardoff --version
 - `wardoff --status` prints compact JSON for scripts
 - `wardoff --log` prints recent structured log entries
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
+- `--tail` accepts 0 through 100000 lines; larger values return a readable error without allocating the requested capacity
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
-- `wardoff --version` prints the package version, for example `wardoff 0.1.0`
+- `wardoff --version` prints the package version as `wardoff <version>`
 - direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
 Read-only commands stay non-elevated:
@@ -173,7 +174,7 @@ Read-only commands stay non-elevated:
 - `--status` reads status through the dedicated session-scoped `WardoffStatus` named pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
-- today, `--status` can still take a few seconds to return `{"state":"inactive"}` when no primary runtime is running; when a runtime is active, the status-pipe path should return quickly
+- when no primary runtime owns the session mutex, `--status` returns `{"state":"inactive"}` without retrying the pipes; if the mutex is occupied but both IPC endpoints are unavailable, the fallback retries can still take about four seconds
 
 State-changing/default behavior uses the normal runtime path:
 

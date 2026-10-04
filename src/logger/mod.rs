@@ -19,6 +19,8 @@ use windows::Win32::Storage::FileSystem::{
 const DEFAULT_LOG_FILE_NAME: &str = "wardoff.jsonl";
 const WRITER_THREAD_NAME: &str = "wardoff-structured-logger";
 const DEFAULT_TAIL_LINE_COUNT: usize = 20;
+/// Bounds retained line bookkeeping independently of a caller's requested capacity.
+pub(crate) const MAX_TAIL_LINE_COUNT: usize = 100_000;
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_LOG_FILES: usize = 3;
 
@@ -166,13 +168,23 @@ pub(crate) fn default_tail_line_count() -> usize {
 
 /// Reads the newest structured log lines across the retained rotation set.
 pub(crate) fn read_recent_lines(limit: usize) -> Result<Vec<String>, String> {
+    read_recent_lines_from_path(&default_log_path(), limit)
+}
+
+fn read_recent_lines_from_path(base_path: &Path, limit: usize) -> Result<Vec<String>, String> {
+    if limit > MAX_TAIL_LINE_COUNT {
+        return Err(format!(
+            "The --tail value cannot exceed {MAX_TAIL_LINE_COUNT} lines."
+        ));
+    }
+
     if limit == 0 {
         return Ok(Vec::new());
     }
 
-    let mut recent_lines = VecDeque::with_capacity(limit);
+    let mut recent_lines = VecDeque::new();
 
-    for path in log_paths_oldest_to_newest(default_log_path()) {
+    for path in log_paths_oldest_to_newest(base_path) {
         if log_file_metadata_if_exists(&path)?.is_none() {
             continue;
         }
@@ -186,6 +198,13 @@ pub(crate) fn read_recent_lines(limit: usize) -> Result<Vec<String>, String> {
 
             if recent_lines.len() == limit {
                 let _ = recent_lines.pop_front();
+            } else {
+                recent_lines.try_reserve(1).map_err(|error| {
+                    format!(
+                        "Wardoff could not reserve memory for recent log lines while reading {}: {error}",
+                        path.display()
+                    )
+                })?;
             }
             recent_lines.push_back(line);
         }
@@ -479,14 +498,14 @@ fn rotated_log_path(base_path: &Path, index: usize) -> PathBuf {
     parent.join(format!("{stem}.{index}.{extension}"))
 }
 
-fn log_paths_oldest_to_newest(base_path: PathBuf) -> Vec<PathBuf> {
+fn log_paths_oldest_to_newest(base_path: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::with_capacity(MAX_LOG_FILES);
 
     for index in (1..MAX_LOG_FILES).rev() {
-        paths.push(rotated_log_path(&base_path, index));
+        paths.push(rotated_log_path(base_path, index));
     }
 
-    paths.push(base_path);
+    paths.push(base_path.to_path_buf());
     paths
 }
 
@@ -539,6 +558,67 @@ mod tests {
         let error = log_file_metadata_if_exists(&directory_path).unwrap_err();
         assert!(error.contains("expected a plain file"));
 
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn read_recent_lines_rejects_tail_above_limit_before_filesystem_access() {
+        let missing_path = unique_test_root("tail-limit-before-filesystem").join("wardoff.jsonl");
+
+        for limit in [MAX_TAIL_LINE_COUNT + 1, usize::MAX] {
+            let error = read_recent_lines_from_path(&missing_path, limit).unwrap_err();
+            assert!(error.contains("--tail"));
+            assert!(error.contains(&MAX_TAIL_LINE_COUNT.to_string()));
+        }
+    }
+
+    #[test]
+    fn read_recent_lines_zero_returns_empty_without_filesystem_access() {
+        let missing_path = unique_test_root("zero-tail-without-filesystem").join("wardoff.jsonl");
+
+        assert!(read_recent_lines_from_path(&missing_path, 0)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn read_recent_lines_returns_exact_limit_from_existing_file() {
+        let base = unique_test_root("exact-tail-limit");
+        fs::create_dir_all(&base).unwrap();
+        let log_path = base.join(DEFAULT_LOG_FILE_NAME);
+        fs::write(&log_path, "one\ntwo\nthree\n").unwrap();
+
+        let lines = read_recent_lines_from_path(&log_path, 2).unwrap();
+
+        assert_eq!(lines, ["two", "three"]);
+        assert_eq!(
+            read_recent_lines_from_path(&log_path, MAX_TAIL_LINE_COUNT).unwrap(),
+            ["one", "two", "three"]
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn read_recent_lines_ignores_absent_files() {
+        let missing_path = unique_test_root("absent-log-files").join(DEFAULT_LOG_FILE_NAME);
+
+        assert!(read_recent_lines_from_path(&missing_path, 20)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn read_recent_lines_preserves_rotation_order_and_handles_crlf() {
+        let base = unique_test_root("rotation-order");
+        fs::create_dir_all(&base).unwrap();
+        let log_path = base.join(DEFAULT_LOG_FILE_NAME);
+        fs::write(rotated_log_path(&log_path, 2), "one\r\ntwo\r\n").unwrap();
+        fs::write(rotated_log_path(&log_path, 1), "three\r\nfour\r\n").unwrap();
+        fs::write(&log_path, "five\r\nsix\r\n").unwrap();
+
+        let lines = read_recent_lines_from_path(&log_path, 4).unwrap();
+
+        assert_eq!(lines, ["three", "four", "five", "six"]);
         fs::remove_dir_all(base).unwrap();
     }
 

@@ -42,6 +42,12 @@ Owns application bootstrap and shutdown:
 
 This is the best entry point for understanding the whole runtime.
 
+`run_with_cleanup` always executes shutdown after the message loop returns,
+including a failed `WaitMessage`. It unregisters both callbacks and clears the
+application pointer before releasing runtime resources. If the loop and shutdown
+both fail, the returned error retains both causes. This closes the former early
+return that could leave callbacks pointing at a dropped application.
+
 ### `src/runtime_policy.rs` (intentional responsibility extraction)
 
 Pure decisions formerly embedded in `main.rs` live together with their unit tests:
@@ -79,6 +85,10 @@ Contains the background tray thread and tray UI state management.
 - background JSONL writer thread
 - file rotation
 - recent-log tail reading for CLI output
+
+Tail requests are bounded by the [CLI contract](../README.md#usage).
+The reader grows its line buffer as it encounters records and uses fallible
+reservation, rather than allocating a caller-supplied capacity before reading.
 
 ### `src/ipc.rs`
 
@@ -270,7 +280,7 @@ The control pipe is now created with explicit local-only security instead of the
 - a medium-integrity mandatory label allows the same interactive Windows user to send control commands to an elevated primary runtime
 - if a caller still hits access denied, Wardoff maps that to a clear product message instead of returning a raw Win32 pipe error
 
-At the moment, the inactive `wardoff --status` path is intentionally conservative but slow: when no primary runtime is present, the client first retries the read-only status pipe and then retries the control pipe before concluding that Wardoff is inactive. Each pipe path currently uses 20 attempts with a 100 ms delay, so the fully inactive path accumulates to roughly 4 seconds before returning `{"state":"inactive"}`. This current delay comes from the sequential named-pipe retry loops, not from UAC.
+`handle_status_request` first probes the session mutex. If it can claim the primary instance, it releases that temporary claim and returns `{"state":"inactive"}` without connecting to either pipe. When the mutex is already occupied, it tries the read-only status pipe and then the control fallback. If both endpoints are unavailable, their sequential retries (20 attempts with a 100 ms delay per pipe) can still take roughly four seconds. That delay belongs to the occupied-mutex fallback, not the ordinary inactive path or UAC.
 
 ### Why the UI thread handles requests
 

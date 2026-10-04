@@ -57,7 +57,7 @@ Keep improving confidence in the features that already exist:
 - tighten documentation around actual runtime behavior and limits
 - improve manual validation guidance for shutdown, sign-out, sleep, hibernate, remote shutdown, autostart, and elevation-sensitive paths
 - fix bugs or rough edges in tray, IPC, logging, and Task Scheduler flows
-- reduce the current roughly 4-second inactive `wardoff --status` path caused by sequential IPC retry loops
+- reduce status fallback latency when the session mutex is occupied but both IPC endpoints are unavailable (up to roughly four seconds of sequential retries); the ordinary inactive path already returns without pipe retries
 - keep admin versus non-admin behavior explicit
 - keep LTSC-style Layer 3 skip behavior documented as normal when the UpdateOrchestrator reboot task is absent
 
