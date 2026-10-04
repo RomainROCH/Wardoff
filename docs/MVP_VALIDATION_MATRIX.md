@@ -189,6 +189,8 @@ not document a special elevation requirement. Elevation needed to inspect
 
 ## Acceptance checklist
 
+See the [idle-power validation record](IDLE_POWER_VALIDATION.md) for the 2026-10-03 through 2026-10-04 VM evidence and current pending cases.
+
 - [ ] `tests\smoke_test.ps1` passes, with any skips noted
 - [ ] Manual non-disruptive checks completed
 - [ ] Admin-only checks completed or explicitly deferred
