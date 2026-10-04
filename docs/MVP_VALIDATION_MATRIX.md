@@ -51,7 +51,7 @@ Keep validation language conservative:
 | Layer 3 status | Elevated status reports `layers.update=true` when `\Microsoft\Windows\UpdateOrchestrator\Reboot` exists; if the task is absent, note the normal skip/defer case instead of treating it as a failure | Yes |
 | Layer 4 status | Elevated status reports `layers.remote=true` | Yes |
 | Update task access | `schtasks /query /tn Microsoft\Windows\UpdateOrchestrator\Reboot` either succeeds or shows the task is absent on this machine; absence is a normal Layer 3 skip/defer case | Yes |
-| Autostart task lifecycle | From a trusted admin-writable location, `wardoff --autostart on` creates the `Wardoff` task and `--autostart off` removes it; from an untrusted or user-writable path Wardoff refuses safely and leaves the task state unchanged. Service-session smoke runners without an interactive user session skip this lifecycle case and require interactive manual or VM validation. | Yes |
+| Autostart task lifecycle | The smoke test first reads the current process token's native `TokenElevationType`. With `TokenElevationTypeFull (2)`, it runs the trusted-path lifecycle and untrusted-path refusal assertions. With `TokenElevationTypeDefault (1)`, Windows reports no linked token, so the lifecycle is explicitly deferred to an interactive UAC session; a failed or unexpected query is a failure. | Yes |
 | Cleanup path | Direct termination from Block stops the owned background instance; a final cleanup helper handles test failures | No |
 | Sleep/display cleanup | `powercfg /requests` no longer mentions Wardoff after cleanup, when the session allows that query | No |
 
@@ -93,6 +93,14 @@ Run these in an elevated session when you want manual confidence beyond the auto
 | Autostart safe refusal from untrusted path | Run the same autostart command from an untrusted or user-writable path | Wardoff refuses with the trusted-location warning and does not create, delete, or silently alter the `Wardoff` task |
 | Autostart tray/menu honesty | In an elevated session, change autostart with `wardoff --autostart on|off` or the tray `Start with Windows` checkbox, then reopen the tray menu and confirm with `schtasks /query /tn "Wardoff"` | The tray checkbox reflects the real scheduled-task state after the change, and after an untrusted-location refusal it does not pretend autostart changed |
 | Honest non-admin behavior | Retry an admin-only command from a non-elevated console | Wardoff reports the requirement instead of pretending success |
+
+The automated autostart lifecycle requires an elevated process with
+`TokenElevationTypeFull (2)`. `TokenElevationTypeDefault (1)` is a valid
+elevated-token shape without a linked token; the smoke test records that value
+and skips only the lifecycle, which must then be checked manually from an
+interactive UAC session. `TokenElevationTypeLimited (3)`, an unexpected value,
+or a native query error is a smoke-test failure. The token query runs before
+the scheduler checks and does not change scheduled-task state.
 
 ## Disruptive manual checks for a disposable VM
 
