@@ -852,7 +852,13 @@ try {
             $null = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Microsoft\Windows\UpdateOrchestrator\Reboot')
         }
 
-        Invoke-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' {
+        $smokeSessionId = [int](Get-Process -Id $PID -ErrorAction Stop).SessionId
+        $autostartDescription = 'wardoff --autostart on creates the Wardoff task and --autostart off removes it'
+        if ($smokeSessionId -eq 0) {
+            Skip-TestCase $autostartDescription "Skipped: smoke process is running in Windows session 0; an interactive user session is required (observed session ID $smokeSessionId)."
+        }
+        else {
+            Invoke-TestCase $autostartDescription {
             $taskOriginallyPresent = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
 
             try {
@@ -886,6 +892,7 @@ try {
                 }
                 catch {
                 }
+            }
             }
         }
     }

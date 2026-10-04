@@ -51,7 +51,7 @@ Keep validation language conservative:
 | Layer 3 status | Elevated status reports `layers.update=true` when `\Microsoft\Windows\UpdateOrchestrator\Reboot` exists; if the task is absent, note the normal skip/defer case instead of treating it as a failure | Yes |
 | Layer 4 status | Elevated status reports `layers.remote=true` | Yes |
 | Update task access | `schtasks /query /tn Microsoft\Windows\UpdateOrchestrator\Reboot` either succeeds or shows the task is absent on this machine; absence is a normal Layer 3 skip/defer case | Yes |
-| Autostart task lifecycle | From a trusted admin-writable location, `wardoff --autostart on` creates the `Wardoff` task and `--autostart off` removes it; from an untrusted or user-writable path Wardoff refuses safely and leaves the task state unchanged | Yes |
+| Autostart task lifecycle | From a trusted admin-writable location, `wardoff --autostart on` creates the `Wardoff` task and `--autostart off` removes it; from an untrusted or user-writable path Wardoff refuses safely and leaves the task state unchanged. Service-session smoke runners without an interactive user session skip this lifecycle case and require interactive manual or VM validation. | Yes |
 | Cleanup path | Direct termination from Block stops the owned background instance; a final cleanup helper handles test failures | No |
 | Sleep/display cleanup | `powercfg /requests` no longer mentions Wardoff after cleanup, when the session allows that query | No |
 
