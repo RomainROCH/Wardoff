@@ -6,7 +6,7 @@
 
 | Product | Source model | Current focus | What Wardoff can honestly claim today | Important gaps or planned items |
 | --- | --- | --- | --- | --- |
-| Wardoff | MIT, open source | Transparent shutdown and power-state control for modern Windows | Interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection, remote abort polling, sleep/hibernate/display-idle blocking, tray UI, CLI, JSONL logs, single-instance IPC, autostart | No IFEO mode, no Windows Event Log integration, and no promise to stop local `shutdown /t 0 /f` |
+| Wardoff | MIT, open source | Transparent shutdown and power-state control for modern Windows | Interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection, remote abort polling, idle-sleep and automatic display-timeout prevention, tray UI, CLI, JSONL logs, single-instance IPC, autostart | No IFEO mode, no Windows Event Log integration, and no promise to stop local `shutdown /t 0 /f` |
 | ShutdownBlocker | Closed freeware | Traditional shutdown blocking utility | Comparable motivation around shutdown prevention | Closed implementation, older maintenance history, and behavior cannot be audited here |
 | ShutdownGuard | MIT, open source | Historical shutdown-blocking approach | Open-source reference point | Archived and unsupported |
 | Don't Sleep | Closed freeware | Keep-awake / power-state prevention | Strong overlap on sleep-prevention use cases | Not positioned as a transparent layered shutdown-control tool |
@@ -21,7 +21,7 @@ Wardoff's current MVP is best described as a conservative, transparent Windows r
 - Layer 1 interactive shutdown and sign-out blocking
 - Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot`
 - Layer 4 best-effort remote shutdown abort polling
-- sleep, hibernate, and display-idle blocking via `SetThreadExecutionState(...)`
+- idle-sleep and automatic display-timeout prevention through Power Requests, subject to Windows power policy
 - tray controls for Block, Allow, Shutdown, Reboot, Sleep, Hibernate, and Quit
 - CLI control surface for `--block`, `--allow`, `--hide`, `--status`, `--log`, `--tail`, and `--autostart`
 - structured rotating JSONL logs
@@ -115,7 +115,7 @@ Wardoff's current 0.1.0 positioning is:
 
 - open and auditable
 - conservative in what it claims
-- useful today for interactive shutdown blocking, update-task protection, remote abort polling, and sleep prevention
+- useful today for interactive shutdown blocking, update-task protection, remote abort polling, and idle-sleep prevention
 - intentionally cautious about local `shutdown.exe`
 
 That last point is the most important comparison decision:

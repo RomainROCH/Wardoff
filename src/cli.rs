@@ -41,7 +41,7 @@ enum CliAutostartState {
     name = "wardoff",
     author = "Romain ROCH",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Open-source Windows shutdown/reboot/sleep blocker"
+    about = "Open-source Windows shutdown/reboot protection and idle-sleep prevention"
 )]
 pub struct WardoffCli {
     /// Enables blocking mode for the current session without showing a tray icon.
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::DisplayHelp);
         assert!(error
             .to_string()
-            .contains("Open-source Windows shutdown/reboot/sleep blocker"));
+            .contains("Open-source Windows shutdown/reboot protection and idle-sleep prevention"));
     }
 
     #[test]

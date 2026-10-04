@@ -23,7 +23,7 @@ pub mod local;
 pub mod remote;
 /// Scaffolding for Layer 1 interactive shutdown blocking.
 pub mod shutdown;
-/// Scaffolding for SetThreadExecutionState-based sleep blocking.
+/// Process-owned requests for idle-sleep and automatic display-timeout prevention.
 pub mod sleep;
 /// Scaffolding for Layer 3 UpdateOrchestrator reboot protection.
 pub mod update;
@@ -50,6 +50,7 @@ pub struct LayerStatus {
     local_shutdown: bool,
     update: bool,
     remote: bool,
+    /// Whether Wardoff acquired its request pair, not a guarantee against explicit sleep.
     sleep: bool,
 }
 
@@ -142,6 +143,14 @@ impl BlockerCoordinator {
     /// Returns the number of shutdown attempts this runtime has actively blocked.
     pub fn blocked_count(&self) -> u64 {
         BLOCKED_EVENT_COUNT.load(Ordering::Relaxed)
+    }
+
+    /// Renews idle-power requests only when Block remains the requested mode.
+    pub(crate) fn renew_sleep_requests_after_resume(&mut self) -> Result<(), String> {
+        if self.mode == BlockerMode::Block {
+            self.sleep_blocker.renew_after_resume()?;
+        }
+        Ok(())
     }
 
     /// Disables the layered shutdown and sleep blocking scaffolding.

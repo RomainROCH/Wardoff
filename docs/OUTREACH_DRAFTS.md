@@ -1,6 +1,14 @@
 # Outreach drafts
 
-Internal reference drafts for a small early-adopter outreach wave. Keep these aligned with `README.md`, `PLAN.md`, `docs/EARLY_ADOPTER_OUTREACH_PLAN.md`, and `docs/BUSINESS_MODEL.md`. Here's the project : https://github.com/RomainROCH/Wardoff
+Internal reference drafts for a small early-adopter outreach wave. Keep these aligned with `README.md`, `PLAN.md`, `docs/MVP_VALIDATION_MATRIX.md`, and `docs/BUSINESS_MODEL.md`. Here's the project : https://github.com/RomainROCH/Wardoff
+
+## AlternativeTo (recommended copy; not published)
+
+**Short description:** Open-source Windows shutdown/reboot protection and idle-sleep prevention.
+
+**Description:** Wardoff is a lightweight native Windows utility written in Rust, with a tray icon and CLI for switching between Block and Allow. It combines interactive shutdown/sign-out protection, Windows Update reboot-task protection, best-effort remote shutdown aborts, and prevention of idle sleep and automatic display timeout. Power protection is subject to Windows policy: Wardoff does not veto explicit Sleep or Hibernate, configured lid/button actions, or safety transitions. Modern Standby battery limits also apply. The power-request layer makes no persistent changes to Windows power settings.
+
+**Tags to retain where available:** Windows, shutdown blocker, reboot prevention, prevent idle sleep, keep awake, system tray, command line, open source. The existing `prevent-sleep` tag remains justified for idle sleep when the description makes that scope explicit. Avoid tags claiming universal hibernation blocking or screen-saver prevention. This is a recommendation for the existing listing; no external listing was edited.
 
 ## r/rust
 
@@ -8,7 +16,7 @@ Internal reference drafts for a small early-adopter outreach wave. Keep these al
 
 I built Wardoff as a Windows-only Rust utility for a narrow problem: keeping a machine in a visible Block state when I do not want Windows to shut down, sign out, sleep, or reboot unattended.
 
-The current MVP is source-first and already has a tray app plus CLI. Today it does interactive shutdown/sign-out blocking, protects the `\Microsoft\Windows\UpdateOrchestrator\Reboot` task when that task exists, does best-effort remote shutdown abort polling, blocks sleep / hibernate / display idle, and writes structured JSONL logs. It is meant for technically comfortable Windows users, not as a polished mass-market app.
+The current MVP is source-first and already has a tray app plus CLI. Today it does interactive shutdown/sign-out blocking, protects the `\Microsoft\Windows\UpdateOrchestrator\Reboot` task when that task exists, does best-effort remote shutdown abort polling, prevents idle sleep and automatic display timeout, subject to Windows power policy, and writes structured JSONL logs. It is meant for technically comfortable Windows users, not as a polished mass-market app.
 
 I am trying to keep the claims narrow and honest. I do **not** claim Wardoff stops `shutdown /t 0 /f`, and I do not present local `shutdown.exe` handling as solved. Right now the useful part is the conservative Windows behavior, the visible Block/Allow state, and the scriptable control surface.
 
@@ -20,7 +28,7 @@ I would especially value feedback from Rust people who care about Windows API ed
 
 I built Wardoff because I wanted something simple and inspectable for the old problem of leaving a job running and coming back to find Windows restarted or went to sleep at the wrong time.
 
-It is a Windows-only, source-first MIT project with a tray app and CLI. The current MVP gives me a visible Block/Allow state, autostart through Task Scheduler, machine-readable status output, and structured JSONL logs. It currently covers interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection when that scheduled task exists, best-effort remote shutdown abort polling, and sleep / hibernate / display-idle blocking.
+It is a Windows-only, source-first MIT project with a tray app and CLI. The current MVP gives me a visible Block/Allow state, autostart through Task Scheduler, machine-readable status output, and structured JSONL logs. It currently covers interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection when that scheduled task exists, best-effort remote shutdown abort polling, and idle-sleep and automatic display-timeout prevention.
 
 I am deliberately keeping the wording narrow: I do **not** claim it stops `shutdown /t 0 /f`, and I am not presenting it as a polished enterprise product. The core behavior stays free and open; signed binaries are planned later as a convenience, not a paywall.
 
@@ -42,6 +50,6 @@ If you try tools like this on Windows and have opinions about where the rough ed
 
 **Title:** `Show HN: Wardoff – Open-source Windows shutdown blocker in Rust`
 
-I built Wardoff, a Windows-only Rust utility for keeping a machine in a visible Block state when I do not want shutdown, sign-out, sleep, hibernate, or certain reboot paths to interrupt work. The current MVP has a tray app, CLI control, structured JSONL logs, interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection when that task exists, remote shutdown abort polling, and sleep / hibernate / display-idle blocking.
+I built Wardoff, a Windows-only Rust utility for keeping a machine in a visible Block state when I do not want supported shutdown, sign-out, idle-sleep, or reboot paths to interrupt work. The current MVP has a tray app, CLI control, structured JSONL logs, interactive shutdown/sign-out blocking, Update Orchestrator reboot-task protection when that task exists, remote shutdown abort polling, and idle-sleep and automatic display-timeout prevention.
 
 I am keeping the claims narrow: it is source-first today. An unsigned binary is also available on the Releases page. It is aimed at technically comfortable early adopters, and it does **not** claim to stop `shutdown /t 0 /f`. Source is MIT and free. Signed binaries are planned later as a convenience purchase, not a paywall. I would value feedback on Windows edge cases, docs clarity, and whether the current tray + CLI shape is the right one. Here's the project : https://github.com/RomainROCH/Wardoff

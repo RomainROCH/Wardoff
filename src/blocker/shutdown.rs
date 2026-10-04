@@ -87,15 +87,15 @@ impl ShutdownBlocker {
         // Since Windows 8, PBT_APMSUSPEND/PBT_APMRESUMEAUTOMATIC/PBT_APMRESUMESUSPEND are no longer
         // broadcast to top-level windows automatically; the recipient must register explicitly,
         // otherwise WM_POWERBROADCAST never reaches `shutdown_window_proc` for those events.
-        let suspend_resume_notification =
-            match register_suspend_resume_notification(session_window) {
-                Ok(handle) => Some(handle),
-                Err(error) => {
-                    destroy_window(session_window);
-                    destroy_window(message_window);
-                    return Err(error);
-                }
-            };
+        let suspend_resume_notification = match register_suspend_resume_notification(session_window)
+        {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                destroy_window(session_window);
+                destroy_window(message_window);
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             message_window,

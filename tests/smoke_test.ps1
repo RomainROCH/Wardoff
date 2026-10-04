@@ -12,14 +12,18 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $logPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Wardoff') 'logs\wardoff.jsonl'
 
 function Resolve-BinaryPath {
-    $defaultBinaryPath = Join-Path $repoRoot 'target\release\wardoff.exe'
+    $releasePath = 'release\wardoff.exe'
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_BUILD_TARGET)) {
+        $releasePath = Join-Path $env:CARGO_BUILD_TARGET $releasePath
+    }
+    $defaultBinaryPath = Join-Path (Join-Path $repoRoot 'target') $releasePath
 
     try {
         $metadataJson = & cargo metadata --format-version 1 --no-deps 2>$null
         if (-not [string]::IsNullOrWhiteSpace($metadataJson)) {
             $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
             if (-not [string]::IsNullOrWhiteSpace($metadata.target_directory)) {
-                return Join-Path $metadata.target_directory 'release\wardoff.exe'
+                return Join-Path $metadata.target_directory $releasePath
             }
         }
     }
@@ -35,6 +39,108 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-CurrentTokenElevationType {
+    if (-not ('Wardoff.TokenElevationTypeReader' -as [type])) {
+        Add-Type @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+
+namespace Wardoff {
+    public static class TokenElevationTypeReader {
+        private const int TokenElevationTypeInformation = 18;
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool GetTokenInformation(
+            IntPtr tokenHandle,
+            int tokenInformationClass,
+            out int tokenInformation,
+            int tokenInformationLength,
+            out int returnLength);
+
+        public static int GetCurrentValue() {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) {
+                int value;
+                int returnLength;
+                if (!GetTokenInformation(
+                    identity.Token,
+                    TokenElevationTypeInformation,
+                    out value,
+                    sizeof(int),
+                    out returnLength)) {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "GetTokenInformation(TokenElevationType) failed");
+                }
+
+                if (returnLength < sizeof(int)) {
+                    throw new InvalidOperationException(
+                        "GetTokenInformation(TokenElevationType) returned an incomplete value");
+                }
+
+                return value;
+            }
+        }
+    }
+}
+"@
+    }
+
+    $value = [Wardoff.TokenElevationTypeReader]::GetCurrentValue()
+    if ($value -notin @(1, 2, 3)) {
+        throw "Unexpected TokenElevationType value $value."
+    }
+
+    return $value
+}
+
+function Get-AutostartValidationDecision {
+    param(
+        [AllowNull()]
+        [Nullable[int]] $TokenElevationType
+    )
+
+    if ($null -eq $TokenElevationType) {
+        return 'query-failed'
+    }
+
+    switch ($TokenElevationType) {
+        1 { return 'skip-no-linked-token' }
+        2 { return 'run-lifecycle' }
+        default { return 'fail-unexpected-value' }
+    }
+}
+
+function Test-RebootTaskPresent {
+    $scheduler = $null
+    $folder = $null
+    $task = $null
+    try {
+        $scheduler = New-Object -ComObject 'Schedule.Service'
+        $scheduler.Connect()
+        $folder = $scheduler.GetFolder('\Microsoft\Windows\UpdateOrchestrator')
+        $task = $folder.GetTask('Reboot')
+        return $true
+    }
+    catch {
+        # Match the runtime's missing-file, missing-path and missing-object cases.
+        # Permission and other scheduler errors must still fail validation.
+        $hresult = $_.Exception.GetBaseException().HResult
+        if ($hresult -in @(-2147024894, -2147024893, -2147023728)) {
+            return $false
+        }
+        throw
+    }
+    finally {
+        foreach ($comObject in @($task, $folder, $scheduler)) {
+            if ($null -ne $comObject) {
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($comObject)
+            }
+        }
+    }
 }
 
 $isAdmin = Test-IsAdministrator
@@ -721,7 +827,7 @@ try {
     Invoke-TestCase 'Start-Process launches wardoff --block --hide in the background' {
         Stop-RepoWardoffProcesses
         $script:InitialLogLineCount = @(Get-StructuredLogLines).Count
-        $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -PassThru
+        $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
         Start-Sleep -Seconds 2
         $script:BackgroundProcess.Refresh()
         Assert-Condition (-not $script:BackgroundProcess.HasExited) "Wardoff exited early with code $($script:BackgroundProcess.ExitCode)."
@@ -734,6 +840,7 @@ try {
 
         Assert-Condition ($result.ExitCode -eq 0) "wardoff --status exited with code $($result.ExitCode) while Wardoff was running."
         Assert-Condition ($status.state -eq 'block') "wardoff --status returned state '$($status.state)' instead of 'block'."
+        Assert-Condition ($status.layers.sleep -eq $true) 'Block mode did not acquire both idle-power requests.'
         Assert-Condition ($null -ne $status.layers) 'wardoff --status did not include a layers object while Wardoff was running.'
         Assert-Condition ($null -ne $status.layers.local_shutdown) 'wardoff --status did not include the layers.local_shutdown field.'
         Assert-Condition ($status.layers.local_shutdown -is [bool]) 'wardoff --status returned a non-boolean layers.local_shutdown field.'
@@ -760,7 +867,8 @@ try {
     if ($powercfgRequestsCheck.State -eq 'testable') {
         Invoke-TestCase 'powercfg /requests mentions Wardoff while blocking is active' {
             $result = $powercfgRequestsCheck.Result
-            Assert-Condition ($result.Output -match '(?i)wardoff') 'powercfg /requests did not mention Wardoff.'
+            $reason = 'Wardoff Block mode: prevent idle sleep and automatic display timeout.'
+            Assert-Condition ([regex]::Matches($result.Output, [regex]::Escape($reason)).Count -eq 2) 'Expected the Wardoff reason once for SYSTEM and once for DISPLAY.'
         }
     }
     elseif ($powercfgRequestsCheck.State -eq 'skip') {
@@ -792,9 +900,29 @@ try {
     }
 
     if ($isAdmin) {
-        Invoke-TestCase 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin' {
-            $activeStatus = Wait-ForActiveWardoffStatus
-            Assert-Condition ($activeStatus.Status.layers.update -eq $true) 'wardoff --status did not report layers.update=true in an elevated session.'
+        $tokenElevationType = $null
+        try {
+            $tokenElevationType = Get-CurrentTokenElevationType
+            Write-Host "Observed native TokenElevationType: $tokenElevationType" -ForegroundColor Cyan
+        }
+        catch {
+            Add-TestResult -Status 'FAIL' -Description 'native TokenElevationType query succeeds in the elevated smoke session' -Details $_.Exception.Message
+        }
+
+        $layer3Description = 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin'
+        try {
+            if (Test-RebootTaskPresent) {
+                Invoke-TestCase $layer3Description {
+                    $activeStatus = Wait-ForActiveWardoffStatus
+                    Assert-Condition ($activeStatus.Status.layers.update -eq $true) 'wardoff --status did not report layers.update=true in an elevated session.'
+                }
+            }
+            else {
+                Skip-TestCase $layer3Description 'The UpdateOrchestrator Reboot task is absent on this Windows installation.'
+            }
+        }
+        catch {
+            Add-TestResult -Status 'FAIL' -Description $layer3Description -Details $_.Exception.Message
         }
 
         Invoke-TestCase 'wardoff --status reports Layer 4 AbortSystemShutdown protection as active when run as admin' {
@@ -806,7 +934,23 @@ try {
             $null = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Microsoft\Windows\UpdateOrchestrator\Reboot')
         }
 
-        Invoke-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' {
+        $autostartDescription = 'wardoff --autostart on creates the Wardoff task and --autostart off removes it'
+        $autostartDecision = Get-AutostartValidationDecision $tokenElevationType
+        if ($autostartDecision -eq 'query-failed') {
+            Invoke-TestCase $autostartDescription {
+                throw 'Cannot classify the elevated token because the native TokenElevationType query failed.'
+            }
+        }
+        elseif ($autostartDecision -eq 'skip-no-linked-token') {
+            Skip-TestCase $autostartDescription 'Skipped: native TokenElevationTypeDefault (1) means this elevated token has no linked token; validate the autostart lifecycle manually from an interactive UAC session.'
+        }
+        elseif ($autostartDecision -eq 'fail-unexpected-value') {
+            Invoke-TestCase $autostartDescription {
+                throw "Unexpected TokenElevationType value $tokenElevationType in the elevated smoke session; interactive UAC validation is required."
+            }
+        }
+        else {
+            Invoke-TestCase $autostartDescription {
             $taskOriginallyPresent = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
 
             try {
@@ -841,6 +985,7 @@ try {
                 catch {
                 }
             }
+            }
         }
     }
     else {
@@ -852,18 +997,45 @@ try {
         Skip-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' $adminOnlyMessage
     }
 
-    Invoke-TestCase 'The background Wardoff instance can be stopped and cleaned up' {
+    Invoke-TestCase 'Allow releases idle-power requests without stopping the runtime' {
         $repoProcesses = @(Get-RepoWardoffProcesses)
-        Assert-Condition ($repoProcesses.Count -gt 0) 'No background Wardoff process was running to stop.'
+        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one background Wardoff process.'
+        $allowResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
+        Assert-Condition ($allowResult.ExitCode -eq 0) "wardoff --allow exited with code $($allowResult.ExitCode)."
+        $statusResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--status')
+        Assert-Condition ($statusResult.ExitCode -eq 0) 'Status failed after Allow.'
+        $status = $statusResult.Output | ConvertFrom-Json
+        Assert-Condition ($status.state -eq 'allow' -and $status.layers.sleep -eq $false) 'Allow did not report released idle-power requests.'
+        $remaining = @(Get-RepoWardoffProcesses)
+        Assert-Condition ($remaining.Count -eq 1 -and $remaining[0].ProcessId -eq $repoProcesses[0].ProcessId) 'Allow replaced or stopped the runtime.'
+    }
 
-        try {
-            $allowResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
-            Assert-Condition ($allowResult.ExitCode -eq 0) "wardoff --allow exited with code $($allowResult.ExitCode)."
+    $allowRequestsCheck = Resolve-PowercfgRequestsCheck
+    if ($allowRequestsCheck.State -eq 'testable') {
+        Invoke-TestCase 'powercfg /requests has no Wardoff entry in Allow mode' {
+            Assert-Condition ($allowRequestsCheck.Result.Output -notmatch '(?i)wardoff') 'Wardoff requests remained after Allow.'
         }
-        catch {
-        }
+    }
+    elseif ($allowRequestsCheck.State -eq 'skip') {
+        Skip-TestCase 'powercfg /requests has no Wardoff entry in Allow mode' $allowRequestsCheck.SkipReason
+    }
+    else {
+        Add-TestResult -Status 'FAIL' -Description 'powercfg /requests has no Wardoff entry in Allow mode' -Details $allowRequestsCheck.FailureMessage
+    }
 
-        Stop-RepoWardoffProcesses
+    Invoke-TestCase 'Repeated Block reacquires idle-power requests before abrupt process termination' {
+        foreach ($iteration in 1..2) {
+            $blockResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--block')
+            Assert-Condition ($blockResult.ExitCode -eq 0) 'Block failed after Allow.'
+            $activeStatus = Wait-ForActiveWardoffStatus
+            Assert-Condition ($activeStatus.Status.layers.sleep -eq $true) 'Block did not reacquire idle-power requests.'
+        }
+        # Deliberately do not call the normal cleanup helper: it sends --allow first.
+        $repoProcesses = @(Get-RepoWardoffProcesses)
+        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one owned runtime to terminate.'
+        $ownedProcess = Get-Process -Id $repoProcesses[0].ProcessId -ErrorAction Stop
+        Stop-Process -InputObject $ownedProcess -Force -ErrorAction Stop
+        Assert-Condition ($ownedProcess.WaitForExit(5000)) 'The terminated runtime did not exit within five seconds.'
         Assert-Condition (@(Get-RepoWardoffProcesses).Count -eq 0) 'Wardoff was still running after cleanup.'
     }
 

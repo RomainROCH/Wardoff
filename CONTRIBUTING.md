@@ -63,7 +63,7 @@ Keep documentation and PR descriptions aligned with the current supported MVP su
 - interactive shutdown/sign-out blocking is implemented
 - Update Orchestrator reboot-task protection is implemented
 - remote shutdown abort polling is implemented
-- sleep/hibernate/display-idle blocking is implemented
+- idle-sleep and automatic display-timeout prevention are implemented; explicit Sleep/Hibernate remain controlled by Windows
 - tray, CLI, logging, IPC, autostart, and single-instance coordination are implemented
 
 Do **not** claim the following as implemented unless your change really adds and validates them:

@@ -43,7 +43,7 @@ pub enum EventSource {
     Remote,
     /// The Layer 1 shutdown blocker emitted the event.
     Shutdown,
-    /// The sleep and hibernate blocker emitted the event.
+    /// The idle-sleep/display-timeout request owner emitted the event.
     Sleep,
     /// The tray surface emitted the event.
     Tray,

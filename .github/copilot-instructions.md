@@ -50,7 +50,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
 
 ## High-level architecture
 
-- `Wardoff` is a Windows-only Rust utility for preventing or aborting unwanted shutdown, reboot, sleep, hibernate, and related power transitions. The intended target is `x86_64-pc-windows-msvc`.
+- `Wardoff` is a Windows-only Rust utility for protecting supported shutdown/reboot paths and preventing idle sleep and automatic display timeout. The intended target is `x86_64-pc-windows-msvc`.
 - The product has two control surfaces that should stay aligned:
   - a tray/background app with Block/Allow state and optional hidden mode
   - a CLI exposing `--block`, `--allow`, `--status`, `--hide`, `--log`, `--tail`, `--autostart on|off`, and `--version`, with `--status` expected to produce JSON for scripting
@@ -66,7 +66,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
   4. remote shutdown protection via repeated `AbortSystemShutdown(NULL)` polling
 - Be explicit that Layer 3 can skip cleanly on editions such as LTSC where `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent; that is normal behavior, not a failure.
 - For detailed layer-by-layer behavior and the cautious wording around ETW/local shutdown handling, read `docs/WINDOWS_SHUTDOWN_LAYERS.md`.
-- Sleep/hibernate/display blocking is a separate toggle and is expected to use `SetThreadExecutionState(...)`.
+- Idle-sleep/display-timeout prevention follows Block/Allow through process-owned Power Requests. Follow `docs/ARCHITECTURE.md` and `docs/MVP_VALIDATION_MATRIX.md` for lifecycle, resume behavior and Windows limits; do not promise an explicit Sleep/Hibernate veto.
 - Autostart is handled via Task Scheduler rather than the `Run` registry key so elevated scenarios can be handled correctly.
 
 ## Implemented module structure
@@ -78,7 +78,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
 - `src/blocker/local.rs`: current local shutdown worker implementation; keep its user-facing documentation conservative and aligned with MVP scope decisions
 - `src/blocker/update.rs`: UpdateOrchestrator task monitoring and restore logic
 - `src/blocker/remote.rs`: Layer 4 `AbortSystemShutdownW(None)` polling loop
-- `src/blocker/sleep.rs`: `SetThreadExecutionState(...)` blocker
+- `src/blocker/sleep.rs`: owned system/display Power Requests
 - `src/blocker/abort.rs`: shared shutdown-abort privilege and result helpers
 - `src/autostart.rs`: scheduled-task autostart management
 - `src/instance.rs` and `src/ipc.rs`: single-instance ownership plus the named-pipe control and read-only status paths
@@ -91,7 +91,7 @@ If a user asks only **"what's next?"**, answer from repo docs instead of inventi
 
 - Re-read `PLAN.md` before making major structural decisions. Use it as the roadmap and scope boundary document, while `README.md` stays the quickest current-state summary.
 - Preserve the distinction between MVP and later phases:
-  - MVP is the safe, official-API release: standard shutdown blocking, UpdateOrchestrator handling, remote abort loop, tray basics, CLI basics, Task Scheduler autostart, sleep/hibernate/display blocking, and simple file logging
+  - MVP is the safe, official-API release: standard shutdown blocking, UpdateOrchestrator handling, remote abort loop, tray basics, CLI basics, Task Scheduler autostart, idle-sleep/display-timeout prevention, and simple file logging
   - aggressive IFEO mode, Windows Event Log, profiles, timer, and toast notifications belong to later phases unless the plan is updated
 - Be explicit about elevation boundaries. Update protection and aggressive `shutdown.exe` interception are planned as admin-only features; tray, UI, and CLI flows should surface that requirement clearly rather than failing silently.
 - Prefer official Windows APIs first. Aggressive behavior is opt-in and should carry strong warnings because it may trigger EDR tooling.
@@ -113,7 +113,7 @@ Only these features belong in the current phase:
 - Layer 1: ShutdownBlockReasonCreate + WM_QUERYENDSESSION + SetProcessShutdownParameters
 - Layer 3: Task Scheduler UpdateOrchestrator\Reboot disable/re-check
 - Layer 4: AbortSystemShutdown polling loop
-- Sleep/hibernate/screensaver blocking via SetThreadExecutionState
+- Idle-sleep/display-timeout prevention via Power Requests; no screensaver, lock or explicit Sleep/Hibernate veto
 - Tray icon: Block/Allow toggle, right-click menu (Block, Allow, Shutdown, Reboot, Sleep, Hibernate, Quit)
 - CLI: --block, --allow, --status (JSON output), --hide, --log, --tail, --autostart on|off, --version
 - Auto-start via Task Scheduler
