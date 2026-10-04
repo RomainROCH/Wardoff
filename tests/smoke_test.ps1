@@ -50,6 +50,79 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-CurrentTokenElevationType {
+    if (-not ('Wardoff.TokenElevationTypeReader' -as [type])) {
+        Add-Type @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+
+namespace Wardoff {
+    public static class TokenElevationTypeReader {
+        private const int TokenElevationTypeInformation = 18;
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool GetTokenInformation(
+            IntPtr tokenHandle,
+            int tokenInformationClass,
+            out int tokenInformation,
+            int tokenInformationLength,
+            out int returnLength);
+
+        public static int GetCurrentValue() {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) {
+                int value;
+                int returnLength;
+                if (!GetTokenInformation(
+                    identity.Token,
+                    TokenElevationTypeInformation,
+                    out value,
+                    sizeof(int),
+                    out returnLength)) {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "GetTokenInformation(TokenElevationType) failed");
+                }
+
+                if (returnLength < sizeof(int)) {
+                    throw new InvalidOperationException(
+                        "GetTokenInformation(TokenElevationType) returned an incomplete value");
+                }
+
+                return value;
+            }
+        }
+    }
+}
+"@
+    }
+
+    $value = [Wardoff.TokenElevationTypeReader]::GetCurrentValue()
+    if ($value -notin @(1, 2, 3)) {
+        throw "Unexpected TokenElevationType value $value."
+    }
+
+    return $value
+}
+
+function Get-AutostartValidationDecision {
+    param(
+        [AllowNull()]
+        [Nullable[int]] $TokenElevationType
+    )
+
+    if ($null -eq $TokenElevationType) {
+        return 'query-failed'
+    }
+
+    switch ($TokenElevationType) {
+        1 { return 'skip-no-linked-token' }
+        2 { return 'run-lifecycle' }
+        default { return 'fail-unexpected-value' }
+    }
+}
+
 function Test-RebootTaskPresent {
     $scheduler = $null
     $folder = $null
@@ -836,6 +909,15 @@ try {
     }
 
     if ($isAdmin) {
+        $tokenElevationType = $null
+        try {
+            $tokenElevationType = Get-CurrentTokenElevationType
+            Write-Host "Observed native TokenElevationType: $tokenElevationType" -ForegroundColor Cyan
+        }
+        catch {
+            Add-TestResult -Status 'FAIL' -Description 'native TokenElevationType query succeeds in the elevated smoke session' -Details $_.Exception.Message
+        }
+
         $layer3Description = 'wardoff --status reports Layer 3 UpdateOrchestrator protection as active when run as admin'
         try {
             if (Test-RebootTaskPresent) {
@@ -861,7 +943,23 @@ try {
             $null = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Microsoft\Windows\UpdateOrchestrator\Reboot')
         }
 
-        Invoke-TestCase 'wardoff --autostart on creates the Wardoff task and --autostart off removes it' {
+        $autostartDescription = 'wardoff --autostart on creates the Wardoff task and --autostart off removes it'
+        $autostartDecision = Get-AutostartValidationDecision $tokenElevationType
+        if ($autostartDecision -eq 'query-failed') {
+            Invoke-TestCase $autostartDescription {
+                throw 'Cannot classify the elevated token because the native TokenElevationType query failed.'
+            }
+        }
+        elseif ($autostartDecision -eq 'skip-no-linked-token') {
+            Skip-TestCase $autostartDescription 'Skipped: native TokenElevationTypeDefault (1) means this elevated token has no linked token; validate the autostart lifecycle manually from an interactive UAC session.'
+        }
+        elseif ($autostartDecision -eq 'fail-unexpected-value') {
+            Invoke-TestCase $autostartDescription {
+                throw "Unexpected TokenElevationType value $tokenElevationType in the elevated smoke session; interactive UAC validation is required."
+            }
+        }
+        else {
+            Invoke-TestCase $autostartDescription {
             $taskOriginallyPresent = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
 
             try {
@@ -895,6 +993,7 @@ try {
                 }
                 catch {
                 }
+            }
             }
         }
     }
