@@ -42,6 +42,16 @@ Owns application bootstrap and shutdown:
 
 This is the best entry point for understanding the whole runtime.
 
+### `src/runtime_policy.rs` (intentional responsibility extraction)
+
+Pure decisions formerly embedded in `main.rs` live together with their unit tests:
+startup mode and tray surface, secondary CLI-to-IPC mapping, pending wake restore,
+and the autostart checkbox fallback. This makes those rules discoverable and
+testable without navigating Win32 orchestration. The runtime behavior, protocol,
+thread ownership and effectful lifecycle remain unchanged; `main.rs` still applies
+the decisions. The empty `config.rs` placeholder was removed because it owned no
+configuration behavior.
+
 ### `src/blocker/`
 
 Contains the layered protection logic.
@@ -86,6 +96,7 @@ Contains Task Scheduler integration for Start with Windows behavior.
 
 - `src/cli.rs` — argument parsing and status output
 - `src/windows_util.rs` — elevation checks, relaunch, and Windows-specific helpers
+- `src/session_scope.rs` — shared Windows session ID and mutex/pipe names
 - `build.rs` + `wardoff.manifest` — release-manifest embedding and requested execution level
 
 ## Core runtime object: `BlockerCoordinator`
@@ -431,7 +442,9 @@ That code exists and is wired in, but current top-level user-facing MVP docs del
 
 ## Suggested reading order for new developers
 
-If you are new to the codebase, read in this order:
+For a focused change, start with the
+[task-to-code map](DEVELOPMENT.md#task-to-code-map). For a full runtime walkthrough,
+read in this order:
 
 1. `src/main.rs`
 2. `src/blocker/mod.rs`

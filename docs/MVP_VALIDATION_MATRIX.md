@@ -2,6 +2,11 @@
 
 Use this as the MVP acceptance checklist for Wardoff as it exists today. It keeps automated coverage, manual spot checks, admin-only validation, and disruptive VM-only checks separate.
 
+For everyday development, use the [local check commands](DEVELOPMENT.md#validation).
+The smoke suite is state-changing: it stops repo-built Wardoff processes, starts
+protection, writes real logs and may modify scheduled tasks. Use an isolated
+Windows test environment even when not requesting a shutdown or suspend.
+
 ## Scope and honesty rules
 
 This matrix covers only the current MVP surface:

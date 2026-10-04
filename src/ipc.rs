@@ -1,3 +1,9 @@
+//! Session-scoped control and read-only status transports.
+//!
+//! `IpcServer::start` owns startup of both pipe workers; requests are queued back
+//! to the application thread, which owns mode changes. Keep wire types, access
+//! checks and retry behavior consistent with docs/ARCHITECTURE.md.
+
 use crate::blocker::BlockerMode;
 use crate::cli::StatusOutput;
 use crate::logger::{self, EventSource};
@@ -1149,8 +1155,7 @@ fn current_process_user_sid_string(control_pipe_path: &str) -> Result<String, St
 }
 
 fn wake_status_server() -> std::io::Result<()> {
-    let status_pipe_path =
-        current_status_pipe_path().map_err(|error| std::io::Error::other(error))?;
+    let status_pipe_path = current_status_pipe_path().map_err(std::io::Error::other)?;
     OpenOptions::new()
         .read(true)
         .open(status_pipe_path)

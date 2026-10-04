@@ -1,114 +1,97 @@
 # Contributing to Wardoff
 
-Thanks for contributing to Wardoff. Please also review the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+Start with the [README](README.md) for the product and the
+[development guide](docs/DEVELOPMENT.md) to find code and tests for your task.
+Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Agents start at [AGENTS.md](AGENTS.md); humans and agents use the same workflow.
 
-This repository now contains a working Windows MVP runtime, but the docs should remain conservative: describe what is clearly implemented and supported, and do not turn later-phase ideas into shipped features.
+## Set up and check the project
 
-## Read this first
-
-If you are new to the repo, read these before making changes:
-
-1. `README.md` for the current MVP summary
-2. `PLAN.md` for scope boundaries and the current "what's next" answer
-3. `docs/ARCHITECTURE.md` for the code map
-
-## Business-model messaging guardrail
-
-If your change touches sponsor, funding, signed-binary, paid-support, consulting, or commercialization messaging, read `docs/BUSINESS_MODEL.md` first and keep the wording aligned with it. Do not invent offers or promises ad hoc.
-
-## Prerequisites
-
-For local development on Windows, use:
-
-- Windows 10 or Windows 11
-- Rust stable
-- MSVC Build Tools for the `x86_64-pc-windows-msvc` target
-- Git
-
-Administrator rights are required for some manual validation paths and some runtime features, especially Update Orchestrator task handling and autostart task changes.
-
-## Build
-
-The main build command to use and document is:
+Use Windows 10 or 11, Git, PowerShell 5.1 or newer, and Rust stable targeting
+`x86_64-pc-windows-msvc`. Install MSVC C++ build tools and a Windows SDK.
+The normal development checks do not require administrator rights.
 
 ```powershell
-cargo build --release
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 ```
 
-Useful supporting commands:
+For Rust changes, finish with the full check, including strict Clippy and the
+release build:
 
 ```powershell
-cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Mode Full
 ```
 
-## Smoke test
+The [development guide](docs/DEVELOPMENT.md#validation) lists individual commands,
+focused test filters, documentation checks and troubleshooting.
 
-Run the repo smoke test with:
+## Runtime validation is separate
+
+The [validation matrix](docs/MVP_VALIDATION_MATRIX.md) owns runtime acceptance.
+The smoke suite stops repo-built Wardoff processes, starts Block/Allow runtimes,
+appends logs, and can change Task Scheduler entries. Run it in an isolated
+Windows test environment where those effects are acceptable:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tests\smoke_test.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_test.ps1
 ```
 
-For the current MVP validation split between automated coverage, manual checks, admin-only checks, and VM-only checks, see [`docs/MVP_VALIDATION_MATRIX.md`](docs/MVP_VALIDATION_MATRIX.md).
+Administrator rights enable additional coverage. A missing UpdateOrchestrator
+Reboot task is an expected skip on some Windows editions. Use a disposable VM
+for shutdown/reboot/sign-out and suitable test hardware or a capable VM for
+physical sleep/hibernate. Record skips and untested behavior rather than
+equating unit tests with end-to-end acceptance.
 
-Use a disposable VM for disruptive shutdown, reboot, sleep, hibernate, or Task Scheduler validation.
+## Scope and authority
 
-## Current implementation boundaries
+- [PLAN.md](PLAN.md) owns product scope and priorities.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) owns intended architecture. Record
+  intentional changes with their reason; report drift instead of silently
+  rewriting the design to fit it.
+- [docs/BUSINESS_MODEL.md](docs/BUSINESS_MODEL.md) owns monetization, sponsorship,
+  signed binaries and paid support. Read it before changing related messaging.
+- [docs/WINDOWS_SHUTDOWN_LAYERS.md](docs/WINDOWS_SHUTDOWN_LAYERS.md) explains layer
+  limits. Do not promise to stop `shutdown /t 0 /f` or explicit sleep/hibernate.
 
-Keep documentation and PR descriptions aligned with the current supported MVP surface:
+Keep IFEO, Event Log, toasts, timers, profiles, settings and packaging as backlog
+unless the task explicitly changes that scope. Existing CI/release workflows
+are infrastructure to maintain when requested, not evidence of a new product
+feature. Do not add CI, release automation or benchmarks as incidental cleanup.
 
-- interactive shutdown/sign-out blocking is implemented
-- Update Orchestrator reboot-task protection is implemented
-- remote shutdown abort polling is implemented
-- idle-sleep and automatic display-timeout prevention are implemented; explicit Sleep/Hibernate remain controlled by Windows
-- tray, CLI, logging, IPC, autostart, and single-instance coordination are implemented
+## Branches and commits
 
-Do **not** claim the following as implemented unless your change really adds and validates them:
+Unless the task specifies a starting point, branch from `dev`, use a focused
+feature/fix branch (agents may use `codex/<topic>`), and target `dev` for
+integration. Releases reach `main` from the integrated state. Preserve existing
+work when continuing from another branch and state which base you used.
 
-- IFEO interception
-- Windows Event Log integration
-- toast notifications
-- timers
-- profiles
-- settings UI
+Use atomic Conventional Commits: `type: imperative subject`, lowercase with no
+trailing period. Explain the change and validation; reference an issue only
+when one exists. A local change does not by itself authorize publication.
 
-Be especially careful with local `shutdown.exe` wording:
+## Code and documentation conventions
 
-- do not promise that Wardoff blocks `shutdown /t 0 /f`
-- do not turn experimental or cautiously documented behavior into a marketing claim
+- Keep documentation, code comments and user-visible copy in English.
+- Use Rust 2021, `rustfmt` and Clippy. Keep the Windows x64 MSVC target.
+- Handle recoverable production errors rather than using `unwrap()` or
+  `expect()`; test assertions and fail-fast build-script diagnostics differ.
+- Document public Rust items and non-obvious Win32 ownership/thread constraints.
+- Use `log` macros for operational messages and the existing structured logger
+  for events; preserve machine-readable CLI output and exit codes.
+- Preserve red Block / green Allow tray semantics, the non-elevating read-only
+  CLI, session-scoped IPC, admin boundaries and transactional cleanup.
+- Keep pure decisions separate from Windows effects when that makes the change
+  easier to test. Avoid framework layers or module splits without a concrete need.
+- Discuss new project dependencies with the maintainer. Keep protection free
+  of telemetry, tracking and paywalls.
+- Link to an existing documentation owner instead of duplicating its rules.
+  Use relative Markdown links and fenced code blocks with language tags.
+- Keep dated evidence and unpublished drafts clearly labeled. Do not turn
+  measurements from one machine into a general guarantee.
 
-## Branch workflow
+## Review checklist
 
-Use this workflow unless a maintainer tells you otherwise:
-
-1. branch from `dev`
-2. use a branch name such as `feat/xxx` or `fix/xxx`
-3. merge completed work back into `dev`
-4. open the PR to `main` from the appropriate integrated branch state
-
-Keep changes focused and reviewable.
-
-## Pull request checklist
-
-In each PR:
-
-- explain what changed
-- explain what you tested
-- call out any admin requirement
-- call out any behavior that is intentionally still planned rather than shipped
-- keep docs and code wording consistent
-
-## Coding and documentation conventions
-
-- keep documentation in English
-- prefer `cargo build --release` when describing the real build process
-- use fenced code blocks with language tags
-- use `rustfmt` and `clippy`
-- avoid `unwrap()` and `expect()` in production paths where failure should be surfaced cleanly
-- add `///` comments to public Rust items where appropriate
-- keep claims honest and source-verifiable
-
-Small, accurate PRs are much easier to review than broad speculative rewrites.
+Explain delivered behavior, affected modules, tests run and remaining
+manual/admin checks. Update relevant docs when a contract changes. Report
+architecture deviations, security implications and product limits explicitly.
+Use the [pull request template](.github/PULL_REQUEST_TEMPLATE.md) for a PR.

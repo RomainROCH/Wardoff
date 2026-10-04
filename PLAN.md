@@ -2,18 +2,17 @@
 
 This file is the repo-level status and roadmap summary for Wardoff.
 
-If you are new here, read in this order:
-
-1. `README.md` for the current user-facing MVP snapshot
-2. `PLAN.md` for current status, boundaries, and likely next work
-3. `docs/ARCHITECTURE.md` for the code map
-4. `CONTRIBUTING.md` and `.github/copilot-instructions.md` for workflow and scope guardrails
+For the product, start with [README.md](README.md). For development, use
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[task-to-code map](docs/DEVELOPMENT.md#task-to-code-map). Agents start at
+[AGENTS.md](AGENTS.md). This plan owns scope and priorities, not setup commands.
 
 For monetization, sponsorship, signed-binary, paid-support, or broader commercialization decisions, follow `docs/BUSINESS_MODEL.md` rather than inferring policy from engineering docs.
 
 ## Current repository status
 
-Wardoff is currently a shipped, source-first **0.1.0-style MVP** for Windows.
+Wardoff is a source-first Windows MVP. [Cargo.toml](Cargo.toml) owns the current
+package version; the scope below describes supported behavior, not release status.
 
 The branch already contains a working runtime plus CLI centered on one main promise: keep a machine in a visible **Block** state using conservative, documented Windows techniques where possible.
 

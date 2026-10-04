@@ -1,3 +1,12 @@
+<#
+.SYNOPSIS
+State-changing Windows integration tests; use an isolated test environment.
+.DESCRIPTION
+Stops repo-built Wardoff processes (including a manually started development
+instance), runs Block/Allow, writes real user logs and can change scheduled tasks
+when elevated. For routine development use scripts/check.ps1 instead.
+See docs/MVP_VALIDATION_MATRIX.md for coverage and manual acceptance.
+#>
 [CmdletBinding()]
 param()
 

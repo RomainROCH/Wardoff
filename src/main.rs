@@ -1,10 +1,16 @@
+//! Process dispatch and effectful runtime orchestration.
+//!
+//! Start at `run_main` for CLI dispatch, `bootstrap`/`run` for lifecycle, and
+//! `Application` for IPC/tray effects. Pure decisions live in `runtime_policy`.
+//! See docs/DEVELOPMENT.md for task-specific entrypoints and validation.
+
 mod autostart;
 mod blocker;
 mod cli;
-mod config;
 mod instance;
 mod ipc;
 mod logger;
+mod runtime_policy;
 mod session_scope;
 mod tray;
 mod windows_util;
@@ -18,9 +24,14 @@ use crate::instance::{
 };
 use crate::ipc::{
     read_status, send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest,
-    PipeMode, IPC_WAKE_MESSAGE,
+    IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
+use crate::runtime_policy::{
+    ipc_request_for, pending_wake_restore_for_tray_power_action,
+    pending_wake_restore_ready_for_resume, resolved_autostart_state_for_tray, runtime_options_for,
+    PendingWakeRestore, RuntimeOptions, TraySurface,
+};
 use crate::tray::{
     spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility, TRAY_ACTION_WAKE_MESSAGE,
 };
@@ -44,6 +55,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
 const ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+// Callback bridge for the Win32 message loop on the application thread. `run`
+// registers it only while its local Application is alive and clears callbacks
+// before ordinary cleanup. Never dereference it from a background worker.
 static ACTIVE_APPLICATION: AtomicPtr<Application> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Coordinates CLI, tray, and blocker scaffolding for the Wardoff binary.
@@ -56,38 +70,6 @@ struct Application {
     forced_shutdown_cleanup_completed: bool,
     pending_block_restore_after_wake: Option<PendingWakeRestore>,
     _primary_instance: InstanceGuard,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TraySurface {
-    Visible,
-    Hidden,
-    Headless,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RuntimeOptions {
-    initial_mode: BlockerMode,
-    tray_surface: TraySurface,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PendingWakeRestore {
-    PendingSuspend(PowerAction),
-    WaitingForResume(PowerAction),
-}
-
-impl PendingWakeRestore {
-    fn action(self) -> PowerAction {
-        match self {
-            PendingWakeRestore::PendingSuspend(action)
-            | PendingWakeRestore::WaitingForResume(action) => action,
-        }
-    }
-
-    fn mark_system_suspended(self) -> Self {
-        PendingWakeRestore::WaitingForResume(self.action())
-    }
 }
 
 /// Bootstraps logging, the central state manager, and the tray surface.
@@ -518,50 +500,6 @@ where
             ))),
         },
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
-    }
-}
-
-fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
-    match action {
-        RequestedAction::Default => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Visible,
-        },
-        RequestedAction::Block => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Headless,
-        },
-        RequestedAction::Allow => RuntimeOptions {
-            initial_mode: BlockerMode::Allow,
-            tray_surface: TraySurface::Visible,
-        },
-        RequestedAction::Hide => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Hidden,
-        },
-        RequestedAction::Autostart { .. } => {
-            unreachable!("autostart changes do not start the primary runtime")
-        }
-        RequestedAction::Status | RequestedAction::Log { .. } => {
-            unreachable!("read-only CLI actions never start the runtime")
-        }
-    }
-}
-
-fn ipc_request_for(action: RequestedAction) -> IpcRequest {
-    match action {
-        RequestedAction::Default | RequestedAction::Block | RequestedAction::Hide => {
-            IpcRequest::SetMode {
-                mode: PipeMode::Block,
-            }
-        }
-        RequestedAction::Allow => IpcRequest::SetMode {
-            mode: PipeMode::Allow,
-        },
-        RequestedAction::Autostart { enabled } => IpcRequest::SetAutostart { enabled },
-        RequestedAction::Status | RequestedAction::Log { .. } => {
-            unreachable!("read-only CLI actions do not use the control IPC request helper")
-        }
     }
 }
 
@@ -1249,121 +1187,5 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
         RequestedAction::Hide => "hidden block",
         RequestedAction::Autostart { .. } => "autostart",
         RequestedAction::Status | RequestedAction::Log { .. } => "read-only",
-    }
-}
-
-fn pending_wake_restore_for_tray_power_action(
-    previous_mode: BlockerMode,
-    action: PowerAction,
-) -> Option<PendingWakeRestore> {
-    match (previous_mode, action) {
-        (BlockerMode::Block, PowerAction::Sleep) => {
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
-        }
-        (BlockerMode::Block, PowerAction::Hibernate) => {
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
-        }
-        _ => None,
-    }
-}
-
-fn pending_wake_restore_ready_for_resume(
-    pending_restore: Option<PendingWakeRestore>,
-) -> Option<PowerAction> {
-    // Windows can deliver a resume notification to this runtime without an earlier
-    // suspend broadcast reaching the hidden window, so any queued tray wake-restore
-    // must still restore Block mode on resume even if Wardoff never observed suspend.
-    match pending_restore {
-        Some(PendingWakeRestore::PendingSuspend(action))
-        | Some(PendingWakeRestore::WaitingForResume(action)) => Some(action),
-        _ => None,
-    }
-}
-
-fn resolved_autostart_state_for_tray(
-    previous_state: Option<bool>,
-    actual_state: Result<bool, String>,
-) -> Result<bool, String> {
-    match actual_state {
-        Ok(actual_state) => Ok(actual_state),
-        Err(error) => previous_state.ok_or(error),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        pending_wake_restore_for_tray_power_action, pending_wake_restore_ready_for_resume,
-        resolved_autostart_state_for_tray, BlockerMode, PendingWakeRestore, PowerAction,
-    };
-
-    #[test]
-    fn prefers_current_autostart_state_when_available() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(Some(false), Ok(true)),
-            Ok(true)
-        );
-    }
-
-    #[test]
-    fn falls_back_to_previous_autostart_state_when_reread_fails() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(Some(false), Err("read failed".to_string())),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn preserves_unknown_autostart_state_when_reads_fail() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(None, Err("read failed".to_string())),
-            Err("read failed".to_string())
-        );
-    }
-
-    #[test]
-    fn only_block_mode_sleep_and_hibernate_queue_restore_after_wake() {
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Sleep),
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Hibernate),
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Allow, PowerAction::Sleep),
-            None
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Shutdown),
-            None
-        );
-    }
-
-    #[test]
-    fn pending_restore_marks_suspend_and_preserves_requested_action() {
-        let pending = PendingWakeRestore::PendingSuspend(PowerAction::Hibernate);
-        assert_eq!(
-            pending.mark_system_suspended(),
-            PendingWakeRestore::WaitingForResume(PowerAction::Hibernate)
-        );
-        assert_eq!(pending.action(), PowerAction::Hibernate);
-    }
-
-    #[test]
-    fn resume_restores_block_mode_even_if_suspend_was_not_observed() {
-        assert_eq!(
-            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::PendingSuspend(
-                PowerAction::Sleep
-            ))),
-            Some(PowerAction::Sleep)
-        );
-        assert_eq!(
-            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::WaitingForResume(
-                PowerAction::Sleep
-            ))),
-            Some(PowerAction::Sleep)
-        );
     }
 }

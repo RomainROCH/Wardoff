@@ -47,16 +47,13 @@ Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level
 
 ## Documentation entrypoints
 
-If you are brand-new to the repo, read these in order:
-
-1. **`README.md`** - current user-facing MVP snapshot
-2. **[`PLAN.md`](PLAN.md)** - current status, boundaries, and prioritized next steps
-3. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** - where the runtime pieces live in code
-4. **[`docs/BUSINESS_MODEL.md`](docs/BUSINESS_MODEL.md)** - source of truth for monetization, signed binaries, sponsorship, consulting/support, and commercialization decisions
-5. **[`docs/WINDOWS_SHUTDOWN_LAYERS.md`](docs/WINDOWS_SHUTDOWN_LAYERS.md)** - detailed shutdown-layer behavior, including Layer 2 ETW/local-shutdown nuances and limits
-6. **[`docs/MVP_VALIDATION_MATRIX.md`](docs/MVP_VALIDATION_MATRIX.md)** - acceptance and validation guide covering smoke coverage, tray and Explorer-restart checks, handoff-focused spot checks, and admin-only validation
-7. **[`CONTRIBUTING.md`](CONTRIBUTING.md)** - workflow, testing, and documentation guardrails
-8. **[`.github/copilot-instructions.md`](.github/copilot-instructions.md)** - agent-specific read order and scope rules
+- **Using Wardoff:** continue with installation and usage below.
+- **Developing Wardoff:** start with [CONTRIBUTING.md](CONTRIBUTING.md), then the
+  [development guide](docs/DEVELOPMENT.md) for task-to-code routing and checks.
+- **Working as an agent:** start with [AGENTS.md](AGENTS.md); it uses the same
+  workflow and documentation as human contributors.
+- **Finding a specific topic:** use the [documentation index](docs/README.md).
+- **Choosing the next product change:** read [PLAN.md](PLAN.md).
 
 ## Not implemented yet
 

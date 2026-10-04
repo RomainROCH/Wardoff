@@ -677,7 +677,7 @@ fn sid_to_string(sid: PSID, context: &str) -> Result<String, String> {
     }
 
     let string_sid = LocalAllocatedWideString(string_sid);
-    let sid = string_sid.to_string();
+    let sid = string_sid.to_string_lossy();
     if sid.is_empty() {
         return Err(format!(
             "Wardoff could not {context} before updating {AUTOSTART_TASK_PATH}: the process token resolved to an empty SID string."
@@ -721,7 +721,7 @@ impl Drop for LocalSecurityDescriptor {
 struct LocalAllocatedWideString(PWSTR);
 
 impl LocalAllocatedWideString {
-    fn to_string(&self) -> String {
+    fn to_string_lossy(&self) -> String {
         if self.0.is_null() {
             return String::new();
         }
