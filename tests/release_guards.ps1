@@ -231,6 +231,19 @@ try {
         $run = Select-ReleaseCiRun -CiRuns @((New-CiRun)) -Repository $repository -CandidateCommit $candidateCommit
         Assert-Equal $run.id 73 'The expected CI run was not selected.'
     }
+    Invoke-TestCase 'API JSON preserves the UTC update timestamp as a string' {
+        $fixtureRun = New-CiRun
+        $json = [pscustomobject]@{ total_count = 1; workflow_runs = @($fixtureRun) } | ConvertTo-Json -Depth 6
+        $response = ConvertFrom-ReleaseApiJson -Json $json
+        $apiRun = @($response.workflow_runs)[0]
+        Assert-True ($apiRun.updated_at -is [string]) 'API JSON converted the update timestamp to a non-string value.'
+        Assert-Equal $apiRun.updated_at $fixtureRun.updated_at 'API JSON changed the exact UTC update timestamp.'
+        $selected = Select-ReleaseCiRun -CiRuns @($apiRun) -Repository $repository -CandidateCommit $candidateCommit
+        Assert-Equal $selected.id 73 'The parsed API run was rejected by the CI guard.'
+    }
+    Invoke-TestCase 'API JSON rejects malformed input' {
+        Assert-Throws { ConvertFrom-ReleaseApiJson -Json '{"workflow_runs": [broken}' }
+    }
     Invoke-TestCase 'main workflow path suffix' {
         $run = Select-ReleaseCiRun -CiRuns @((New-CiRun -Path '.github/workflows/ci.yml@refs/heads/main')) -Repository $repository -CandidateCommit $candidateCommit
         Assert-Equal $run.id 73 'The authorized workflow suffix was rejected.'

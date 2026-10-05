@@ -1,6 +1,17 @@
 # Pure release policy. Network reads and binary execution belong to the driver.
 Set-StrictMode -Version Latest
 
+function ConvertFrom-ReleaseApiJson {
+    param([Parameter(Mandatory = $true)][string] $Json)
+    # PowerShell 7.5+ otherwise converts ISO dates to DateTime. Keep the GitHub
+    # timestamp text intact for the strict UTC check and rerun comparison.
+    $jsonOptions = @{}
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $jsonOptions.DateKind = 'String'
+    }
+    return ($Json | ConvertFrom-Json @jsonOptions)
+}
+
 function Test-ReleasePositiveInteger {
     param($Value)
     return (($Value -is [int] -or $Value -is [long] -or $Value -is [uint32] -or $Value -is [uint64]) -and $Value -gt 0)

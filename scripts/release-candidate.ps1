@@ -31,7 +31,7 @@ function Read-ReleaseApiPages {
     param([string] $Endpoint)
     $json = & gh api --method GET --paginate --slurp $Endpoint
     if ($LASTEXITCODE -ne 0) { throw 'Release GitHub read failed; no fallback is allowed.' }
-    return ($json | ConvertFrom-Json)
+    return (ConvertFrom-ReleaseApiJson -Json ($json -join "`n"))
 }
 
 $head = @(Invoke-ReleaseGit @('rev-parse', 'HEAD'))[0]
