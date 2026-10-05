@@ -532,7 +532,7 @@ function Test-SmokeOwnedAutostartTask {
 }
 
 function Assert-SmokePreflight {
-    $processes = Get-SmokePreflightWardoffProcesses
+    $processes = @(Get-SmokePreflightWardoffProcesses)
     Assert-SmokePreconditions `
         -WardoffProcesses $processes `
         -CurrentSessionId (Get-SmokeCurrentSessionId) `
