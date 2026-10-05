@@ -89,8 +89,7 @@ if ($identity.Count -ne 1 -or $identity[0].GetAttribute('version') -cne ($versio
     $level.Count -ne 1 -or $level[0].GetAttribute('level') -cne 'asInvoker' -or $level[0].GetAttribute('uiAccess') -cne 'false') {
     throw 'Embedded release manifest differs from the source contract.'
 }
-$fileVersion = (Get-Item -LiteralPath $binary).VersionInfo.FileVersion
-if ($fileVersion -cne ($version + '.0')) { throw 'Windows file version differs from the source contract.' }
+$null = Assert-ReleaseWindowsVersion -FileVersionInfo (Get-Item -LiteralPath $binary).VersionInfo -Version $version
 $rustVersion = (& rustc -Vv) -join "`n"
 if ($LASTEXITCODE -ne 0 -or $rustVersion -notmatch 'host: x86_64-pc-windows-msvc') { throw 'Release must use the MSVC host toolchain.' }
 if (Test-Path -LiteralPath $PackageDirectory) { throw 'Package destination already exists.' }

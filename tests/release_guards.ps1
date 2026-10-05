@@ -101,6 +101,14 @@ function New-CiRun {
     }
 }
 
+function New-WindowsVersionInfo {
+    param([string]$DisplayVersion = '0.2.1')
+    return [pscustomobject]@{
+        FileVersion = $DisplayVersion
+        FileMajorPart = 0; FileMinorPart = 2; FileBuildPart = 1; FilePrivatePart = 0
+    }
+}
+
 function New-CiJob {
     param([long]$RunId = 73)
     return [pscustomobject]@{
@@ -204,6 +212,36 @@ try {
         Write-VersionFixture
         Set-Content -LiteralPath (Join-Path $repoFixture 'wardoff.manifest') -Encoding utf8 -Value '<assembly><broken>'
         Assert-Throws { Get-ReleaseVersion -RepoRoot $repoFixture -TagName $tagName }
+    }
+    foreach ($displayVersion in @('0.2.1', '0.2.1.0')) {
+        Invoke-TestCase "numeric Windows version accepts display [$displayVersion]" {
+            $info = New-WindowsVersionInfo -DisplayVersion $displayVersion
+            $numericVersion = Assert-ReleaseWindowsVersion -FileVersionInfo $info -Version '0.2.1'
+            Assert-Equal $numericVersion '0.2.1.0' 'The numeric Windows version was not returned.'
+        }
+    }
+    foreach ($fieldName in @('FileMajorPart', 'FileMinorPart', 'FileBuildPart', 'FilePrivatePart')) {
+        Invoke-TestCase "numeric Windows version rejects mismatched $fieldName" {
+            $info = New-WindowsVersionInfo
+            $info.$fieldName++
+            Assert-Throws { Assert-ReleaseWindowsVersion -FileVersionInfo $info -Version '0.2.1' }
+        }
+        foreach ($invalidPart in @($true, 'correct value as string', -1, 65536)) {
+            Invoke-TestCase "numeric Windows version rejects $fieldName invalid value [$invalidPart]" {
+                $info = New-WindowsVersionInfo
+                if ($invalidPart -is [string] -and $invalidPart -ceq 'correct value as string') {
+                    $info.$fieldName = [string]$info.$fieldName
+                } else {
+                    $info.$fieldName = $invalidPart
+                }
+                Assert-Throws { Assert-ReleaseWindowsVersion -FileVersionInfo $info -Version '0.2.1' }
+            }
+        }
+        Invoke-TestCase "numeric Windows version rejects missing $fieldName" {
+            $info = New-WindowsVersionInfo
+            $info.PSObject.Properties.Remove($fieldName)
+            Assert-Throws { Assert-ReleaseWindowsVersion -FileVersionInfo $info -Version '0.2.1' }
+        }
     }
     Write-VersionFixture
 

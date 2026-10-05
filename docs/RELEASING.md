@@ -58,6 +58,9 @@ The hash is taken before smoke and must match afterward. Package checks verify
 help/version, the real embedded manifest resource, Windows file version and MSVC
 host. They copy that binary without rebuilding it and produce:
 
+The Windows version check reads the fixed four-component PE version resource;
+its display string can omit the trailing `.0` without changing that resource.
+
 - `wardoff.exe`: the exact unsigned checked binary;
 - `SHA256SUMS.txt`: its SHA-256;
 - `build-info.json`: tag, full source SHA, main CI run/attempt, build run URL,

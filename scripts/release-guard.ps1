@@ -17,6 +17,22 @@ function Test-ReleasePositiveInteger {
     return (($Value -is [int] -or $Value -is [long] -or $Value -is [uint32] -or $Value -is [uint64]) -and $Value -gt 0)
 }
 
+function Assert-ReleaseWindowsVersion {
+    param([object] $FileVersionInfo, [string] $Version)
+    # FileVersion is a display string (winres emits X.Y.Z). The fixed PE
+    # version resource has four numeric components and is the version contract.
+    $parts = @($FileVersionInfo.FileMajorPart, $FileVersionInfo.FileMinorPart,
+        $FileVersionInfo.FileBuildPart, $FileVersionInfo.FilePrivatePart)
+    foreach ($part in $parts) {
+        if ($part -isnot [int] -or $part -lt 0 -or $part -gt 65535) {
+            throw 'Windows file version component is invalid.'
+        }
+    }
+    $numericVersion = $parts -join '.'
+    if ($numericVersion -cne ($Version + '.0')) { throw 'Windows file version differs from the source contract.' }
+    return $numericVersion
+}
+
 function Get-ReleaseVersion {
     param([string] $RepoRoot, [string] $TagName)
     if ($TagName -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
