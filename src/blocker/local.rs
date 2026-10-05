@@ -479,7 +479,9 @@ fn read_unicode_property(event_record: &EVENT_RECORD, property_name: &str) -> Op
     }
 
     let utf16 = property_buffer
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
         .take_while(|value| *value != 0)
         .collect::<Vec<_>>();

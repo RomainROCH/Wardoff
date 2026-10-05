@@ -10,6 +10,9 @@ on:
       - dev
       - main
 
+permissions:
+  contents: read
+
 env:
   CARGO_TARGET_DIR: target
 
@@ -31,6 +34,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
 
       - name: Cache Cargo and target
         uses: actions/cache@v4
@@ -42,18 +46,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.rust }}-cargo-
 
-      - name: Cargo check
-        run: cargo check
+      - name: Full local checks
+        shell: pwsh
+        run: .\scripts\check.ps1 -Mode Full
 
-      - name: Cargo test
-        run: cargo test
+      - name: Developer tooling tests
+        shell: pwsh
+        run: .\tests\developer_checks.ps1
 
-      - name: Cargo build --release
-        run: cargo build --release
+      - name: Smoke safety tests
+        shell: pwsh
+        run: .\tests\smoke_safety.ps1
+
+      - name: Release guard tests
+        shell: pwsh
+        run: .\tests\release_guards.ps1
 
       - name: Smoke tests
         shell: pwsh
-        run: .\tests\smoke_test.ps1
+        run: |
+          $before = (Get-FileHash target/release/wardoff.exe -Algorithm SHA256).Hash
+          .\tests\smoke_test.ps1 -UseExistingBinary
+          if ($LASTEXITCODE -ne 0) { throw 'Smoke failed.' }
+          if ((Get-FileHash target/release/wardoff.exe -Algorithm SHA256).Hash -ne $before) {
+            throw 'Smoke changed the checked binary.'
+          }
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4
@@ -61,3 +78,4 @@ jobs:
           name: wardoff-windows-release
           path: target/release/wardoff.exe
           if-no-files-found: error
+          retention-days: 7

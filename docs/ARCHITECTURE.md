@@ -42,6 +42,22 @@ Owns application bootstrap and shutdown:
 
 This is the best entry point for understanding the whole runtime.
 
+`run_with_cleanup` always executes shutdown after the message loop returns,
+including a failed `WaitMessage`. It unregisters both callbacks and clears the
+application pointer before releasing runtime resources. If the loop and shutdown
+both fail, the returned error retains both causes. This closes the former early
+return that could leave callbacks pointing at a dropped application.
+
+### `src/runtime_policy.rs` (intentional responsibility extraction)
+
+Pure decisions formerly embedded in `main.rs` live together with their unit tests:
+startup mode and tray surface, secondary CLI-to-IPC mapping, pending wake restore,
+and the autostart checkbox fallback. This makes those rules discoverable and
+testable without navigating Win32 orchestration. The runtime behavior, protocol,
+thread ownership and effectful lifecycle remain unchanged; `main.rs` still applies
+the decisions. The empty `config.rs` placeholder was removed because it owned no
+configuration behavior.
+
 ### `src/blocker/`
 
 Contains the layered protection logic.
@@ -70,6 +86,10 @@ Contains the background tray thread and tray UI state management.
 - file rotation
 - recent-log tail reading for CLI output
 
+Tail requests are bounded by the [CLI contract](../README.md#usage).
+The reader grows its line buffer as it encounters records and uses fallible
+reservation, rather than allocating a caller-supplied capacity before reading.
+
 ### `src/ipc.rs`
 
 Contains the named-pipe IPC transport used by secondary commands to talk to the primary runtime.
@@ -86,6 +106,7 @@ Contains Task Scheduler integration for Start with Windows behavior.
 
 - `src/cli.rs` — argument parsing and status output
 - `src/windows_util.rs` — elevation checks, relaunch, and Windows-specific helpers
+- `src/session_scope.rs` — shared Windows session ID and mutex/pipe names
 - `build.rs` + `wardoff.manifest` — release-manifest embedding and requested execution level
 
 ## Core runtime object: `BlockerCoordinator`
@@ -259,7 +280,7 @@ The control pipe is now created with explicit local-only security instead of the
 - a medium-integrity mandatory label allows the same interactive Windows user to send control commands to an elevated primary runtime
 - if a caller still hits access denied, Wardoff maps that to a clear product message instead of returning a raw Win32 pipe error
 
-At the moment, the inactive `wardoff --status` path is intentionally conservative but slow: when no primary runtime is present, the client first retries the read-only status pipe and then retries the control pipe before concluding that Wardoff is inactive. Each pipe path currently uses 20 attempts with a 100 ms delay, so the fully inactive path accumulates to roughly 4 seconds before returning `{"state":"inactive"}`. This current delay comes from the sequential named-pipe retry loops, not from UAC.
+`handle_status_request` first probes the session mutex. If it can claim the primary instance, it releases that temporary claim and returns `{"state":"inactive"}` without connecting to either pipe. When the mutex is already occupied, it tries the read-only status pipe and then the control fallback. If both endpoints are unavailable, their sequential retries (20 attempts with a 100 ms delay per pipe) can still take roughly four seconds. That delay belongs to the occupied-mutex fallback, not the ordinary inactive path or UAC.
 
 ### Why the UI thread handles requests
 
@@ -431,7 +452,9 @@ That code exists and is wired in, but current top-level user-facing MVP docs del
 
 ## Suggested reading order for new developers
 
-If you are new to the codebase, read in this order:
+For a focused change, start with the
+[task-to-code map](DEVELOPMENT.md#task-to-code-map). For a full runtime walkthrough,
+read in this order:
 
 1. `src/main.rs`
 2. `src/blocker/mod.rs`

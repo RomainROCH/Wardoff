@@ -2,18 +2,17 @@
 
 This file is the repo-level status and roadmap summary for Wardoff.
 
-If you are new here, read in this order:
-
-1. `README.md` for the current user-facing MVP snapshot
-2. `PLAN.md` for current status, boundaries, and likely next work
-3. `docs/ARCHITECTURE.md` for the code map
-4. `CONTRIBUTING.md` and `.github/copilot-instructions.md` for workflow and scope guardrails
+For the product, start with [README.md](README.md). For development, use
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[task-to-code map](docs/DEVELOPMENT.md#task-to-code-map). Agents start at
+[AGENTS.md](AGENTS.md). This plan owns scope and priorities, not setup commands.
 
 For monetization, sponsorship, signed-binary, paid-support, or broader commercialization decisions, follow `docs/BUSINESS_MODEL.md` rather than inferring policy from engineering docs.
 
 ## Current repository status
 
-Wardoff is currently a shipped, source-first **0.1.0-style MVP** for Windows.
+Wardoff is a source-first Windows MVP. [Cargo.toml](Cargo.toml) owns the current
+package version; the scope below describes supported behavior, not release status.
 
 The branch already contains a working runtime plus CLI centered on one main promise: keep a machine in a visible **Block** state using conservative, documented Windows techniques where possible.
 
@@ -58,7 +57,7 @@ Keep improving confidence in the features that already exist:
 - tighten documentation around actual runtime behavior and limits
 - improve manual validation guidance for shutdown, sign-out, sleep, hibernate, remote shutdown, autostart, and elevation-sensitive paths
 - fix bugs or rough edges in tray, IPC, logging, and Task Scheduler flows
-- reduce the current roughly 4-second inactive `wardoff --status` path caused by sequential IPC retry loops
+- reduce status fallback latency when the session mutex is occupied but both IPC endpoints are unavailable (up to roughly four seconds of sequential retries); the ordinary inactive path already returns without pipe retries
 - keep admin versus non-admin behavior explicit
 - keep LTSC-style Layer 3 skip behavior documented as normal when the UpdateOrchestrator reboot task is absent
 

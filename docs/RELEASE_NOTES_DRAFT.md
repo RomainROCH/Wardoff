@@ -1,44 +1,41 @@
-# Wardoff v0.2.0 (draft, unreleased)
+# Wardoff v0.2.1 (draft, unreleased)
 
-> Draft only — this version has not shipped yet.
+This candidate has not been published. The tag workflow prepares a draft only
+after validation; a maintainer must review and publish it separately.
 
-## What's new since v0.1.0-mvp
+## Changes since v0.2.0
 
-### Fixed
-- Fixed non-elevated CLI launch paths so read-only commands behave like normal PowerShell and console commands, with more honest exit codes and status output.
-- Fixed status and control IPC edge cases across elevation boundaries, including same-user control-pipe access, mutex access-denied handling, and inactive/handoff reporting.
-- Fixed tray/runtime rough edges around delayed startup, secondary handoff recovery, wake-capable tray actions, allow-mode teardown, and recovery-failure reporting.
-- Fixed autostart tray sync wording so admin-only behavior is reported honestly.
-- Fixed Block mode not restoring after tray-initiated sleep/hibernate wake.
-- Resolved the five original pre-release security blockers: writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex exposure, and WM_ENDSESSION spoofing. Same-session mutex hardening remains local follow-up work.
+- Bound each newline-terminated control request to 4096 wire bytes and one total
+  second. Malformed, oversized, incomplete and disconnected clients cannot hold
+  the control reader indefinitely; status remains independently available.
+- Use process-owned system/display Power Requests for idle-power protection.
+  Report activation errors synchronously, release on Allow/exit, and renew after
+  the existing resume notification. Explicit Sleep/Hibernate are not vetoed.
+- Fix autostart access checks to use identification tokens. Keep the existing
+  trusted-path and same-user/elevation boundaries.
+- Reject excessive log-tail requests with a readable error and bound allocation.
+  Clean up runtime resources when the Windows message loop fails.
+- Isolate Windows smoke cleanup, consolidate developer instructions and checks,
+  and validate release provenance, versions and the exact binary before creating
+  a draft. No automatic public release or signing is added.
 
-### Improved
-- Added best-effort internal Layer 2 local `shutdown.exe` detection and abort handling in Block mode, while keeping it out of headline MVP claims and documenting the limits conservatively.
-- Improved Windows launch UX so long-lived runtime launches detach more cleanly from shell sessions and background startup behaves more predictably.
-- Hardened the release manifest and non-elevating read-only CLI dispatch to reduce privilege surprises and keep read-only flows safer.
-- Tightened smoke and validation coverage for read-only CLI paths and process cleanup timing.
-- Added internal security audit (docs/SECURITY_AUDIT.md).
-- Console window no longer flashes on startup.
+## Validation and limits
 
-### Documentation
-- Added GitHub issue forms for bug reports, compatibility reports, documentation issues, and feature requests.
-- Added `docs/MVP_VALIDATION_MATRIX.md` and expanded manual validation guidance for tray behavior, Explorer restart recovery, handoff cases, and admin-only paths.
-- Refreshed README, contributing guidance, shutdown-layer docs, CLI exit-code docs, and repo guidance to better reflect the current conservative MVP surface.
-- Cleaned up repo documentation links and removed the old session-tracker status file.
+The draft includes `build-info.json` and `SHA256SUMS.txt` for its exact unsigned
+MSVC binary and the Windows workflow run. Review the run and its explicit smoke
+skips before publishing. A green run on another commit is not release evidence.
 
-## Known limits
-- Layer 3 (UpdateOrchestrator) is automatically skipped on LTSC editions that lack the `UpdateOrchestrator\Reboot` scheduled task. This is normal.
-- Idle-power requests support S3 and Modern Standby, subject to Windows power policy. Explicit Sleep/Hibernate, lid and power-button actions are not vetoed. Hardware sleep behavior must be tested on a capable machine; VM request visibility alone is not proof.
-- `shutdown /t 0 /f` is not guaranteed blockable. This is a Windows limitation, not a Wardoff bug.
-- The product is source-first: no installer, no package manager distribution yet
+- Disposable-VM idle-power results are recorded in
+  [IDLE_POWER_VALIDATION.md](IDLE_POWER_VALIDATION.md); physical S3/monitor,
+  Hibernate and Modern Standby acceptance remains incomplete.
+- Missing UpdateOrchestrator Reboot tasks and unavailable interactive linked
+  tokens cause documented smoke skips, not successful coverage of those paths.
+- Same-session mutex denial of service, the status pipe DACL and other residual
+  local hardening debt remain documented in [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+- Forced zero-second shutdown and explicit power actions are not guaranteed
+  blockable. This remains a source-first utility for self-administered machines.
+- Official signed downloads and paid support are not available. The source
+  remains MIT and support remains community-only.
 
-## How to test
-- Clone the repo and run `cargo build --release`
-- Binary: `target\release\wardoff.exe`
-- Requires Windows 10 or later
-- Some features require admin rights (layers 2-4, autostart)
-
-## How to report issues
-- Bugs: use the bug report issue form
-- Compatibility: use the compatibility report form
-- Questions and feedback: use GitHub Discussions
+The resource benchmark retained in the repository covers its dated v0.2.0
+artifact; it has not been rerun or requalified for this candidate.

@@ -1,0 +1,32 @@
+﻿{
+    "startedUtc":  "2026-09-29T01:38:30.4908143Z",
+    "seconds":  300,
+    "warmupSeconds":  30,
+    "repeats":  3,
+    "admin":  true,
+    "cpu":  [
+                {
+                    "Name":  "Intel(R) Core(TM) i7-6700HQ CPU @ 2.60GHz",
+                    "NumberOfCores":  4,
+                    "NumberOfLogicalProcessors":  8
+                }
+            ],
+    "os":  {
+               "Caption":  "Microsoft Windows 11 IoT Enterprise LTSC",
+               "Version":  "10.0.26100",
+               "BuildNumber":  "26100",
+               "TotalVisibleMemorySize":  16637696
+           },
+    "logicalProcessors":  8,
+    "powerPlan":  "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+    "binarySha256":  "96D1700C492B1689E6CB3A18847481EB9A203E30DB4D4BA273D4B458ED6A84BC",
+    "version":  "0.2.0",
+    "releaseTag":  "v0.2.0",
+    "releaseCommit":  "9f6c0375c851d0a5b933da0bd69bafc75b215cf5",
+    "mainCommit":  "aa40e8982273fa66b86b806ec1424a547affdbd3",
+    "cpuDefinition":  "100 * process CPU seconds / actual elapsed seconds / logical processors",
+    "ramUnit":  "MiB = 1048576 bytes",
+    "ioDefinition":  "Process I/O includes file/device/network operations, not physical disk traffic",
+    "p95Definition":  "nearest rank",
+    "collectorPid":  16356
+}

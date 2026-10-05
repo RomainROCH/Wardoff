@@ -1,0 +1,12 @@
+﻿{
+    "state":  "block",
+    "layers":  {
+                   "shutdown":  true,
+                   "local_shutdown":  true,
+                   "update":  false,
+                   "remote":  true,
+                   "sleep":  true
+               },
+    "uptime_seconds":  333,
+    "blocked_count":  0
+}

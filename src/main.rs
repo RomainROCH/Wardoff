@@ -1,10 +1,16 @@
+//! Process dispatch and effectful runtime orchestration.
+//!
+//! Start at `run_main` for CLI dispatch, `bootstrap`/`run` for lifecycle, and
+//! `Application` for IPC/tray effects. Pure decisions live in `runtime_policy`.
+//! See docs/DEVELOPMENT.md for task-specific entrypoints and validation.
+
 mod autostart;
 mod blocker;
 mod cli;
-mod config;
 mod instance;
 mod ipc;
 mod logger;
+mod runtime_policy;
 mod session_scope;
 mod tray;
 mod windows_util;
@@ -18,9 +24,14 @@ use crate::instance::{
 };
 use crate::ipc::{
     read_status, send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest,
-    PipeMode, IPC_WAKE_MESSAGE,
+    IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
+use crate::runtime_policy::{
+    ipc_request_for, pending_wake_restore_for_tray_power_action,
+    pending_wake_restore_ready_for_resume, resolved_autostart_state_for_tray, runtime_options_for,
+    PendingWakeRestore, RuntimeOptions, TraySurface,
+};
 use crate::tray::{
     spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility, TRAY_ACTION_WAKE_MESSAGE,
 };
@@ -44,6 +55,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
 const ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY: Duration = Duration::from_millis(100);
 
+// Callback bridge for the Win32 message loop on the application thread. `run`
+// registers it only while its local Application is alive and clears callbacks
+// before ordinary cleanup. Never dereference it from a background worker.
 static ACTIVE_APPLICATION: AtomicPtr<Application> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Coordinates CLI, tray, and blocker scaffolding for the Wardoff binary.
@@ -56,38 +70,6 @@ struct Application {
     forced_shutdown_cleanup_completed: bool,
     pending_block_restore_after_wake: Option<PendingWakeRestore>,
     _primary_instance: InstanceGuard,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TraySurface {
-    Visible,
-    Hidden,
-    Headless,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RuntimeOptions {
-    initial_mode: BlockerMode,
-    tray_surface: TraySurface,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PendingWakeRestore {
-    PendingSuspend(PowerAction),
-    WaitingForResume(PowerAction),
-}
-
-impl PendingWakeRestore {
-    fn action(self) -> PowerAction {
-        match self {
-            PendingWakeRestore::PendingSuspend(action)
-            | PendingWakeRestore::WaitingForResume(action) => action,
-        }
-    }
-
-    fn mark_system_suspended(self) -> Self {
-        PendingWakeRestore::WaitingForResume(self.action())
-    }
 }
 
 /// Bootstraps logging, the central state manager, and the tray surface.
@@ -157,12 +139,44 @@ fn bootstrap(
     Ok(application)
 }
 
+/// Runs an operation and always runs its cleanup, preserving both failures when needed.
+fn run_with_cleanup<T, Loop, Cleanup>(
+    state: &mut T,
+    loop_fn: Loop,
+    cleanup_fn: Cleanup,
+) -> Result<(), Box<dyn Error>>
+where
+    Loop: FnOnce(&mut T) -> Result<(), Box<dyn Error>>,
+    Cleanup: FnOnce(&mut T) -> Result<(), Box<dyn Error>>,
+{
+    let loop_result = loop_fn(state);
+    let cleanup_result = cleanup_fn(state);
+
+    match (loop_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(loop_error), Ok(())) => Err(loop_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(loop_error), Err(cleanup_error)) => Err(Box::new(other_error(format!(
+            "runtime loop failed: {loop_error}; cleanup failed: {cleanup_error}"
+        )))),
+    }
+}
+
 /// Runs the shared Win32 event loop for the hidden Layer 1 windows and the tray icon.
 fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
     ACTIVE_APPLICATION.store(&mut application as *mut Application, Ordering::Release);
     blocker::shutdown::set_end_session_cleanup_callback(forced_shutdown_cleanup_callback);
     blocker::shutdown::set_power_broadcast_callback(power_broadcast_callback);
 
+    run_with_cleanup(&mut application, run_message_loop, |application| {
+        blocker::shutdown::clear_end_session_cleanup_callback();
+        blocker::shutdown::clear_power_broadcast_callback();
+        ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
+        application.shutdown()
+    })
+}
+
+fn run_message_loop(application: &mut Application) -> Result<(), Box<dyn Error>> {
     let mut message = MSG::default();
 
     'message_loop: loop {
@@ -197,11 +211,6 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
 
         unsafe { WaitMessage()? };
     }
-
-    blocker::shutdown::clear_end_session_cleanup_callback();
-    blocker::shutdown::clear_power_broadcast_callback();
-    ACTIVE_APPLICATION.store(std::ptr::null_mut(), Ordering::Release);
-    application.shutdown()?;
     Ok(())
 }
 
@@ -518,50 +527,6 @@ where
             ))),
         },
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
-    }
-}
-
-fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
-    match action {
-        RequestedAction::Default => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Visible,
-        },
-        RequestedAction::Block => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Headless,
-        },
-        RequestedAction::Allow => RuntimeOptions {
-            initial_mode: BlockerMode::Allow,
-            tray_surface: TraySurface::Visible,
-        },
-        RequestedAction::Hide => RuntimeOptions {
-            initial_mode: BlockerMode::Block,
-            tray_surface: TraySurface::Hidden,
-        },
-        RequestedAction::Autostart { .. } => {
-            unreachable!("autostart changes do not start the primary runtime")
-        }
-        RequestedAction::Status | RequestedAction::Log { .. } => {
-            unreachable!("read-only CLI actions never start the runtime")
-        }
-    }
-}
-
-fn ipc_request_for(action: RequestedAction) -> IpcRequest {
-    match action {
-        RequestedAction::Default | RequestedAction::Block | RequestedAction::Hide => {
-            IpcRequest::SetMode {
-                mode: PipeMode::Block,
-            }
-        }
-        RequestedAction::Allow => IpcRequest::SetMode {
-            mode: PipeMode::Allow,
-        },
-        RequestedAction::Autostart { enabled } => IpcRequest::SetAutostart { enabled },
-        RequestedAction::Status | RequestedAction::Log { .. } => {
-            unreachable!("read-only CLI actions do not use the control IPC request helper")
-        }
     }
 }
 
@@ -1252,118 +1217,92 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
     }
 }
 
-fn pending_wake_restore_for_tray_power_action(
-    previous_mode: BlockerMode,
-    action: PowerAction,
-) -> Option<PendingWakeRestore> {
-    match (previous_mode, action) {
-        (BlockerMode::Block, PowerAction::Sleep) => {
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
-        }
-        (BlockerMode::Block, PowerAction::Hibernate) => {
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
-        }
-        _ => None,
-    }
-}
-
-fn pending_wake_restore_ready_for_resume(
-    pending_restore: Option<PendingWakeRestore>,
-) -> Option<PowerAction> {
-    // Windows can deliver a resume notification to this runtime without an earlier
-    // suspend broadcast reaching the hidden window, so any queued tray wake-restore
-    // must still restore Block mode on resume even if Wardoff never observed suspend.
-    match pending_restore {
-        Some(PendingWakeRestore::PendingSuspend(action))
-        | Some(PendingWakeRestore::WaitingForResume(action)) => Some(action),
-        _ => None,
-    }
-}
-
-fn resolved_autostart_state_for_tray(
-    previous_state: Option<bool>,
-    actual_state: Result<bool, String>,
-) -> Result<bool, String> {
-    match actual_state {
-        Ok(actual_state) => Ok(actual_state),
-        Err(error) => previous_state.ok_or(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        pending_wake_restore_for_tray_power_action, pending_wake_restore_ready_for_resume,
-        resolved_autostart_state_for_tray, BlockerMode, PendingWakeRestore, PowerAction,
-    };
+    use super::run_with_cleanup;
+    use std::error::Error;
+    use std::io;
 
     #[test]
-    fn prefers_current_autostart_state_when_available() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(Some(false), Ok(true)),
-            Ok(true)
+    fn run_with_cleanup_returns_success_after_normal_loop_and_cleanup() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Ok::<(), Box<dyn Error>>(())
+            },
+            |events| {
+                events.push("cleanup");
+                Ok::<(), Box<dyn Error>>(())
+            },
         );
+
+        assert!(result.is_ok());
+        assert_eq!(events, ["loop", "cleanup"]);
     }
 
     #[test]
-    fn falls_back_to_previous_autostart_state_when_reread_fails() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(Some(false), Err("read failed".to_string())),
-            Ok(false)
+    fn run_with_cleanup_runs_cleanup_after_loop_error() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("loop error")))
+            },
+            |events| {
+                events.push("cleanup");
+                Ok::<(), Box<dyn Error>>(())
+            },
         );
+
+        assert_eq!(result.unwrap_err().to_string(), "loop error");
+        assert_eq!(events, ["loop", "cleanup"]);
     }
 
     #[test]
-    fn preserves_unknown_autostart_state_when_reads_fail() {
-        assert_eq!(
-            resolved_autostart_state_for_tray(None, Err("read failed".to_string())),
-            Err("read failed".to_string())
+    fn run_with_cleanup_propagates_shutdown_error() {
+        let mut events = Vec::new();
+
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Ok::<(), Box<dyn Error>>(())
+            },
+            |events| {
+                events.push("shutdown");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("shutdown error")))
+            },
         );
+
+        assert_eq!(result.unwrap_err().to_string(), "shutdown error");
+        assert_eq!(events, ["loop", "shutdown"]);
     }
 
     #[test]
-    fn only_block_mode_sleep_and_hibernate_queue_restore_after_wake() {
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Sleep),
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Sleep))
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Hibernate),
-            Some(PendingWakeRestore::PendingSuspend(PowerAction::Hibernate))
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Allow, PowerAction::Sleep),
-            None
-        );
-        assert_eq!(
-            pending_wake_restore_for_tray_power_action(BlockerMode::Block, PowerAction::Shutdown),
-            None
-        );
-    }
+    fn run_with_cleanup_preserves_both_errors_in_order() {
+        let mut events = Vec::new();
 
-    #[test]
-    fn pending_restore_marks_suspend_and_preserves_requested_action() {
-        let pending = PendingWakeRestore::PendingSuspend(PowerAction::Hibernate);
-        assert_eq!(
-            pending.mark_system_suspended(),
-            PendingWakeRestore::WaitingForResume(PowerAction::Hibernate)
+        let result = run_with_cleanup(
+            &mut events,
+            |events| {
+                events.push("loop");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("loop error")))
+            },
+            |events| {
+                events.push("shutdown");
+                Err::<(), Box<dyn Error>>(Box::new(io::Error::other("shutdown error")))
+            },
         );
-        assert_eq!(pending.action(), PowerAction::Hibernate);
-    }
 
-    #[test]
-    fn resume_restores_block_mode_even_if_suspend_was_not_observed() {
         assert_eq!(
-            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::PendingSuspend(
-                PowerAction::Sleep
-            ))),
-            Some(PowerAction::Sleep)
+            result.unwrap_err().to_string(),
+            "runtime loop failed: loop error; cleanup failed: shutdown error"
         );
-        assert_eq!(
-            pending_wake_restore_ready_for_resume(Some(PendingWakeRestore::WaitingForResume(
-                PowerAction::Sleep
-            ))),
-            Some(PowerAction::Sleep)
-        );
+        assert_eq!(events, ["loop", "shutdown"]);
     }
 }

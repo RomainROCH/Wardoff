@@ -1,0 +1,12 @@
+﻿{
+    "state":  "allow",
+    "layers":  {
+                   "shutdown":  false,
+                   "local_shutdown":  false,
+                   "update":  false,
+                   "remote":  false,
+                   "sleep":  false
+               },
+    "uptime_seconds":  32,
+    "blocked_count":  0
+}

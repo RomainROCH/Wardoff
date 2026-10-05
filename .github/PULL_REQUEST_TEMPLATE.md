@@ -4,14 +4,14 @@
 
 ## How it was tested
 
-- [ ] `cargo check` passes
-- [ ] `cargo test` passes
-- [ ] `cargo build --release` passes
-- [ ] `tests/smoke_test.ps1` passes (with expected admin-only skips)
+- [ ] `scripts/check.ps1 -Mode Full` passes for Rust changes (or `-Mode Docs` for docs only)
+- [ ] `tests/developer_checks.ps1` passes if developer tooling changed
+- [ ] `tests/smoke_safety.ps1` passes if smoke setup or cleanup changed
+- [ ] Relevant smoke/manual checks run in an isolated environment, or skips explained
 - [ ] Docs updated if behavior changed
 
 ## Checklist
 
-- [ ] Branch created from `dev`
-- [ ] No changes to `docs/ARCHITECTURE.md` without explicit approval
-- [ ] No changes to `docs/BUSINESS_MODEL.md` without explicit approval
+- [ ] Base branch stated; intended integration target follows CONTRIBUTING.md
+- [ ] Intentional architecture changes include rationale; unrelated drift is reported
+- [ ] Business-model changes reflect an explicit maintainer decision

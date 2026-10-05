@@ -149,7 +149,7 @@ This section tracks when to reassess or add new monetization elements.
 
 ## What this document does NOT cover
 
-- Technical architecture (see `ARCHITECTURE.md`)
-- Product roadmap and feature scope (see `../PLAN.md`)
-- Community outreach strategy (see `EARLY_ADOPTER_OUTREACH_PLAN.md`)
-- Manual validation (see `MVP_VALIDATION_MATRIX.md` and `MANUAL_VALIDATION_PLAN.md`)
+- Technical architecture (see [Architecture](ARCHITECTURE.md))
+- Product roadmap and feature scope (see [Plan](../PLAN.md))
+- Community outreach copy (see the unpublished [Outreach drafts](OUTREACH_DRAFTS.md))
+- Manual validation (see [MVP validation matrix](MVP_VALIDATION_MATRIX.md))

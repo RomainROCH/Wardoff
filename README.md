@@ -9,6 +9,28 @@
 
 Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
+## Measured resource usage
+
+Wardoff is lightweight while protecting a machine in the background. In our
+v0.2.0 benchmark on an Intel Core i7-6700HQ running Windows 11 IoT Enterprise
+LTSC, Block mode averaged approximately **14 MiB of resident memory** and
+**less than 0.01% total-machine CPU** across three five-minute background runs.
+CPU is normalized across all eight logical processors.
+
+| Mean process resource usage | Allow | Block |
+|---|---:|---:|
+| Resident memory / Working Set (MiB) | 12.57 | 13.95 |
+| Private committed memory (MiB) | 1.96 | 3.25 |
+| CPU (% of total machine capacity) | 0.0024% | 0.0050% |
+
+The [dated benchmark evidence](docs/benchmarks/2026-09-29-v0.2.0/README.md)
+includes the protocol, 2,700 raw samples, system information, tested binary
+hash, per-run statistics, limitations, and an integrity/reproduction checker.
+These are measurements on **one machine**, not universal guarantees. The
+UpdateOrchestrator Reboot task was absent, so its protection layer was inactive.
+Actual shutdown blocking, startup cost, heavy command workloads, battery use,
+and long-term memory growth were not tested.
+
 ## Current MVP status
 
 Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level capabilities:
@@ -25,16 +47,13 @@ Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level
 
 ## Documentation entrypoints
 
-If you are brand-new to the repo, read these in order:
-
-1. **`README.md`** - current user-facing MVP snapshot
-2. **[`PLAN.md`](PLAN.md)** - current status, boundaries, and prioritized next steps
-3. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** - where the runtime pieces live in code
-4. **[`docs/BUSINESS_MODEL.md`](docs/BUSINESS_MODEL.md)** - source of truth for monetization, signed binaries, sponsorship, consulting/support, and commercialization decisions
-5. **[`docs/WINDOWS_SHUTDOWN_LAYERS.md`](docs/WINDOWS_SHUTDOWN_LAYERS.md)** - detailed shutdown-layer behavior, including Layer 2 ETW/local-shutdown nuances and limits
-6. **[`docs/MVP_VALIDATION_MATRIX.md`](docs/MVP_VALIDATION_MATRIX.md)** - acceptance and validation guide covering smoke coverage, tray and Explorer-restart checks, handoff-focused spot checks, and admin-only validation
-7. **[`CONTRIBUTING.md`](CONTRIBUTING.md)** - workflow, testing, and documentation guardrails
-8. **[`.github/copilot-instructions.md`](.github/copilot-instructions.md)** - agent-specific read order and scope rules
+- **Using Wardoff:** continue with installation and usage below.
+- **Developing Wardoff:** start with [CONTRIBUTING.md](CONTRIBUTING.md), then the
+  [development guide](docs/DEVELOPMENT.md) for task-to-code routing and checks.
+- **Working as an agent:** start with [AGENTS.md](AGENTS.md); it uses the same
+  workflow and documentation as human contributors.
+- **Finding a specific topic:** use the [documentation index](docs/README.md).
+- **Choosing the next product change:** read [PLAN.md](PLAN.md).
 
 ## Not implemented yet
 
@@ -144,8 +163,9 @@ wardoff --version
 - `wardoff --status` prints compact JSON for scripts
 - `wardoff --log` prints recent structured log entries
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
+- `--tail` accepts 0 through 100000 lines; larger values return a readable error without allocating the requested capacity
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
-- `wardoff --version` prints the package version, for example `wardoff 0.1.0`
+- `wardoff --version` prints the package version as `wardoff <version>`
 - direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
 Read-only commands stay non-elevated:
@@ -154,7 +174,7 @@ Read-only commands stay non-elevated:
 - `--status` reads status through the dedicated session-scoped `WardoffStatus` named pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
-- today, `--status` can still take a few seconds to return `{"state":"inactive"}` when no primary runtime is running; when a runtime is active, the status-pipe path should return quickly
+- when no primary runtime owns the session mutex, `--status` returns `{"state":"inactive"}` without retrying the pipes; if the mutex is occupied but both IPC endpoints are unavailable, the fallback retries can still take about four seconds
 
 State-changing/default behavior uses the normal runtime path:
 

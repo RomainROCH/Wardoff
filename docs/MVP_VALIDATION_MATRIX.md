@@ -2,6 +2,15 @@
 
 Use this as the MVP acceptance checklist for Wardoff as it exists today. It keeps automated coverage, manual spot checks, admin-only validation, and disruptive VM-only checks separate.
 
+For everyday development, use the [local check commands](DEVELOPMENT.md#validation).
+The smoke suite is state-changing: it starts protection, writes real logs and
+may modify scheduled tasks. It refuses a runtime already present in the current
+session or a pre-existing Wardoff autostart task, and only stops processes it
+started. Use an isolated Windows test environment even when not requesting a
+shutdown or suspend; preflight checks cannot prevent concurrent external changes.
+Run [smoke_safety.ps1](../tests/smoke_safety.ps1) to check those guards with fakes
+without changing the live session.
+
 ## Scope and honesty rules
 
 This matrix covers only the current MVP surface:
@@ -27,7 +36,7 @@ Keep validation language conservative:
 | Area | Notes |
 | --- | --- |
 | OS | Windows 10 or Windows 11 |
-| Build target | `cargo build --release` then validate `target\release\wardoff.exe` |
+| Build target | `cargo build --release --locked` then validate `target\release\wardoff.exe` |
 | Logs | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` |
 | Admin rights | Required for Layer 3, Layer 4, Update Orchestrator task checks, and autostart task changes |
 | Trusted install path | Required if you expect `wardoff --autostart on` to create or update the `Wardoff` task; from an untrusted or user-writable path Wardoff should refuse safely and leave the scheduled-task state unchanged |
@@ -37,7 +46,7 @@ Keep validation language conservative:
 
 | Check | What the script proves today | Admin needed |
 | --- | --- | --- |
-| Release build | `cargo build --release` succeeds | No |
+| Release build | `cargo build --release --locked` succeeds | No |
 | Release artifact | `target\release\wardoff.exe` exists | No |
 | CLI help | `wardoff --help` exits `0` and mentions `wardoff` | No |
 | CLI version | `wardoff --version` exits `0` and prints the package version | No |
