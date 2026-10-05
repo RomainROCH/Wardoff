@@ -3,8 +3,8 @@ Set-StrictMode -Version Latest
 
 function ConvertFrom-ReleaseApiJson {
     param([Parameter(Mandatory = $true)][string] $Json)
-    # PowerShell 7.5+ otherwise converts ISO dates to DateTime. Keep the GitHub
-    # timestamp text intact for the strict UTC check and rerun comparison.
+    # Supported API hosts: Windows PowerShell 5.1 or PowerShell 7.5+. The latter
+    # needs DateKind to keep timestamp text for the strict UTC/rerun checks.
     $jsonOptions = @{}
     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
         $jsonOptions.DateKind = 'String'

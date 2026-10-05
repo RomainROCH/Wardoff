@@ -43,6 +43,11 @@ only after it succeeds; there is no bypass or polling service.
 ## What the workflow does
 
 [release.yml](../.github/workflows/release.yml) uses two standard Windows jobs.
+The release API driver supports Windows PowerShell 5.1 and PowerShell 7.5+;
+PowerShell 6 through 7.4 are not supported by that driver and fail closed on
+converted timestamps. The newer host uses `ConvertFrom-Json -DateKind String`
+to preserve the UTC evidence, as described in the
+[PowerShell reference](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/convertfrom-json#-datekind).
 The validation job has only `contents: read` and `actions: read`. It validates
 provenance and versions, runs Full checks, developer fixtures, smoke safety and
 release guards, then the state-changing Windows smoke in the disposable hosted
