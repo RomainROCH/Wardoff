@@ -13,19 +13,19 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::mem::size_of;
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Sender},
     Arc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
-    HLOCAL, LPARAM, WPARAM,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE,
+    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_PATH_NOT_FOUND,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WPARAM,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -35,12 +35,12 @@ use windows::Win32::Security::{
     TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+    ReadFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
     PIPE_ACCESS_OUTBOUND,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE,
+    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
@@ -48,6 +48,10 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
 const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
+// Includes the terminating newline; all current control commands are much smaller.
+const MAX_REQUEST_BYTES: usize = 4096;
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(1);
+const REQUEST_READ_POLL_DELAY: Duration = Duration::from_millis(10);
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
 const INITIAL_PIPE_CLAIM_ATTEMPTS: usize = 10;
@@ -903,20 +907,95 @@ fn is_retryable_initial_pipe_claim_error(error_code: u32) -> bool {
 }
 
 fn read_request(pipe: &mut File) -> Result<IpcRequest, String> {
-    let mut request_line = String::new();
-    let bytes_read = {
-        let mut reader = BufReader::new(pipe);
-        reader
-            .read_line(&mut request_line)
-            .map_err(|error| format!("Wardoff could not read an IPC request: {error}"))?
-    };
+    // Nonblocking byte reads also handle a JSON line split across pipe messages.
+    // The pipe is owned by this server thread; no helper thread or pending I/O survives a timeout.
+    let handle = HANDLE(pipe.as_raw_handle());
+    let read_mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    unsafe { SetNamedPipeHandleState(handle, Some(&read_mode), None, None) }
+        .map_err(|error| format!("Wardoff could not bound its IPC request read: {error}"))?;
 
-    if bytes_read == 0 {
-        return Err("Wardoff received an empty IPC request.".to_string());
+    let result = read_request_until_deadline(pipe);
+    // Valid commands keep the existing reply behavior. Rejections remain nonblocking:
+    // a client that never reads its error reply must not stall the next accept either.
+    if result.is_ok() {
+        let reply_mode = PIPE_READMODE_MESSAGE | PIPE_WAIT;
+        unsafe { SetNamedPipeHandleState(handle, Some(&reply_mode), None, None) }
+            .map_err(|error| format!("Wardoff could not restore its IPC reply mode: {error}"))?;
     }
+    result
+}
 
-    serde_json::from_str(request_line.trim_end())
-        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))
+fn read_request_until_deadline(pipe: &mut File) -> Result<IpcRequest, String> {
+    let deadline = Instant::now() + REQUEST_READ_TIMEOUT;
+    let mut request_line = Vec::with_capacity(MAX_REQUEST_BYTES);
+    loop {
+        if Instant::now() >= deadline {
+            return Err("Wardoff timed out reading an IPC request.".to_string());
+        }
+
+        let mut buffer = [0; 512];
+        let mut bytes_read = 0;
+        // std::fs::File::read maps ERROR_NO_DATA to EOF on Windows. Preserve that
+        // Win32 result here so an idle connected client really waits for the deadline.
+        let read = unsafe {
+            ReadFile(
+                HANDLE(pipe.as_raw_handle()),
+                Some(&mut buffer),
+                Some(&mut bytes_read),
+                None,
+            )
+        };
+        let error_code = unsafe { GetLastError() };
+        match read {
+            Ok(()) if bytes_read == 0 => {
+                return Err(incomplete_request_error(request_line.is_empty()))
+            }
+            Ok(()) => {
+                let bytes_read = bytes_read as usize;
+                let newline = buffer[..bytes_read].iter().position(|byte| *byte == b'\n');
+                let line_bytes = newline.map_or(bytes_read, |position| position + 1);
+                if request_line.len() + line_bytes > MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+                request_line.extend_from_slice(&buffer[..line_bytes]);
+                if newline.is_some() {
+                    let line = std::str::from_utf8(&request_line)
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))?;
+                    if line.trim().is_empty() {
+                        return Err("Wardoff received an empty IPC request.".to_string());
+                    }
+                    return serde_json::from_str(line.trim_end())
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"));
+                }
+                // A full buffer without a newline cannot complete within the frame limit.
+                if request_line.len() == MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+            }
+            Err(_) if error_code == ERROR_NO_DATA => {
+                // One absolute deadline, not a fresh timeout for every arriving byte.
+                thread::sleep(
+                    REQUEST_READ_POLL_DELAY.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(_) if error_code == ERROR_BROKEN_PIPE => {
+                return Err(incomplete_request_error(request_line.is_empty()));
+            }
+            Err(error) => return Err(format!("Wardoff could not read an IPC request: {error}")),
+        }
+    }
+}
+
+fn incomplete_request_error(empty: bool) -> String {
+    if empty {
+        "Wardoff received an empty IPC request.".to_string()
+    } else {
+        "Wardoff received an IPC request without a terminating newline.".to_string()
+    }
 }
 
 fn write_response(pipe: &mut File, response: &IpcResponse) -> Result<(), String> {
