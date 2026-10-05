@@ -4,7 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+Target version: `0.2.1`. This is a local candidate, not a published release.
+
 ### Changed
+- Gate release tags on matching package/lock/manifest versions, main-branch provenance and successful Windows checks for the exact commit. Build and transfer the same checked binary into a draft only; publication remains manual.
+- Bound newline-terminated control IPC requests to 4096 bytes and one total second, preserving independent status availability and rejection/recovery behavior.
+- Validate autostart path access with identification tokens, and record disposable-VM idle-power acceptance without claiming physical hardware coverage.
 - Bounded `--log --tail N` to 100000 lines and made line-buffer reservation incremental and fallible, so extreme values return a readable error instead of a capacity-overflow panic.
 - Ensure the runtime unregisters callbacks and shuts down its resources even when the Windows message loop fails; preserve both errors if cleanup also fails.
 - Make the Windows smoke suite refuse existing runtime/autostart state and restrict cleanup to resources created by the test.
@@ -12,6 +17,10 @@ All notable changes to this project will be documented in this file.
 - Replaced the sleep layer's periodic `SetThreadExecutionState` worker with owned system/display Power Requests and an identifiable Wardoff reason. Activation failures now reach the coordinator synchronously, and Allow/exit release the request object.
 - Kept the existing tray wake-restore flow and added only a request-pair renewal to the existing resume callback when the runtime remains in Block, based on the documented termination of requests at user-initiated sleep. No additional resume state machine, display notifications or polling was introduced.
 - Corrected sleep claims throughout maintained docs, CLI help and runtime logs: protection concerns idle sleep and automatic display timeout, subject to Windows policy. Explicit Sleep/Hibernate are not vetoed; Modern Standby on battery has additional limits. The original v0.1.0 hibernation claim below was too broad.
+
+## [0.2.0] - 2026-05-03
+
+### Changed
 - Hardened the session-scoped `WardoffControl` and `WardoffStatus` pipes against same-session squatting by claiming first pipe instances with bounded startup retries, failing closed until both IPC servers own their initial instances, and probing the singleton before `wardoff --status` opens IPC endpoints.
 - Scoped the singleton mutex plus the `WardoffControl` and `WardoffStatus` named pipes to the current Windows session so cross-session mutex or pipe squatting no longer breaks Wardoff's single-instance model across all sessions.
 - Hardened structured JSONL logging under `%LOCALAPPDATA%\Wardoff\logs` so Wardoff now creates its managed log directories one component at a time, refuses reparse points in the managed log tree and rotated files, and uses reparse-aware no-follow opens for active and read-only log file access.

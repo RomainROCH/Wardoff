@@ -9,7 +9,7 @@ development use scripts/check.ps1 instead.
 See docs/MVP_VALIDATION_MATRIX.md for coverage and manual acceptance.
 #>
 [CmdletBinding()]
-param()
+param([switch] $UseExistingBinary)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -561,85 +561,7 @@ function Get-RepoWardoffProcesses {
     )
 }
 
-function Get-EmbeddedManifestContent {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
 
-    if (-not ('Wardoff.ManifestReader' -as [type])) {
-        Add-Type @"
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-
-namespace Wardoff {
-    public static class ManifestReader {
-        private const uint LOAD_LIBRARY_AS_DATAFILE = 0x00000002;
-        private static readonly IntPtr ManifestResourceId = new IntPtr(1);
-        private static readonly IntPtr ManifestResourceType = new IntPtr(24);
-
-        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        private static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr FindResource(IntPtr hModule, IntPtr lpName, IntPtr lpType);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr LoadResource(IntPtr hModule, IntPtr hResInfo);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr LockResource(IntPtr hResData);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern uint SizeofResource(IntPtr hModule, IntPtr hResInfo);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool FreeLibrary(IntPtr hModule);
-
-        public static string ReadManifest(string path) {
-            var module = LoadLibraryEx(path, IntPtr.Zero, LOAD_LIBRARY_AS_DATAFILE);
-            if (module == IntPtr.Zero) {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "LoadLibraryEx failed for " + path);
-            }
-
-            try {
-                var manifestInfo = FindResource(module, ManifestResourceId, ManifestResourceType);
-                if (manifestInfo == IntPtr.Zero) {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "FindResource could not locate the embedded manifest.");
-                }
-
-                var manifestBytesLength = SizeofResource(module, manifestInfo);
-                if (manifestBytesLength == 0) {
-                    throw new InvalidOperationException("The embedded manifest resource was empty.");
-                }
-
-                var manifestHandle = LoadResource(module, manifestInfo);
-                if (manifestHandle == IntPtr.Zero) {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "LoadResource failed for the embedded manifest.");
-                }
-
-                var manifestPointer = LockResource(manifestHandle);
-                if (manifestPointer == IntPtr.Zero) {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "LockResource failed for the embedded manifest.");
-                }
-
-                var manifestBytes = new byte[(int)manifestBytesLength];
-                Marshal.Copy(manifestPointer, manifestBytes, 0, (int)manifestBytesLength);
-                return Encoding.UTF8.GetString(manifestBytes);
-            }
-            finally {
-                FreeLibrary(module);
-            }
-        }
-    }
-}
-"@
-    }
-
-    return [Wardoff.ManifestReader]::ReadManifest([System.IO.Path]::GetFullPath($Path))
-}
 
 function Wait-ForBinaryUnlock {
     param(
@@ -832,9 +754,10 @@ Assert-SmokePreflight
 try {
     Stop-RepoWardoffProcesses
 
-    Invoke-TestCase 'cargo build --release succeeds' {
-        $result = Invoke-ExternalCommand -FilePath 'cargo' -Arguments @('build', '--release')
-        Assert-Condition ($result.ExitCode -eq 0) "cargo build --release failed with exit code $($result.ExitCode)."
+    Invoke-TestCase 'release binary preparation succeeds' {
+        Invoke-SmokeReleaseBuild -UseExistingBinary $UseExistingBinary.IsPresent -BinaryPath $binaryPath -BuildAction {
+            Invoke-ExternalCommand -FilePath 'cargo' -Arguments @('build', '--release', '--locked')
+        }
     }
 
     Invoke-TestCase 'target\release\wardoff.exe exists after the release build' {

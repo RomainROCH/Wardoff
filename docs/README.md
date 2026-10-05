@@ -25,6 +25,7 @@ small change.
 | Reporting security issues | [Security policy](../SECURITY.md) |
 | Questions and support | [Support](../SUPPORT.md) |
 | Released changes | [Changelog](../CHANGELOG.md) |
+| Release validation, drafts and manual publication | [Releasing](RELEASING.md) |
 
 ## Evidence, comparisons and drafts
 

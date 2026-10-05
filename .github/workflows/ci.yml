@@ -10,6 +10,9 @@ on:
       - dev
       - main
 
+permissions:
+  contents: read
+
 env:
   CARGO_TARGET_DIR: target
 
@@ -55,9 +58,19 @@ jobs:
         shell: pwsh
         run: .\tests\smoke_safety.ps1
 
+      - name: Release guard tests
+        shell: pwsh
+        run: .\tests\release_guards.ps1
+
       - name: Smoke tests
         shell: pwsh
-        run: .\tests\smoke_test.ps1
+        run: |
+          $before = (Get-FileHash target/release/wardoff.exe -Algorithm SHA256).Hash
+          .\tests\smoke_test.ps1 -UseExistingBinary
+          if ($LASTEXITCODE -ne 0) { throw 'Smoke failed.' }
+          if ((Get-FileHash target/release/wardoff.exe -Algorithm SHA256).Hash -ne $before) {
+            throw 'Smoke changed the checked binary.'
+          }
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4

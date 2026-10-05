@@ -121,11 +121,13 @@ remain separate from development checks.
 Both [CI](../.github/workflows/ci.yml) and the
 [release workflow](../.github/workflows/release.yml) run the same Full check,
 developer-tooling fixtures, smoke-safety fixtures and the real smoke suite on
-Windows. Full itself remains safe for routine development and does not run the
-state-changing smoke suite. A failed check prevents release publication.
+Windows. Full includes the brief native Power Request test and does not run the
+state-changing smoke suite. A failed required check prevents draft creation.
 
-The workflows retain one standard Windows job per existing event, with no added
-matrix or scheduled runs. Standard GitHub-hosted runners are
+CI retains one standard Windows job; tag releases separate read-only validation
+from a draft-only writer, with no added matrix or scheduled runs. The checked
+binary is reused by smoke without compilation. See [RELEASING.md](RELEASING.md)
+for provenance, exact-artifact gates and manual publication. Standard GitHub-hosted runners are
 [free for public repositories](https://docs.github.com/en/actions/concepts/billing-and-usage).
 CI binary artifacts expire after seven days. Reassess billing before making the
 repository private or moving to a larger or paid runner.

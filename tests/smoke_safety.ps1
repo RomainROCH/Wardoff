@@ -33,6 +33,26 @@ try {
     try { Assert-Throws {} 'canary' } catch { $canaryCaught = $true }
     Assert-True $canaryCaught 'Assert-Throws accepted an action that did not throw.'
 
+    $buildFixture = Join-Path ([IO.Path]::GetTempPath()) ('wardoff-smoke-build-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    try {
+        [IO.File]::WriteAllBytes($buildFixture, [byte[]](1, 2, 3))
+        $buildCalls = @{ Count = 0 }
+        $buildAction = { $buildCalls.Count++; return [pscustomobject]@{ ExitCode = 0 } }
+        Invoke-SmokeReleaseBuild -UseExistingBinary $true -BinaryPath $buildFixture -BuildAction $buildAction
+        Assert-True ($buildCalls.Count -eq 0) 'Existing-binary smoke unexpectedly invoked Cargo.'
+        Invoke-SmokeReleaseBuild -UseExistingBinary $false -BinaryPath $buildFixture -BuildAction $buildAction
+        Assert-True ($buildCalls.Count -eq 1) 'Ordinary smoke did not invoke its build action.'
+        Assert-Throws {
+            Invoke-SmokeReleaseBuild -UseExistingBinary $true -BinaryPath ($buildFixture + '.missing') -BuildAction $buildAction
+        } 'existing release binary'
+        Assert-True ($buildCalls.Count -eq 1) 'Missing-binary smoke fell back to compilation.'
+        Assert-Throws {
+            Invoke-SmokeReleaseBuild -UseExistingBinary $false -BinaryPath $buildFixture -BuildAction { return [pscustomobject]@{ ExitCode = 7 } }
+        } 'exit code 7'
+    } finally {
+        if (Test-Path -LiteralPath $buildFixture) { Remove-Item -LiteralPath $buildFixture -Force }
+    }
+
     $probeState = @{ Calls = 0 }
     $emptyProbe = { $probeState.Calls++; return $false }
     Assert-SmokePreconditions -WardoffProcesses @() -CurrentSessionId 7 -BinaryPath $binaryPath -AutostartTaskProbe $emptyProbe
