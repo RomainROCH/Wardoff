@@ -120,8 +120,17 @@ function Get-InlineTargets {
 }
 
 try {
-    $gitOutput = & git -C $resolvedRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- '*.md' 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Git emits unquoted paths as UTF-8. Windows PowerShell otherwise decodes
+    # them using the console code page, which corrupts non-ASCII filenames.
+    $previousConsoleEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = $utf8Strict
+        $gitOutput = & git -C $resolvedRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- '*.md' 2>&1
+        $gitExitCode = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $previousConsoleEncoding
+    }
+    if ($gitExitCode -ne 0) {
         throw "Unable to enumerate Markdown files with Git: $($gitOutput -join ' ')"
     }
     $paths = @($gitOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.ToString().Trim() } | Sort-Object -Unique)

@@ -75,10 +75,12 @@ try {
 '@
     New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'docs') | Out-Null
     Set-Content -LiteralPath (Join-Path $fixtureRoot 'docs\guide file.md') -Encoding utf8 -Value '# Guide'
-    Set-Content -LiteralPath (Join-Path $fixtureRoot 'docs\nötes.md') -Encoding utf8 -Value '# Notes'
+    # Keep the fixture name independent of Windows PowerShell source decoding.
+    $unicodePath = 'docs/n' + [char]0x00F6 + 'tes.md'
+    Set-Content -LiteralPath (Join-Path $fixtureRoot $unicodePath) -Encoding utf8 -Value '# Notes'
     Set-Content -LiteralPath (Join-Path $fixtureRoot 'ignored.md') -Encoding utf8 -Value '[missing](nope.md)'
     Add-Content -LiteralPath (Join-Path $fixtureRoot '.gitignore') -Encoding utf8 -Value 'ignored.md'
-    git add README.md 'docs/guide file.md' 'docs/nötes.md' .gitignore
+    git add README.md 'docs/guide file.md' $unicodePath .gitignore
 
     $success = Invoke-FixtureChecker
     Assert-Contains $success 'Documentation checks passed'
