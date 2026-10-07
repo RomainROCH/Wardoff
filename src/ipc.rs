@@ -238,8 +238,22 @@ impl IpcServer {
 
 /// Sends a JSON control request to the primary Wardoff runtime.
 pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientError> {
+    send_request_with_connect_deadline(request, None)
+}
+
+/// Requests status through the legacy control pipe using the remaining discovery budget.
+pub(crate) fn send_status_request_with_connect_deadline(
+    connect_deadline: Instant,
+) -> Result<IpcResponse, ClientError> {
+    send_request_with_connect_deadline(&IpcRequest::Status, Some(connect_deadline))
+}
+
+fn send_request_with_connect_deadline(
+    request: &IpcRequest,
+    connect_deadline: Option<Instant>,
+) -> Result<IpcResponse, ClientError> {
     let control_pipe_path = current_control_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_control_pipe(&control_pipe_path)?;
+    let mut pipe = connect_control_pipe(&control_pipe_path, connect_deadline)?;
     let payload = serde_json::to_string(request).map_err(|error| {
         ClientError::Transport(format!(
             "Wardoff could not serialize its IPC request: {error}"
@@ -285,10 +299,10 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
     })
 }
 
-/// Reads the current runtime status through the dedicated read-only status pipe.
-pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
+/// Reads status; an optional deadline limits connection retries, not a connected reply read.
+pub(crate) fn read_status(connect_deadline: Option<Instant>) -> Result<StatusOutput, ClientError> {
     let status_pipe_path = current_status_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_status_pipe(&status_pipe_path)?;
+    let mut pipe = connect_status_pipe(&status_pipe_path, connect_deadline)?;
     let mut status_line = String::new();
     let bytes_read = {
         let mut reader = BufReader::new(&mut pipe);
@@ -1023,7 +1037,10 @@ fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), Str
         .map_err(|error| format!("Wardoff could not flush its status reply: {error}"))
 }
 
-fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
+fn connect_control_pipe(
+    control_pipe_path: &str,
+    connect_deadline: Option<Instant>,
+) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
@@ -1043,9 +1060,8 @@ fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
                         if code == ERROR_FILE_NOT_FOUND.0 as i32
                             || code == ERROR_PATH_NOT_FOUND.0 as i32
                             || code == ERROR_PIPE_BUSY.0 as i32
-                ) && attempt + 1 < PIPE_CONNECT_ATTEMPTS
+                ) && wait_before_pipe_retry(attempt, connect_deadline)
                 {
-                    thread::sleep(PIPE_CONNECT_DELAY);
                     continue;
                 }
 
@@ -1057,7 +1073,10 @@ fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
     final_connect_error(control_pipe_path, last_error_code)
 }
 
-fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
+fn connect_status_pipe(
+    status_pipe_path: &str,
+    connect_deadline: Option<Instant>,
+) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
@@ -1073,9 +1092,8 @@ fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
                         if code == ERROR_FILE_NOT_FOUND.0 as i32
                             || code == ERROR_PATH_NOT_FOUND.0 as i32
                             || code == ERROR_PIPE_BUSY.0 as i32
-                ) && attempt + 1 < PIPE_CONNECT_ATTEMPTS
+                ) && wait_before_pipe_retry(attempt, connect_deadline)
                 {
-                    thread::sleep(PIPE_CONNECT_DELAY);
                     continue;
                 }
 
@@ -1085,6 +1103,28 @@ fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
     }
 
     final_connect_error(status_pipe_path, last_error_code)
+}
+
+fn pipe_retry_delay(attempt: usize, remaining: Option<Duration>) -> Option<Duration> {
+    if attempt + 1 >= PIPE_CONNECT_ATTEMPTS {
+        return None;
+    }
+    let delay = remaining.map_or(PIPE_CONNECT_DELAY, |remaining| {
+        remaining.min(PIPE_CONNECT_DELAY)
+    });
+    (!delay.is_zero()).then_some(delay)
+}
+
+fn wait_before_pipe_retry(attempt: usize, connect_deadline: Option<Instant>) -> bool {
+    let remaining =
+        connect_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    match pipe_retry_delay(attempt, remaining) {
+        Some(delay) => {
+            thread::sleep(delay);
+            true
+        }
+        None => false,
+    }
 }
 
 fn final_connect_error(path: &str, last_error_code: Option<i32>) -> Result<File, ClientError> {
@@ -1284,6 +1324,29 @@ impl Drop for LocalAllocatedWideString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_retries_keep_the_original_limit_without_a_deadline() {
+        assert_eq!(pipe_retry_delay(0, None), Some(PIPE_CONNECT_DELAY));
+        assert_eq!(
+            pipe_retry_delay(PIPE_CONNECT_ATTEMPTS - 2, None),
+            Some(PIPE_CONNECT_DELAY)
+        );
+        assert_eq!(pipe_retry_delay(PIPE_CONNECT_ATTEMPTS - 1, None), None);
+    }
+
+    #[test]
+    fn connection_retries_only_sleep_within_the_remaining_budget() {
+        assert_eq!(
+            pipe_retry_delay(0, Some(Duration::from_millis(40))),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(pipe_retry_delay(0, Some(Duration::ZERO)), None);
+        assert_eq!(
+            pipe_retry_delay(0, Some(Duration::from_secs(1))),
+            Some(PIPE_CONNECT_DELAY)
+        );
+    }
 
     #[test]
     fn control_pipe_access_denied_maps_to_product_message() {

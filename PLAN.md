@@ -57,7 +57,7 @@ Keep improving confidence in the features that already exist:
 - tighten documentation around actual runtime behavior and limits
 - improve manual validation guidance for shutdown, sign-out, sleep, hibernate, remote shutdown, autostart, and elevation-sensitive paths
 - fix bugs or rough edges in tray, IPC, logging, and Task Scheduler flows
-- reduce status fallback latency when the session mutex is occupied but both IPC endpoints are unavailable (up to roughly four seconds of sequential retries); the ordinary inactive path already returns without pipe retries
+- retain regression coverage for the local status fallback change: connection retries share one absolute two-second deadline across status and legacy fallback, preserving the initial status retry grace and remaining fallback budget. Formatting, compilation, strict Clippy and 74 Rust tests passed, including the eight focused IPC cases; one native Power Request test was excluded. Isolated CLI runs with an occupied session mutex and both endpoints unavailable measured median duration of 3882 ms before and 2110 ms after, with matching output after timestamp normalization; these measurements cover only that case. Connected response reads remain outside the budget; inactive status avoids retries and normal control retains 20 attempts
 - keep admin versus non-admin behavior explicit
 - keep LTSC-style Layer 3 skip behavior documented as normal when the UpdateOrchestrator reboot task is absent
 

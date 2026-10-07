@@ -69,8 +69,21 @@ Effects remain in the existing runtime and subsystem owners.
 The two pipes have different contracts: status reads must remain available
 without elevation; control commands retain same-user/session access checks.
 The ordinary inactive status path checks the session mutex and returns without
-pipe retries. If the mutex is occupied but neither pipe responds, the sequential
-fallback can take about four seconds; that case is tracked in [PLAN.md](../PLAN.md).
+pipe retries. The local status-latency change shares one absolute two-second
+connection deadline between the status pipe and its legacy control fallback,
+preserving the initial status startup grace. The fallback uses the remaining
+budget rather than starting another full wait. This targets about two seconds
+plus scheduling overhead when both endpoints are unavailable; connected reply
+reads are outside the budget, and ordinary control commands keep their existing
+20-attempt policy.
+
+Local validation of this change passed formatting, compilation checks, strict
+Clippy and the safe Rust suite (74 tests). The native Power Request test
+`blocker::sleep::tests::activation_reports_an_acquired_request_before_returning`
+was explicitly excluded. The suite included the eight focused Windows IPC cases. In
+isolated CLI runs with the session mutex occupied and both endpoints unavailable,
+median duration decreased from 3882 ms to 2110 ms with matching output after
+timestamp normalization. These measurements describe that test case.
 
 ## Validation
 
