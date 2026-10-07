@@ -258,7 +258,7 @@ fn wait_for_available(kind: &str) {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        if unsafe { WaitNamedPipeW(PCWSTR(wide.as_ptr()), 50) }.is_ok() {
+        if unsafe { WaitNamedPipeW(PCWSTR(wide.as_ptr()), 50) }.as_bool() {
             return;
         }
         assert!(
