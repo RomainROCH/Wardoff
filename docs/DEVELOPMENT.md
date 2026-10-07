@@ -69,8 +69,13 @@ Effects remain in the existing runtime and subsystem owners.
 The two pipes have different contracts: status reads must remain available
 without elevation; control commands retain same-user/session access checks.
 The ordinary inactive status path checks the session mutex and returns without
-pipe retries. If the mutex is occupied but neither pipe responds, the sequential
-fallback can take about four seconds; that case is tracked in [PLAN.md](../PLAN.md).
+pipe retries. The local status-latency change shares one absolute two-second
+connection deadline between the status pipe and its legacy control fallback,
+preserving the initial status startup grace. The fallback uses the remaining
+budget rather than starting another full wait. This targets about two seconds
+plus scheduling overhead when both endpoints are unavailable; connected reply
+reads are outside the budget, and ordinary control commands keep their existing
+20-attempt policy. Windows validation remains pending in [PLAN.md](../PLAN.md).
 
 ## Validation
 

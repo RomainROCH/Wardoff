@@ -280,7 +280,9 @@ The control pipe is now created with explicit local-only security instead of the
 - a medium-integrity mandatory label allows the same interactive Windows user to send control commands to an elevated primary runtime
 - if a caller still hits access denied, Wardoff maps that to a clear product message instead of returning a raw Win32 pipe error
 
-`handle_status_request` first probes the session mutex. If it can claim the primary instance, it releases that temporary claim and returns `{"state":"inactive"}` without connecting to either pipe. When the mutex is already occupied, it tries the read-only status pipe and then the control fallback. If both endpoints are unavailable, their sequential retries (20 attempts with a 100 ms delay per pipe) can still take roughly four seconds. That delay belongs to the occupied-mutex fallback, not the ordinary inactive path or UAC.
+`handle_status_request` first probes the session mutex. If it can claim the primary instance, it releases that temporary claim and returns `{"state":"inactive"}` without connecting to either pipe. When the mutex is already occupied, it tries the read-only status pipe and then the legacy control fallback.
+
+The local status-latency change gives those connection retries one absolute two-second deadline, preserving the status pipe's initial startup grace while leaving only the remaining budget for the fallback. This avoids starting a second full connection wait. The intended unavailable-endpoint wait is about two seconds plus scheduling overhead; connected response reads remain outside that deadline, so it is not an end-to-end command timeout. Normal control commands retain their existing 20-attempt connection policy, and error classification and access checks are unchanged. Windows runtime validation of this local implementation remains pending.
 
 ### Why the UI thread handles requests
 

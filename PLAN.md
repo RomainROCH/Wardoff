@@ -57,7 +57,7 @@ Keep improving confidence in the features that already exist:
 - tighten documentation around actual runtime behavior and limits
 - improve manual validation guidance for shutdown, sign-out, sleep, hibernate, remote shutdown, autostart, and elevation-sensitive paths
 - fix bugs or rough edges in tray, IPC, logging, and Task Scheduler flows
-- reduce status fallback latency when the session mutex is occupied but both IPC endpoints are unavailable (up to roughly four seconds of sequential retries); the ordinary inactive path already returns without pipe retries
+- validate the local status fallback latency implementation on Windows: status-pipe and legacy control-pipe connection retries share one absolute two-second deadline, preserving the initial status retry grace and using any remaining budget for fallback (target: about two seconds plus scheduling overhead when both endpoints are unavailable). Build/Rust checks and CLI latency measurements remain pending. Connected response reads are outside this budget; the inactive path still avoids retries and normal control commands retain their 20-attempt policy
 - keep admin versus non-admin behavior explicit
 - keep LTSC-style Layer 3 skip behavior documented as normal when the UpdateOrchestrator reboot task is absent
 
