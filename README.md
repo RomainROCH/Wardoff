@@ -175,7 +175,7 @@ Read-only commands stay non-elevated:
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
 - when no primary runtime owns the session mutex, `--status` returns `{"state":"inactive"}` without retrying the pipes
-- when the mutex is occupied, the local implementation shares one absolute two-second connection-retry deadline between `WardoffStatus` and the legacy `WardoffControl` status fallback. It preserves the initial status retry grace, and an early status failure leaves the remaining connection budget for fallback. The target when both endpoints are unavailable is about two seconds plus scheduling overhead; Windows validation and CLI latency measurements remain pending
+- when the mutex is occupied, the local implementation shares one absolute two-second connection-retry deadline between `WardoffStatus` and the legacy `WardoffControl` status fallback. It preserves the initial status retry grace, and an early status failure leaves the remaining connection budget for fallback. The target when both endpoints are unavailable is about two seconds plus scheduling overhead
 - that connection budget does not limit response reads after a pipe connects, so it is not an end-to-end timeout for `--status`
 
 State-changing/default behavior uses the normal runtime path:
