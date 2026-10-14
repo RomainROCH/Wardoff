@@ -4,7 +4,10 @@
 #![allow(dead_code)]
 
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc,
@@ -12,8 +15,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_PIPE_CONNECTED};
+use windows::Win32::Foundation::{GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PIPE_CONNECTED};
 use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_OUTBOUND};
+use windows::Win32::System::Com::CoCreateGuid;
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_MESSAGE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
@@ -383,4 +387,258 @@ fn isolated_status_connections_share_a_budget_and_preserve_fallback_rules() {
             "owned endpoint survived shutdown"
         );
     }
+}
+
+const SHUTDOWN_CHILD: &str = "WARDOFF_STATUS_SHUTDOWN_CHILD";
+const SHUTDOWN_RECEIPT: &str = "WARDOFF_STATUS_SHUTDOWN_RECEIPT";
+const SHUTDOWN_TEST: &str = "isolated_status_shutdown_does_not_lose_the_replacement_wakeup";
+const SHUTDOWN_CHILD_TIMEOUT: Duration = Duration::from_secs(15);
+const SHUTDOWN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn shutdown_stage(stage: &str) {
+    let line = format!(
+        "[status-shutdown pid={}] stage={stage}\n",
+        std::process::id()
+    );
+    let _ = std::io::stderr().lock().write_all(line.as_bytes());
+}
+
+struct ShutdownReceipt(PathBuf);
+
+impl ShutdownReceipt {
+    fn reserve() -> Self {
+        let guid = unsafe { CoCreateGuid() }.expect("status shutdown receipt GUID");
+        let path = std::env::temp_dir().join(format!("WardoffStatusShutdown-{guid:?}.receipt"));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("reserve owned status shutdown receipt");
+        Self(path)
+    }
+}
+
+impl Drop for ShutdownReceipt {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("owned status shutdown receipt cleanup failed: {error}");
+            }
+        }
+    }
+}
+
+struct ShutdownChild(Child);
+
+impl ShutdownChild {
+    fn wait_until(&mut self, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
+        loop {
+            if let Some(status) = self.0.try_wait()? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn kill_and_reap(&mut self) -> std::io::Result<()> {
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+        if let Err(error) = self.0.kill() {
+            if self.0.try_wait()?.is_some() {
+                return Ok(());
+            }
+            return Err(error);
+        }
+        self.wait_until(Instant::now() + SHUTDOWN_CLEANUP_TIMEOUT)?
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "owned child did not exit")
+            })?;
+        Ok(())
+    }
+}
+
+impl Drop for ShutdownChild {
+    fn drop(&mut self) {
+        if let Err(error) = self.kill_and_reap() {
+            eprintln!("owned status shutdown child cleanup failed: {error}");
+        }
+    }
+}
+
+fn assert_shutdown_endpoints_removed(pid: u32) {
+    for kind in ["Control", "Status", "BusyStatus"] {
+        let endpoint = format!(r"\\.\pipe\WardoffStatusBudget-{kind}-{pid}");
+        match OpenOptions::new().read(true).open(endpoint) {
+            Err(error) => assert_eq!(error.raw_os_error(), Some(ERROR_FILE_NOT_FOUND.0 as i32)),
+            Ok(file) => {
+                drop(file);
+                panic!("owned {kind} endpoint survived status shutdown");
+            }
+        }
+    }
+}
+
+fn exercise_status_shutdown_replacement() {
+    let receipt =
+        PathBuf::from(std::env::var_os(SHUTDOWN_RECEIPT).expect("owned shutdown receipt"));
+    assert_eq!(receipt.parent(), Some(std::env::temp_dir().as_path()));
+    assert!(receipt
+        .file_name()
+        .expect("receipt name")
+        .to_string_lossy()
+        .starts_with("WardoffStatusShutdown-"));
+    let metadata = std::fs::metadata(&receipt).expect("reserved shutdown receipt");
+    assert!(metadata.is_file());
+    assert_eq!(metadata.len(), 0);
+
+    let status_endpoint = session_scope::path("Status");
+    let (paused, resume, wake) = ipc::status_shutdown_test::install(status_endpoint.clone());
+    let mut runtime = TestRuntime::start();
+    assert_allow(ipc::read_status(None));
+    paused
+        .recv_timeout(SHUTDOWN_CLEANUP_TIMEOUT)
+        .expect("replacement worker paused after false shutdown check");
+    shutdown_stage("replacement-paused-after-false");
+    match OpenOptions::new().read(true).open(&status_endpoint) {
+        Err(error) => assert_eq!(error.raw_os_error(), Some(ERROR_FILE_NOT_FOUND.0 as i32)),
+        Ok(file) => {
+            drop(file);
+            panic!("replacement endpoint existed while its worker was paused");
+        }
+    }
+    shutdown_stage("replacement-endpoint-absent");
+
+    let (stopped_tx, stopped_rx) = mpsc::channel();
+    let stopper = thread::spawn(move || {
+        runtime.stop();
+        stopped_tx.send(()).expect("report joined inert runtime");
+    });
+    // Observe actual mutex contention, or the old implementation's missed wake.
+    // No scheduling delay is used to choose when the worker resumes.
+    let early_wake = match wake
+        .recv_timeout(SHUTDOWN_CLEANUP_TIMEOUT)
+        .expect("real shutdown reached its gate or wake")
+    {
+        ipc::status_shutdown_test::Event::Wake(Some(code))
+            if code == ERROR_FILE_NOT_FOUND.0 as i32 =>
+        {
+            shutdown_stage("real-shutdown-wake-file-not-found");
+            Some(Some(code))
+        }
+        ipc::status_shutdown_test::Event::GateContended => {
+            shutdown_stage("shutdown-gate-contention-confirmed");
+            None
+        }
+        _ => panic!("shutdown attempted an unexpected wake before pipe publication"),
+    };
+    resume.send(()).expect("resume replacement worker");
+    shutdown_stage("replacement-resumed");
+    let wake_result = match early_wake {
+        Some(result) => result,
+        None => match wake
+            .recv_timeout(SHUTDOWN_CLEANUP_TIMEOUT)
+            .expect("real shutdown wake after pipe publication")
+        {
+            ipc::status_shutdown_test::Event::Wake(result) => result,
+            _ => panic!("shutdown wake was not observed after pipe publication"),
+        },
+    };
+    if wake_result.is_none() {
+        shutdown_stage("real-shutdown-wake-connected");
+    }
+
+    let stopped_without_rescue = match stopped_rx.recv_timeout(SHUTDOWN_CLEANUP_TIMEOUT) {
+        Ok(()) => true,
+        Err(mpsc::RecvTimeoutError::Timeout) => false,
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("inert shutdown thread failed"),
+    };
+    if !stopped_without_rescue {
+        wait_for_available("Status");
+        shutdown_stage("shutdown-incomplete-replacement-available");
+        // Connect only our child's endpoint. It releases the synchronous accept;
+        // the existing post-accept shutdown check then closes it without a reply.
+        let rescue = OpenOptions::new()
+            .read(true)
+            .open(&status_endpoint)
+            .expect("rescue owned status accept");
+        drop(rescue);
+        shutdown_stage("owned-status-rescue-connected");
+        stopped_rx
+            .recv_timeout(SHUTDOWN_CLEANUP_TIMEOUT)
+            .expect("inert shutdown completed after rescue");
+    }
+    stopper.join().expect("inert shutdown thread joined");
+    shutdown_stage("ipc-and-ui-joined");
+    assert_shutdown_endpoints_removed(std::process::id());
+    shutdown_stage("owned-endpoints-removed");
+    OpenOptions::new()
+        .write(true)
+        .open(receipt)
+        .expect("open owned shutdown receipt")
+        .write_all(b"cleanup-complete\n")
+        .expect("record verified shutdown cleanup");
+    shutdown_stage("cleanup-receipt-written");
+    assert_eq!(wake_result, None, "REGRESSION_MISSED_STATUS_WAKEUP: shutdown attempted its wake while the replacement pipe was absent");
+    assert!(stopped_without_rescue, "REGRESSION_MISSED_STATUS_WAKEUP: shutdown required an extra connection after its wake missed the replacement instance");
+}
+
+#[test]
+fn isolated_status_shutdown_does_not_lose_the_replacement_wakeup() {
+    if let Some(marker) = std::env::var_os(SHUTDOWN_CHILD) {
+        assert_eq!(marker.to_str(), Some("1"), "invalid owned child marker");
+        assert_eq!(
+            std::env::args().skip(1).collect::<Vec<_>>(),
+            ["--exact", SHUTDOWN_TEST, "--nocapture", "--test-threads=1"],
+            "owned child requires the exact single-test filter"
+        );
+        exercise_status_shutdown_replacement();
+        return;
+    }
+    assert!(
+        std::env::var_os(SHUTDOWN_RECEIPT).is_none(),
+        "shutdown receipt without owned child marker"
+    );
+    let receipt = ShutdownReceipt::reserve();
+    let mut child = ShutdownChild(
+        Command::new(std::env::current_exe().expect("current test executable"))
+            .args(["--exact", SHUTDOWN_TEST, "--nocapture", "--test-threads=1"])
+            .env(SHUTDOWN_CHILD, "1")
+            .env(SHUTDOWN_RECEIPT, &receipt.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn owned inert status shutdown child"),
+    );
+    let pid = child.0.id();
+    eprintln!("[status-shutdown] owned-child={pid} watchdog={SHUTDOWN_CHILD_TIMEOUT:?}");
+    let Some(status) = child
+        .wait_until(Instant::now() + SHUTDOWN_CHILD_TIMEOUT)
+        .expect("poll owned shutdown child")
+    else {
+        child
+            .kill_and_reap()
+            .expect("kill and reap stalled owned shutdown child");
+        assert_shutdown_endpoints_removed(pid);
+        panic!("owned status shutdown child exceeded its watchdog");
+    };
+    eprintln!("[status-shutdown] owned-child={pid} reaped exit={status}");
+    assert_shutdown_endpoints_removed(pid);
+    shutdown_stage("parent-owned-endpoints-removed");
+    assert_eq!(
+        std::fs::read(&receipt.0).expect("read shutdown cleanup receipt"),
+        b"cleanup-complete\n",
+        "child did not verify shutdown cleanup"
+    );
+    std::fs::remove_file(&receipt.0).expect("remove owned shutdown receipt");
+    shutdown_stage("parent-owned-receipt-removed");
+    // A failed child is always a failed test, even after its rescue and cleanup.
+    assert!(
+        status.success(),
+        "status shutdown regression child failed: {status}"
+    );
 }
