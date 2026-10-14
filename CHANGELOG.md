@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-Target version: `0.2.1`. This is a local candidate, not a published release.
+## [0.2.1] - 2026-10-14
 
 ### Changed
 - Share one two-second connection-retry deadline across the read-only status pipe and its legacy control fallback, preserving the initial status startup grace and ordinary control retries. The unavailable-endpoint wait targets about two seconds plus scheduling overhead; connected reply reads are not bounded by this deadline.
+- Add isolated native Windows singleton tests for primary/secondary claims, handle cleanup, bounded retries and reclaim after owner release. These tests do not start protection or validate an elevated relaunch; same-session mutex denial-of-service hardening remains pending.
 - Gate release tags on matching package/lock/manifest versions, main-branch provenance and successful Windows checks for the exact commit. Build and transfer the same checked binary into a draft only; publication remains manual.
 - Bound newline-terminated control IPC requests to 4096 bytes and one total second, preserving independent status availability and rejection/recovery behavior.
 - Validate autostart path access with identification tokens, and record disposable-VM idle-power acceptance without claiming physical hardware coverage.
