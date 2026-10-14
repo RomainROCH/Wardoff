@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
 - Add isolated native Windows singleton tests for primary/secondary claims, handle cleanup, bounded retries and reclaim after owner release. These tests do not start protection or validate an elevated relaunch; same-session mutex denial-of-service hardening remains pending.
 - Gate release tags on matching package/lock/manifest versions, main-branch provenance and successful Windows checks for the exact commit. Build and transfer the same checked binary into a draft only; publication remains manual.
 - Bound newline-terminated control IPC requests to 4096 bytes and one total second, preserving independent status availability and rejection/recovery behavior.
+- Fix a missed status wake-up between named-pipe instances that could leave shutdown waiting for the status worker. Cover the creation gap with an isolated regression that verifies cleanup without a rescue connection.
+- Add passive physical-power validation preparation and checkpoint scripts with mocked diagnostic checks; physical S3/monitor, Hibernate and Modern Standby acceptance remains pending.
 - Validate autostart path access with identification tokens, and record disposable-VM idle-power acceptance without claiming physical hardware coverage.
 - Bounded `--log --tail N` to 100000 lines and made line-buffer reservation incremental and fallible, so extreme values return a readable error instead of a capacity-overflow panic.
 - Ensure the runtime unregisters callbacks and shuts down its resources even when the Windows message loop fails; preserve both errors if cleanup also fails.
