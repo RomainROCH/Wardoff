@@ -124,7 +124,14 @@ cargo test --locked instance::tests
 cargo test --locked session_scope::tests
 cargo test --locked autostart::tests
 cargo test --locked --test log_tail_cli
+cargo test --locked --test instance_lifecycle
 ```
+
+The `instance_lifecycle` target includes the production instance-claim code with
+a test-only, fail-closed name provider. Each native case uses a unique local
+mutex name and real Win32 handles to exercise primary/secondary claims, guard
+cleanup and bounded retries. It does not start protection, use production mutex
+names or validate a real elevated relaunch or physical power transition.
 
 The docs checker covers tracked and untracked, non-ignored Markdown. It checks
 local link destinations, not heading fragments, external websites or factual
