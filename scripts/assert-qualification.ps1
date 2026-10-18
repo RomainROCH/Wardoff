@@ -18,7 +18,7 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 # No override is exposed: a reviewed importer of trusted runs is still required.
 $source = [ordered]@{ commit = 'UNAVAILABLE'; tree = 'UNAVAILABLE'; clean = $false }
 try {
-    $git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+    $git = @(Get-Command git -CommandType Application -ErrorAction Stop)[0].Source
     $commit = & $git --no-optional-locks -C $repoRoot rev-parse HEAD 2>$null
     if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[a-f0-9]{40}$') { throw 'Unavailable commit.' }
     $tree = & $git --no-optional-locks -C $repoRoot rev-parse 'HEAD^{tree}' 2>$null
