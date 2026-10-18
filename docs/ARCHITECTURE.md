@@ -252,6 +252,17 @@ Current request types include:
 
 `wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use the session-scoped `WardoffControl` pipe for the current Windows session.
 
+Connected status replies are bounded to prevent a silent or incomplete peer from
+holding the client indefinitely. Both the read-only status path and legacy
+Status exchange use a fresh one-second absolute I/O deadline after connection;
+the legacy request write shares that deadline. Replies are limited to 65536 wire
+bytes through the first LF, counting CRLF, or nonempty JSON at EOF within the
+limit. Pending overlapped I/O is cancelled and drained before its resources are
+released; scheduling and cancellation completion can add overhead. Client access
+rights are unchanged, and the dedicated status handle remains read-only.
+Connected transport errors do not trigger fallback, and ordinary control commands
+retain their existing behavior. The connection retry loops below are unchanged.
+
 The control pipe is now created with explicit local-only security instead of the process-default descriptor:
 
 - remote named-pipe clients are rejected

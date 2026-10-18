@@ -7,19 +7,20 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::mem::size_of;
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Sender},
     Arc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
-    HLOCAL, LPARAM, WPARAM,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -29,19 +30,25 @@ use windows::Win32::Security::{
     TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
-    PIPE_ACCESS_OUTBOUND,
+    ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE,
+    FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_OUTBOUND,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
+};
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
 const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
+// Wire bytes through the first newline, including CRLF when present. EOF is also accepted.
+const MAX_STATUS_REPLY_BYTES: usize = 64 * 1024;
+const STATUS_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
 const INITIAL_PIPE_CLAIM_ATTEMPTS: usize = 10;
@@ -229,40 +236,59 @@ impl IpcServer {
 /// Sends a JSON control request to the primary Wardoff runtime.
 pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientError> {
     let control_pipe_path = current_control_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_control_pipe(&control_pipe_path)?;
+    let is_status = matches!(request, IpcRequest::Status);
+    let mut pipe = connect_control_pipe(&control_pipe_path, is_status)?;
+    // Connection retries are separate; a connected legacy status request gets a fresh budget.
+    let reply_deadline = is_status.then(|| Instant::now() + STATUS_REPLY_TIMEOUT);
     let payload = serde_json::to_string(request).map_err(|error| {
         ClientError::Transport(format!(
             "Wardoff could not serialize its IPC request: {error}"
         ))
     })?;
 
-    pipe.write_all(payload.as_bytes()).map_err(|error| {
-        ClientError::Transport(format!(
-            "Wardoff could not write to {control_pipe_path}: {error}"
-        ))
-    })?;
-    pipe.write_all(b"\n").map_err(|error| {
-        ClientError::Transport(format!(
-            "Wardoff could not finish writing to {control_pipe_path}: {error}"
-        ))
-    })?;
-    pipe.flush().map_err(|error| {
-        ClientError::Transport(format!(
-            "Wardoff could not flush {control_pipe_path}: {error}"
-        ))
-    })?;
-
-    let mut response_line = String::new();
-    let bytes_read = {
-        let mut reader = BufReader::new(&mut pipe);
-        reader.read_line(&mut response_line).map_err(|error| {
+    let response_line = if let Some(deadline) = reply_deadline {
+        let mut payload = payload.into_bytes();
+        payload.push(b'\n');
+        write_status_request_until_deadline(&pipe, &payload, deadline).map_err(|error| {
+            ClientError::Transport(format!(
+                "Wardoff could not write to {control_pipe_path}: {error}"
+            ))
+        })?;
+        read_status_reply_until_deadline(&pipe, deadline).map_err(|error| {
             ClientError::Transport(format!(
                 "Wardoff could not read the reply from {control_pipe_path}: {error}"
             ))
         })?
+    } else {
+        pipe.write_all(payload.as_bytes()).map_err(|error| {
+            ClientError::Transport(format!(
+                "Wardoff could not write to {control_pipe_path}: {error}"
+            ))
+        })?;
+        pipe.write_all(b"\n").map_err(|error| {
+            ClientError::Transport(format!(
+                "Wardoff could not finish writing to {control_pipe_path}: {error}"
+            ))
+        })?;
+        pipe.flush().map_err(|error| {
+            ClientError::Transport(format!(
+                "Wardoff could not flush {control_pipe_path}: {error}"
+            ))
+        })?;
+
+        let mut response_line = String::new();
+        let _bytes_read = {
+            let mut reader = BufReader::new(&mut pipe);
+            reader.read_line(&mut response_line).map_err(|error| {
+                ClientError::Transport(format!(
+                    "Wardoff could not read the reply from {control_pipe_path}: {error}"
+                ))
+            })?
+        };
+        response_line
     };
 
-    if bytes_read == 0 {
+    if response_line.is_empty() {
         return Err(ClientError::Transport(format!(
             "Wardoff did not receive any reply from {control_pipe_path}."
         )));
@@ -275,21 +301,18 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
     })
 }
 
-/// Reads the current runtime status through the dedicated read-only status pipe.
+/// Reads status with a fresh connected-reply budget after the existing connection retries.
 pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
     let status_pipe_path = current_status_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_status_pipe(&status_pipe_path)?;
-    let mut status_line = String::new();
-    let bytes_read = {
-        let mut reader = BufReader::new(&mut pipe);
-        reader.read_line(&mut status_line).map_err(|error| {
-            ClientError::Transport(format!(
-                "Wardoff could not read the status reply from {status_pipe_path}: {error}"
-            ))
-        })?
-    };
+    let pipe = connect_status_pipe(&status_pipe_path)?;
+    let deadline = Instant::now() + STATUS_REPLY_TIMEOUT;
+    let status_line = read_status_reply_until_deadline(&pipe, deadline).map_err(|error| {
+        ClientError::Transport(format!(
+            "Wardoff could not read the status reply from {status_pipe_path}: {error}"
+        ))
+    })?;
 
-    if bytes_read == 0 {
+    if status_line.is_empty() {
         return Err(ClientError::Transport(format!(
             "Wardoff did not receive any status reply from {status_pipe_path}."
         )));
@@ -300,6 +323,144 @@ pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
             "Wardoff received malformed status JSON from {status_pipe_path}: {error}"
         ))
     })
+}
+
+fn read_status_reply_until_deadline(pipe: &File, deadline: Instant) -> std::io::Result<String> {
+    let mut line = Vec::with_capacity(PIPE_BUFFER_SIZE as usize);
+    let mut buffer = [0; 512];
+    loop {
+        // At the limit, one byte distinguishes an oversized frame from compatible EOF.
+        let read_limit = (MAX_STATUS_REPLY_BYTES + 1 - line.len()).min(buffer.len());
+        let read = status_pipe_io_until_deadline(pipe, deadline, |overlapped| unsafe {
+            ReadFile(
+                HANDLE(pipe.as_raw_handle()),
+                Some(&mut buffer[..read_limit]),
+                None,
+                Some(overlapped),
+            )
+        });
+        let bytes_read = match read {
+            Ok(bytes_read) => bytes_read as usize,
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => 0,
+            Err(error) => return Err(error),
+        };
+        if bytes_read == 0 {
+            break;
+        }
+        let newline = buffer[..bytes_read].iter().position(|byte| *byte == b'\n');
+        let line_bytes = newline.map_or(bytes_read, |position| position + 1);
+        if line.len() + line_bytes > MAX_STATUS_REPLY_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Wardoff status reply exceeds {MAX_STATUS_REPLY_BYTES} bytes."),
+            ));
+        }
+        line.extend_from_slice(&buffer[..line_bytes]);
+        if newline.is_some() {
+            break;
+        }
+    }
+    String::from_utf8(line)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn write_status_request_until_deadline(
+    pipe: &File,
+    mut payload: &[u8],
+    deadline: Instant,
+) -> std::io::Result<()> {
+    while !payload.is_empty() {
+        let bytes_written = status_pipe_io_until_deadline(pipe, deadline, |overlapped| unsafe {
+            WriteFile(
+                HANDLE(pipe.as_raw_handle()),
+                Some(payload),
+                None,
+                Some(overlapped),
+            )
+        })? as usize;
+        if bytes_written == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "Wardoff could not finish writing its status request.",
+            ));
+        }
+        payload = &payload[bytes_written..];
+    }
+    Ok(())
+}
+
+fn status_pipe_io_until_deadline<F>(
+    pipe: &File,
+    deadline: Instant,
+    start: F,
+) -> std::io::Result<u32>
+where
+    F: FnOnce(*mut OVERLAPPED) -> windows::core::Result<()>,
+{
+    let timeout = || {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Wardoff timed out waiting for its status reply.",
+        )
+    };
+    if Instant::now() >= deadline {
+        return Err(timeout());
+    }
+    let event = PipeHandle(
+        unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+            .map_err(status_windows_io_error)?,
+    );
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.0,
+        ..OVERLAPPED::default()
+    };
+    if Instant::now() >= deadline {
+        return Err(timeout());
+    }
+    let started = start(&mut overlapped);
+    let pending = match started {
+        Ok(()) => false,
+        Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => true,
+        Err(error) => return Err(status_windows_io_error(error)),
+    };
+    let handle = HANDLE(pipe.as_raw_handle());
+    let mut transferred = 0;
+    if pending {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // Round up so a fractional millisecond does not report an early timeout.
+        let wait_ms = remaining.as_nanos().div_ceil(1_000_000);
+        let wait =
+            unsafe { WaitForSingleObject(event.0, wait_ms.min(u32::MAX as u128 - 1) as u32) };
+        if wait != WAIT_OBJECT_0 {
+            let error = if wait == WAIT_TIMEOUT {
+                timeout()
+            } else {
+                std::io::Error::last_os_error()
+            };
+            // The operation may have completed while cancellation raced with the deadline.
+            // In every case, drain it before the event, OVERLAPPED or caller's buffer is dropped.
+            unsafe {
+                let _ = CancelIoEx(handle, Some(&overlapped));
+                let _ = GetOverlappedResult(handle, &overlapped, &mut transferred, true);
+            }
+            return Err(error);
+        }
+    }
+    // The caller keeps its buffer alive for this call; no helper thread or pending I/O
+    // survives the return. Even immediate completion uses the OVERLAPPED byte count.
+    unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, true) }
+        .map_err(status_windows_io_error)?;
+    if Instant::now() >= deadline {
+        return Err(timeout());
+    }
+    Ok(transferred)
+}
+
+fn status_windows_io_error(error: WindowsError) -> std::io::Error {
+    match WIN32_ERROR::from_error(&error) {
+        Some(code) => std::io::Error::from_raw_os_error(code.0 as i32),
+        None => std::io::Error::other(error),
+    }
 }
 
 impl From<PipeMode> for BlockerMode {
@@ -938,13 +1099,18 @@ fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), Str
         .map_err(|error| format!("Wardoff could not flush its status reply: {error}"))
 }
 
-fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
+fn connect_control_pipe(control_pipe_path: &str, overlapped: bool) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
         match OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(if overlapped {
+                FILE_FLAG_OVERLAPPED.0
+            } else {
+                0
+            })
             .open(control_pipe_path)
         {
             Ok(pipe) => return Ok(pipe),
@@ -976,7 +1142,11 @@ fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
-        match OpenOptions::new().read(true).open(status_pipe_path) {
+        match OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED.0)
+            .open(status_pipe_path)
+        {
             Ok(pipe) => return Ok(pipe),
             Err(error) => {
                 let raw_code = error.raw_os_error();

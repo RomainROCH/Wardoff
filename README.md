@@ -156,6 +156,13 @@ Read-only commands stay non-elevated:
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
 - today, `--status` can still take a few seconds to return `{"state":"inactive"}` when no primary runtime is running; when a runtime is active, the status-pipe path should return quickly
 
+After a status connection succeeds, the reply is limited to 65536 wire bytes
+through the first LF (including both bytes of CRLF), with nonempty JSON at EOF
+also accepted within the limit. A fresh one-second absolute I/O budget covers
+the reply and, on the legacy control path, the Status request write. Connection
+retries remain separate; this is not an overall CLI time limit. A connected
+transport error fails the status command without trying the other pipe.
+
 State-changing/default behavior uses the normal runtime path:
 
 - default `wardoff` startup bootstraps a new visible Block-mode primary runtime and may trigger Wardoff's built-in self-elevation path when admin-only protections are desired
