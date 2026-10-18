@@ -10,12 +10,17 @@ on:
       - dev
       - main
 
+permissions:
+  contents: read
+
 env:
   CARGO_TARGET_DIR: target
 
 jobs:
+  # Preserve this job id and matrix: Safe alone must not satisfy the old ci check.
   ci:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         os:
@@ -26,11 +31,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
 
       - name: Cache Cargo and target
         uses: actions/cache@v4
@@ -42,22 +50,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.rust }}-cargo-
 
-      - name: Cargo check
-        run: cargo check
-
-      - name: Cargo test
-        run: cargo test
-
-      - name: Cargo build --release
-        run: cargo build --release
-
-      - name: Smoke tests
+      - name: Safe validation (native PowerRequest and system smoke excluded)
+        id: safe
         shell: pwsh
-        run: .\tests\smoke_test.ps1
+        run: ./scripts/validate-safe.ps1 -OutputDirectory "$env:RUNNER_TEMP/WardoffSafe"
 
-      - name: Upload release binary
+      - name: Retain Safe evidence (not a qualified release)
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: wardoff-windows-release
-          path: target/release/wardoff.exe
+          name: wardoff-safe-${{ github.sha }}
+          path: ${{ runner.temp }}/WardoffSafe
           if-no-files-found: error
+
+      - name: Required Full qualification (blocked while required evidence is missing)
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          SAFE_CONCLUSION: ${{ steps.safe.outcome || 'not_run' }}
+        run: ./scripts/assert-qualification.ps1 -Scope Integration -SafeConclusion "$env:SAFE_CONCLUSION"

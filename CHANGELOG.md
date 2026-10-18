@@ -4,10 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+Development sources still declare version `0.2.0`; these changes are not a new
+public v0.2.0 binary. A future release version and tag have not been selected.
+See [validation gates](docs/VALIDATION_GATES.md) for the remaining evidence.
+
 ### Changed
+- Bound connected status replies to 65536 wire bytes through the first LF, counting CRLF, with nonempty JSON at EOF accepted within the limit. A fresh absolute one-second I/O budget starts after connection and also covers the legacy Status request write. Connected transport errors do not trigger fallback; connection retry loops remain separate.
+- Require control requests to terminate with LF within 4096 wire bytes and one absolute second, using nonblocking byte reads with 10 ms polling. Reject empty, malformed, oversized, disconnected and unterminated requests, including JSON at EOF without LF, then accept another client. Preserve the separate status worker and same-user/elevation rules.
+- Align the embedded assembly version with the existing Cargo/CLI/PE development version 0.2.0 (assembly 0.2.0.0), without selecting a new release version or changing a tag.
+- Correct status documentation: a free session mutex returns inactive without pipe retries; when the mutex is occupied, unavailable endpoints exhaust their own retry loops and return an error.
+- Prepare explicit Safe source validation and separate native/system qualification gates. Safe success does not establish Full, package, hardware or release acceptance.
 - Replaced the sleep layer's periodic `SetThreadExecutionState` worker with owned system/display Power Requests and an identifiable Wardoff reason. Activation failures now reach the coordinator synchronously, and Allow/exit release the request object.
 - Kept the existing tray wake-restore flow and added only a request-pair renewal to the existing resume callback when the runtime remains in Block, based on the documented termination of requests at user-initiated sleep. No additional resume state machine, display notifications or polling was introduced.
 - Corrected sleep claims throughout maintained docs, CLI help and runtime logs: protection concerns idle sleep and automatic display timeout, subject to Windows policy. Explicit Sleep/Hibernate are not vetoed; Modern Standby on battery has additional limits. The original v0.1.0 hibernation claim below was too broad.
+
+## [0.2.0] - 2026-05-03
+
+Published [v0.2.0](https://github.com/RomainROCH/Wardoff/releases/tag/v0.2.0).
+The changes below come from the
+[tagged source changelog](https://github.com/RomainROCH/Wardoff/blob/2fc4066ae0e48678e5b7efe3ec8289bbcae76525/CHANGELOG.md),
+which still used an Unreleased heading. Obsolete timing and draft-status claims
+from that working copy are omitted; the current behavior is described above.
+
+### Changed
 - Hardened the session-scoped `WardoffControl` and `WardoffStatus` pipes against same-session squatting by claiming first pipe instances with bounded startup retries, failing closed until both IPC servers own their initial instances, and probing the singleton before `wardoff --status` opens IPC endpoints.
 - Scoped the singleton mutex plus the `WardoffControl` and `WardoffStatus` named pipes to the current Windows session so cross-session mutex or pipe squatting no longer breaks Wardoff's single-instance model across all sessions.
 - Hardened structured JSONL logging under `%LOCALAPPDATA%\Wardoff\logs` so Wardoff now creates its managed log directories one component at a time, refuses reparse points in the managed log tree and rotated files, and uses reparse-aware no-follow opens for active and read-only log file access.
@@ -19,7 +38,6 @@ All notable changes to this project will be documented in this file.
 - Hardened `\\.\pipe\WardoffControl` with explicit local-only security that grants the current user SID, SYSTEM, and Builtin Administrators access so the same interactive user can send `--block`/`--allow` across elevation boundaries, while remaining access-denied cases now surface a clear Wardoff message instead of raw `os error 5`.
 - Clarified in README, architecture notes, and agent guidance that Layer 3 is skipped normally on editions such as LTSC when `\Microsoft\Windows\UpdateOrchestrator\Reboot` is absent.
 - Aligned docs on the non-elevated read-only CLI contract, the `\\.\pipe\WardoffControl` and `\\.\pipe\WardoffStatus` split, default startup honesty, and current exit-code wording.
-- Clarified in the docs that `wardoff --status` is quick when a runtime is active but can currently take roughly 4 seconds to return `{"state":"inactive"}` when no instance is running because the client exhausts sequential status-pipe and control-pipe retry loops.
 - Refreshed the documentation truth-source and read order so new contributors and agents can identify the current MVP status, documentation entrypoints, and likely next work from the repository alone.
 - Hardened Allow-mode deactivation so switching to Allow clears Block-mode behavior more cleanly.
 - Tightened autostart tray-sync honesty so elevated task changes are reflected accurately in the tray menu state.
@@ -28,7 +46,6 @@ All notable changes to this project will be documented in this file.
 - Switched Windows release-manifest embedding from manual linker flags to `winres` resource compilation and added a smoke guard that asserts the built release binary still embeds `requestedExecutionLevel level="asInvoker"`.
 - Made the release binary console-friendly for direct PowerShell CLI use, while detaching or hiding console state for long-lived tray/runtime launches so read-only commands stay inline without regressing background UX.
 - Hidden the console window immediately at startup when Wardoff owns a freshly allocated console (double-click, autostart spawn, elevated relaunch child) so the brief console flash is no longer visible before the runtime bootstrap reaches its existing late hide. Inherited shell consoles are still left untouched so read-only CLI commands keep writing to the user's terminal.
-- Aligned the pre-release docs on private reporting wording, community-only support availability, session-scoped IPC wording, and the unreleased status of the `v0.2.0` draft notes.
 
 ## [0.1.0] - 2026-03-22
 

@@ -28,33 +28,54 @@ For local development on Windows, use:
 
 Administrator rights are required for some manual validation paths and some runtime features, especially Update Orchestrator task handling and autostart task changes.
 
+## Safe source validation
+
+Use the explicit Safe entry point for source checks that do not acquire native
+PowerRequests or start the protection runtime:
+
+```powershell
+pwsh -NoProfile -File scripts/validate-safe.ps1
+```
+
+Its exact coverage, receipts and remaining qualification requirements are in
+[docs/VALIDATION_GATES.md](docs/VALIDATION_GATES.md). Report excluded checks by
+name. A Safe PASS is not Full, runtime, hardware, package or release acceptance.
+The current CI/documentation preparation does not qualify a new binary; retained
+package evidence remains bound to its recorded source SHA and executable hash.
+
 ## Build
 
-The main build command to use and document is:
+To build development sources with the locked dependency graph:
 
 ```powershell
-cargo build --release
+cargo build --release --locked
 ```
 
-Useful supporting commands:
+The binary is `target\release\wardoff.exe`. Cargo currently declares `0.2.0`,
+which does not make this development build the existing public v0.2.0 asset.
+A successful build alone does not qualify a release or authorize publication.
 
-```powershell
-cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test
-```
+## Native and system validation
 
-## Smoke test
+Unfiltered `cargo test` includes
+`blocker::sleep::tests::activation_reports_an_acquired_request_before_returning`,
+which acquires and releases real PowerRequests. It is explicitly excluded from
+Safe. The separate `tests/smoke_test.ps1` starts Block/Allow runtimes and can
+modify scheduled tasks; it is not a read-only source check.
 
-Run the repo smoke test with:
+Run those operations only with explicit authorization for their effects in the
+chosen isolated environment. Use a disposable VM for disruptive shutdown,
+reboot or Task Scheduler cases, and suitable hardware for physical sleep,
+display timeout, Hibernate or Modern Standby validation. Consult
+[the validation matrix](docs/MVP_VALIDATION_MATRIX.md) and
+[the qualification gates](docs/VALIDATION_GATES.md); record every skip.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tests\smoke_test.ps1
-```
-
-For the current MVP validation split between automated coverage, manual checks, admin-only checks, and VM-only checks, see [`docs/MVP_VALIDATION_MATRIX.md`](docs/MVP_VALIDATION_MATRIX.md).
-
-Use a disposable VM for disruptive shutdown, reboot, sleep, hibernate, or Task Scheduler validation.
+Full/release qualification remains blocked while required native, system smoke,
+portable CLI, exact-package and hardware evidence is missing. Preserve the
+distinction between the production executable and a CLI test build with changed
+IPC/mutex prefixes. Neither source tests nor another binary's VM/benchmark
+results qualify the future package. Do not weaken required gates, move tags or
+overwrite published assets to make delivery proceed.
 
 ## Current implementation boundaries
 

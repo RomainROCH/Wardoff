@@ -5,81 +5,23 @@ on:
     tags:
       - "v*"
 
+# Qualification preparation only. No writer or publication command is enabled.
 permissions:
-  contents: write
-
-env:
-  CARGO_TARGET_DIR: target
+  contents: read
 
 jobs:
   release:
     runs-on: windows-latest
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout
+      - name: Checkout exact tag source without write credentials
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Generate changelog
-        id: changelog
+      - name: Required release qualification (no publication)
+        if: ${{ always() }}
         shell: pwsh
-        run: |
-          $currentTag = "${{ github.ref_name }}"
-          $previousTag = git describe --tags --abbrev=0 "$currentTag^" 2>$null
-
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousTag)) {
-            $previousTag = $null
-          }
-
-          if ($previousTag) {
-            $commitRange = "$previousTag..$currentTag"
-            $changelogHeader = "## Changes since $previousTag"
-          } else {
-            $commitRange = $currentTag
-            $changelogHeader = "## Changes"
-          }
-
-          $changelog = git log --oneline $commitRange
-
-          if ([string]::IsNullOrWhiteSpace($changelog)) {
-            $changelog = "- No changes found."
-          }
-
-          $releaseBody = @(
-            "This is an unsigned binary built by CI. For a signed binary, see [TODO: Gumroad link]."
-            ""
-            $changelogHeader
-            ""
-            $changelog
-          ) -join [Environment]::NewLine
-
-          "release_body<<EOF" >> $env:GITHUB_OUTPUT
-          $releaseBody >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_BODY: ${{ steps.changelog.outputs.release_body }}
-        run: |
-          gh release create "${{ github.ref_name }}" `
-            --title "${{ github.ref_name }}" `
-            --notes "$env:RELEASE_BODY"
-
-      - name: Upload release asset
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ github.ref_name }}" target/release/wardoff.exe --clobber
+        run: ./scripts/assert-qualification.ps1 -Scope Release -SafeConclusion not_run

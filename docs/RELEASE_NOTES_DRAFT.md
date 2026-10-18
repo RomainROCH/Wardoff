@@ -1,44 +1,74 @@
-# Wardoff v0.2.0 (draft, unreleased)
+# Wardoff development release notes
 
-> Draft only — this version has not shipped yet.
+> Unpublished development notes; no future version or tag has been selected.
+> The public v0.2.0 was released on 3 May 2026. Development sources still
+> declare Cargo version `0.2.0`; local packages are `NOT_PUBLIC_RELEASE`.
 
-## What's new since v0.1.0-mvp
+For the published download, use
+[v0.2.0](https://github.com/RomainROCH/Wardoff/releases/tag/v0.2.0) and its
+[matching source reference](https://github.com/RomainROCH/Wardoff/blob/2fc4066ae0e48678e5b7efe3ec8289bbcae76525/README.md),
+with the corrected power limits below. These notes describe later development,
+not a replacement for that asset.
 
-### Fixed
-- Fixed non-elevated CLI launch paths so read-only commands behave like normal PowerShell and console commands, with more honest exit codes and status output.
-- Fixed status and control IPC edge cases across elevation boundaries, including same-user control-pipe access, mutex access-denied handling, and inactive/handoff reporting.
-- Fixed tray/runtime rough edges around delayed startup, secondary handoff recovery, wake-capable tray actions, allow-mode teardown, and recovery-failure reporting.
-- Fixed autostart tray sync wording so admin-only behavior is reported honestly.
-- Fixed Block mode not restoring after tray-initiated sleep/hibernate wake.
-- Resolved the five original pre-release security blockers: writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex exposure, and WM_ENDSESSION spoofing. Same-session mutex hardening remains local follow-up work.
+## Development changes since public v0.2.0
 
-### Improved
-- Added best-effort internal Layer 2 local `shutdown.exe` detection and abort handling in Block mode, while keeping it out of headline MVP claims and documenting the limits conservatively.
-- Improved Windows launch UX so long-lived runtime launches detach more cleanly from shell sessions and background startup behaves more predictably.
-- Hardened the release manifest and non-elevating read-only CLI dispatch to reduce privilege surprises and keep read-only flows safer.
-- Tightened smoke and validation coverage for read-only CLI paths and process cleanup timing.
-- Added internal security audit (docs/SECURITY_AUDIT.md).
-- Console window no longer flashes on startup.
+- Use owned system/display Power Requests for idle-power protection. Activation
+  failures reach the coordinator synchronously; Allow/exit releases the request.
+  The existing resume callback renews the pair while Wardoff remains in Block.
+- Bound connected status replies to 65536 wire bytes through the first LF,
+  counting CRLF, or nonempty JSON at EOF within the limit. A fresh one-second
+  absolute I/O budget begins after connection; the legacy Status request write
+  shares it. Connection retries remain separate. Transport errors after
+  connection fail without trying the other endpoint.
+- Bound control requests to LF within 4096 wire bytes, counting CRLF, and one
+  absolute second. Nonblocking byte reads poll at 10 ms; arriving fragments do
+  not renew the deadline. Empty, malformed, oversized, disconnected and
+  unterminated requests are rejected. JSON at EOF without LF is rejected,
+  unlike the preserved EOF compatibility for status replies.
+- Preserve the separate status worker and same-user/elevation rules. The control
+  server remains sequential; these read bounds are not overall UI, command or
+  valid-reply-write deadlines. Scheduling and cancellation can add overhead.
+- Correct inactive-status documentation and align the embedded assembly version
+  with Cargo/CLI/PE `0.2.0` / `0.2.0.0`. This selects no new release version.
+- Prepare explicit Safe source checks and separate qualification gates; see
+  [VALIDATION_GATES.md](VALIDATION_GATES.md).
 
-### Documentation
-- Added GitHub issue forms for bug reports, compatibility reports, documentation issues, and feature requests.
-- Added `docs/MVP_VALIDATION_MATRIX.md` and expanded manual validation guidance for tray behavior, Explorer restart recovery, handoff cases, and admin-only paths.
-- Refreshed README, contributing guidance, shutdown-layer docs, CLI exit-code docs, and repo guidance to better reflect the current conservative MVP surface.
-- Cleaned up repo documentation links and removed the old session-tracker status file.
+## Validation and package status
 
-## Known limits
-- Layer 3 (UpdateOrchestrator) is automatically skipped on LTSC editions that lack the `UpdateOrchestrator\Reboot` scheduled task. This is normal.
-- Idle-power requests support S3 and Modern Standby, subject to Windows power policy. Explicit Sleep/Hibernate, lid and power-button actions are not vetoed. Hardware sleep behavior must be tested on a capable machine; VM request visibility alone is not proof.
-- `shutdown /t 0 /f` is not guaranteed blockable. This is a Windows limitation, not a Wardoff bug.
-- The product is source-first: no installer, no package manager distribution yet
+Source checks, isolated IPC fixtures and local package checks are separate
+evidence. The retained local package belongs to source
+`06b95136b28b4de75e779632c5b7f501c5b16f7e`, with executable SHA256
+`0e3a4fe985e5945c78e65fd78006d38698117a8c98f8459d111308008b027c4f`.
+It is a verification artifact, not a public release. This CI/documentation
+preparation does not replace that package or qualify a new executable.
 
-## How to test
-- Clone the repo and run `cargo build --release`
-- Binary: `target\release\wardoff.exe`
-- Requires Windows 10 or later
-- Some features require admin rights (layers 2-4, autostart)
+The extracted production-namespace package was checked with read-only help and
+version commands. Connected CLI cases used a separately built source copy with
+three IPC/mutex prefixes changed. They do not establish connected behavior of
+the production-namespace executable. A portable in-repository CLI fixture and
+its CI evidence are still required.
 
-## How to report issues
-- Bugs: use the bug report issue form
-- Compatibility: use the compatibility report form
-- Questions and feedback: use GitHub Discussions
+Native PowerRequest acquisition and the real system smoke remain **NOT RUN**
+under the current scope. Physical S3/monitor, Hibernate and Modern Standby
+acceptance remains incomplete. Full/release qualification stays blocked while
+the required native, system, portable CLI, exact-package and hardware evidence
+is missing. A Safe PASS, a benchmark or a VM result for another hash does not
+qualify the future download.
+
+## Product limits
+
+- Protection concerns idle sleep and automatic display timeout, subject to
+  Windows power policy. Explicit Sleep/Hibernate, lid and power-button actions
+  are not vetoed. Earlier blanket sleep/hibernate wording was too broad.
+- `shutdown /t 0 /f` is not guaranteed blockable.
+- UpdateOrchestrator protection needs the required rights and task. Its absence
+  on some LTSC editions is an expected limitation.
+- Same-session mutex denial of service, the status pipe's default DACL and other
+  local hardening debt remain in [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+- No installer or package-manager distribution is provided. These notes create
+  no signed-download, support or commercial offer; see
+  [BUSINESS_MODEL.md](BUSINESS_MODEL.md).
+
+Before any future public download, reconcile its unused version/tag, exact
+source/tree, binary digest, matching documentation, tests and explicit limits.
+Preserve existing tags and assets. See the [validation gates](VALIDATION_GATES.md).

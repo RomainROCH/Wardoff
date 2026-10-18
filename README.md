@@ -9,9 +9,31 @@
 
 Wardoff is a Windows-native Rust utility for people who want a visible, scriptable way to keep a machine in a protected **Block** state during gaming sessions, overnight jobs, remote work, or maintenance windows. The project is intentionally honest about what the current MVP does today and what still belongs to later releases.
 
+## Published download and development source
+
+The latest public binary is [v0.2.0, released 3 May 2026](https://github.com/RomainROCH/Wardoff/releases/tag/v0.2.0).
+Use its [matching source reference](https://github.com/RomainROCH/Wardoff/blob/2fc4066ae0e48678e5b7efe3ec8289bbcae76525/README.md)
+for that download. Older sleep/hibernate wording was too broad: idle-power
+requests do not veto explicit Sleep/Hibernate, lid closure or power-button actions.
+
+The rest of this README describes development sources, which still declare
+Cargo version `0.2.0`. That version string does not make a local build identical
+to the public v0.2.0 asset. Local verification packages are `NOT_PUBLIC_RELEASE`;
+CI or documentation preparation does not create a new public binary.
+
+| Area | Published v0.2.0 source | Development source |
+| --- | --- | --- |
+| Idle-power API | `SetThreadExecutionState` | Owned system/display Power Requests |
+| Control request reads | No explicit size/read deadline | LF required within 4096 wire bytes and one second |
+| Connected status replies | No explicit size/read deadline | At most 65536 wire bytes and a fresh one-second I/O budget |
+
+These limits cover IPC reads, not total command execution or every Windows power
+transition. See [validation gates](docs/VALIDATION_GATES.md) for source checks,
+missing qualification evidence and the distinction between Safe and Full.
+
 ## Current MVP status
 
-Wardoff currently ships a working tray/runtime app plus CLI with these MVP-level capabilities:
+The current development source implements a tray/runtime app plus CLI with these MVP-level capabilities:
 
 - Block/Allow runtime state with a red/green tray icon
 - Layer 1 interactive shutdown and sign-out blocking through `WM_QUERYENDSESSION`, `ShutdownBlockReasonCreate()`, and `SetProcessShutdownParameters()`
@@ -66,7 +88,8 @@ For the detailed per-layer behavior and the cautious Layer 2 local `shutdown.exe
 
 ## What comes next
 
-The repo is already in a conservative MVP state, so the next likely work is **hardening and clarifying what already ships**, not pretending a big new feature wave is done.
+The next priority is to harden and validate the implemented MVP, then deliver
+a package with matching documentation and evidence for its exact binary.
 
 Today, a new agent should assume this order of priority:
 
@@ -78,7 +101,8 @@ For the current roadmap summary, read [`PLAN.md`](PLAN.md).
 
 ## Installation
 
-Wardoff is currently source-first.
+Wardoff is source-first. The instructions below build development sources;
+for the published executable, use the versioned download and reference above.
 
 ### Requirements
 
@@ -89,7 +113,7 @@ Wardoff is currently source-first.
 ### Build from source
 
 ```powershell
-cargo build --release
+cargo build --release --locked
 ```
 
 The compiled binary is:
