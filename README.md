@@ -145,7 +145,7 @@ wardoff --version
 - `wardoff --log` prints recent structured log entries
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
-- `wardoff --version` prints the package version, for example `wardoff 0.1.0`
+- `wardoff --version` prints the package version as `wardoff <version>`
 - direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
 Read-only commands stay non-elevated:
@@ -154,7 +154,8 @@ Read-only commands stay non-elevated:
 - `--status` reads status through the dedicated session-scoped `WardoffStatus` named pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
-- today, `--status` can still take a few seconds to return `{"state":"inactive"}` when no primary runtime is running; when a runtime is active, the status-pipe path should return quickly
+- when no primary runtime owns the session mutex, `--status` returns `{"state":"inactive"}` with exit code `1` without opening either pipe
+- when the mutex is occupied, `--status` prefers the dedicated status pipe and falls back to the control pipe only when the status endpoint is unavailable. Each endpoint retains its own connection retries; unavailable endpoints produce an error rather than an inactive result
 
 After a status connection succeeds, the reply is limited to 65536 wire bytes
 through the first LF (including both bytes of CRLF), with nonempty JSON at EOF
@@ -171,6 +172,14 @@ State-changing/default behavior uses the normal runtime path:
 - if the active primary runtime belongs to a different Windows user context, Wardoff reports that product mismatch clearly instead of surfacing a raw pipe access-denied error
 - when a CLI launch would create a new long-lived primary runtime from an existing shell console, Wardoff relaunches that runtime in a detached background process so the shell prompt is not left hanging
 - when the long-lived runtime starts from Explorer, autostart, or another launch path without an inherited shell console, Wardoff hides and frees any dedicated console window during startup
+
+Control-pipe requests must be JSON terminated by LF within 4096 wire bytes,
+including LF and both bytes of CRLF when used. One absolute one-second read
+budget covers the complete request; arriving fragments do not renew it.
+Empty, malformed, oversized, disconnected or unterminated requests are rejected
+before another control client is accepted. Unlike status replies, requests
+without LF are rejected even when nonempty JSON is followed by EOF. Scheduling
+can add overhead; these bounds are not an overall command execution deadline.
 
 Example status output while Wardoff is active:
 

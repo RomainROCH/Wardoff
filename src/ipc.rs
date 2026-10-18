@@ -18,9 +18,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR, WPARAM,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE,
+    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING, ERROR_NO_DATA,
+    ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM,
+    WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR, WPARAM,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -34,8 +35,8 @@ use windows::Win32::Storage::FileSystem::{
     FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, PIPE_ACCESS_OUTBOUND,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE,
+    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
@@ -46,6 +47,10 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
 const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
+// The complete request line must fit, including LF and CR when CRLF is used.
+const MAX_REQUEST_BYTES: usize = 4096;
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(1);
+const REQUEST_READ_POLL_DELAY: Duration = Duration::from_millis(10);
 // Wire bytes through the first newline, including CRLF when present. EOF is also accepted.
 const MAX_STATUS_REPLY_BYTES: usize = 64 * 1024;
 const STATUS_REPLY_TIMEOUT: Duration = Duration::from_secs(1);
@@ -680,17 +685,15 @@ fn run_server_loop(
                 }
             }
             Err(error) => {
-                let _ = write_response(
-                    &mut pipe,
-                    &IpcResponse::Error {
-                        message: error.clone(),
-                    },
-                );
-                warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
+                // Failed mode transitions have no proven nonblocking handle: close without replying.
+                if error.reply_is_nonblocking {
+                    let _ = write_rejection_response(&pipe, &error.message);
+                }
+                warn!("Wardoff rejected an IPC request: {}", error.message);
                 logger::log_event(
                     "ipc_request_rejected",
                     EventSource::Ipc,
-                    format!("Wardoff rejected an IPC request: {error}"),
+                    format!("Wardoff rejected an IPC request: {}", error.message),
                     false,
                 );
             }
@@ -1057,21 +1060,138 @@ fn is_retryable_initial_pipe_claim_error(error_code: u32) -> bool {
     error_code == ERROR_ACCESS_DENIED.0
 }
 
-fn read_request(pipe: &mut File) -> Result<IpcRequest, String> {
-    let mut request_line = String::new();
-    let bytes_read = {
-        let mut reader = BufReader::new(pipe);
-        reader
-            .read_line(&mut request_line)
-            .map_err(|error| format!("Wardoff could not read an IPC request: {error}"))?
-    };
+struct RequestReadError {
+    message: String,
+    reply_is_nonblocking: bool,
+}
 
-    if bytes_read == 0 {
-        return Err("Wardoff received an empty IPC request.".to_string());
+fn read_request(pipe: &mut File) -> Result<IpcRequest, RequestReadError> {
+    let deadline = Instant::now() + REQUEST_READ_TIMEOUT;
+    let handle = HANDLE(pipe.as_raw_handle());
+    // Only this server thread owns the synchronous handle. Byte reads assemble
+    // the first JSON line even when the client sends several pipe messages.
+    let read_mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    unsafe { SetNamedPipeHandleState(handle, Some(&read_mode), None, None) }.map_err(|error| {
+        RequestReadError {
+            message: format!("Wardoff could not bound its IPC request read: {error}"),
+            reply_is_nonblocking: false,
+        }
+    })?;
+
+    let request =
+        read_request_until_deadline(pipe, deadline).map_err(|message| RequestReadError {
+            message,
+            reply_is_nonblocking: true,
+        })?;
+
+    // Preserve existing valid-command reply behavior. On failure, do not assume
+    // the resulting mode and do not attempt an error write on this connection.
+    let reply_mode = PIPE_READMODE_MESSAGE | PIPE_WAIT;
+    unsafe { SetNamedPipeHandleState(handle, Some(&reply_mode), None, None) }.map_err(|error| {
+        RequestReadError {
+            message: format!("Wardoff could not restore its IPC reply mode: {error}"),
+            reply_is_nonblocking: false,
+        }
+    })?;
+    Ok(request)
+}
+
+fn read_request_until_deadline(pipe: &File, deadline: Instant) -> Result<IpcRequest, String> {
+    let mut request_line = Vec::with_capacity(MAX_REQUEST_BYTES);
+    loop {
+        if Instant::now() >= deadline {
+            return Err("Wardoff timed out reading an IPC request.".to_string());
+        }
+        let mut buffer = [0; 512];
+        let mut bytes_read = 0;
+        // Keep ERROR_NO_DATA distinct from EOF; File::read can map it to zero.
+        // NOWAIT is set before entering this loop, so no helper or pending I/O
+        // survives a timeout. It is a polling mode, not overlapped I/O.
+        let read = unsafe {
+            ReadFile(
+                HANDLE(pipe.as_raw_handle()),
+                Some(&mut buffer),
+                Some(&mut bytes_read),
+                None,
+            )
+        };
+        let error_code = unsafe { GetLastError() };
+        if Instant::now() >= deadline {
+            return Err("Wardoff timed out reading an IPC request.".to_string());
+        }
+        match read {
+            Ok(()) if bytes_read == 0 => {
+                return Err(incomplete_request_error(request_line.is_empty()));
+            }
+            Ok(()) => {
+                let bytes_read = bytes_read as usize;
+                let newline = buffer[..bytes_read].iter().position(|byte| *byte == b'\n');
+                let line_bytes = newline.map_or(bytes_read, |position| position + 1);
+                if request_line.len() + line_bytes > MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+                request_line.extend_from_slice(&buffer[..line_bytes]);
+                if newline.is_some() {
+                    let line = std::str::from_utf8(&request_line)
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))?;
+                    if line.trim().is_empty() {
+                        return Err("Wardoff received an empty IPC request.".to_string());
+                    }
+                    return serde_json::from_str(line.trim_end())
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"));
+                }
+                // LF is required; it cannot fit after MAX_REQUEST_BYTES non-LF bytes.
+                if request_line.len() == MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+            }
+            Err(_) if error_code == ERROR_NO_DATA => {
+                thread::sleep(
+                    REQUEST_READ_POLL_DELAY.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(_) if error_code == ERROR_BROKEN_PIPE => {
+                return Err(incomplete_request_error(request_line.is_empty()));
+            }
+            Err(error) => return Err(format!("Wardoff could not read an IPC request: {error}")),
+        }
     }
+}
 
-    serde_json::from_str(request_line.trim_end())
-        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))
+fn incomplete_request_error(empty: bool) -> String {
+    if empty {
+        "Wardoff received an empty IPC request.".to_string()
+    } else {
+        "Wardoff received an IPC request without a terminating newline.".to_string()
+    }
+}
+
+fn write_rejection_response(pipe: &File, message: &str) -> Result<(), String> {
+    let mut payload = serde_json::to_vec(&IpcResponse::Error {
+        message: message.to_string(),
+    })
+    .map_err(|error| format!("Wardoff could not serialize an IPC rejection: {error}"))?;
+    payload.push(b'\n');
+    let mut written = 0;
+    // One best-effort NOWAIT write; never flush or wait for an uncooperative
+    // rejected client. A message that does not fit may produce zero bytes.
+    unsafe {
+        WriteFile(
+            HANDLE(pipe.as_raw_handle()),
+            Some(&payload),
+            Some(&mut written),
+            None,
+        )
+    }
+    .map_err(|error| format!("Wardoff could not send an IPC rejection: {error}"))?;
+    if written as usize != payload.len() {
+        return Err("Wardoff could not finish its nonblocking IPC rejection.".to_string());
+    }
+    Ok(())
 }
 
 fn write_response(pipe: &mut File, response: &IpcResponse) -> Result<(), String> {
@@ -1319,8 +1439,7 @@ fn current_process_user_sid_string(control_pipe_path: &str) -> Result<String, St
 }
 
 fn wake_status_server() -> std::io::Result<()> {
-    let status_pipe_path =
-        current_status_pipe_path().map_err(|error| std::io::Error::other(error))?;
+    let status_pipe_path = current_status_pipe_path().map_err(std::io::Error::other)?;
     OpenOptions::new()
         .read(true)
         .open(status_pipe_path)

@@ -4,10 +4,12 @@
 - Auditor: automated internal review
 - Scope: full source review of src/
 - Wardoff version: c419316cbb9f0c7f0449a7dcbbc3f7b67a64e03a
+- Implementation update: 2026-10-18, control request read bounds only; this is not a new full-source audit.
+- Validation: this update describes implementation changes; test results and release acceptance are separate.
 
 ## Summary
 
-Wardoff is materially safer than it was at the previous audit point and is acceptable for distribution to source-first technical early adopters on self-administered machines, but it is still **not yet hardened** for a hostile local-attacker model or multi-user deployment scenarios. The five original pre-release blockers around writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex scope, and spoofed `WM_ENDSESSION` teardown are resolved in the current `dev` state. The remaining concerns are same-session/local hardening debt: residual log file targeting, same-session mutex denial of service, the status pipe's default DACL, and the control pipe's unbounded single-client request read path.
+Wardoff is materially safer than it was at the previous audit point and is acceptable for distribution to source-first technical early adopters on self-administered machines, but it is still **not yet hardened** for a hostile local-attacker model or multi-user deployment scenarios. The five original pre-release blockers around writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex scope, and spoofed `WM_ENDSESSION` teardown are resolved in the current `dev` state. The remaining concerns are same-session/local hardening debt: residual log file targeting, same-session mutex denial of service, and the status pipe's default DACL. The control request reader now has explicit size and time bounds, described in the implementation update below; its verification does not qualify a release.
 
 ## Findings
 
@@ -91,15 +93,15 @@ Wardoff is materially safer than it was at the previous audit point and is accep
 - **Fix status:** **still open**
 - **Recommended fix:** Apply an explicit reviewed security descriptor to the status pipe as well.
 
-### [MEDIUM] Control pipe request handling still allows single-client read denial of service
+### [MEDIUM] Control request read bounds implemented; validation remains separate
 
-- **Location:** `src/ipc.rs:430-537`, `src/ipc.rs:899-914`
-- **Attack surface:** Named pipe security
-- **Description:** The control server still accepts one client at a time and blocks on `BufRead::read_line` with no explicit size cap or read timeout. A client that connects and never finishes a line can still stall command processing.
-- **Exploitability:** Any local client that can connect to the control pipe can deny service to other control requests for the duration of that stalled read.
-- **Risk for early-adopter release:** **fix before broader distribution**
-- **Fix status:** **still open**
-- **Recommended fix:** Add request-size caps plus read timeouts or a more defensive multi-client/overlapped handling model.
+- **Location:** `src/ipc.rs`: `read_request`, `read_request_until_deadline` and the `MAX_REQUEST_BYTES` / `REQUEST_READ_TIMEOUT` constants
+- **Attack surface:** Named pipe availability
+- **Description:** Control requests now require LF within 4096 wire bytes, counting LF and CRLF, and one absolute one-second read budget. Server-owned nonblocking byte reads poll at 10 ms without renewing the deadline on arriving fragments. Empty, malformed, oversized, disconnected and unterminated requests are rejected; nonempty JSON at EOF without LF is also rejected. Rejection replies remain nonblocking, while valid commands restore the prior blocking reply mode.
+- **Exploitability:** The implementation bounds one request read and its allocation. The server remains sequential: repeated clients, UI work and valid-command reply writes are not given an overall deadline by this change. The separate status worker remains in place; this is not a claim that all denial-of-service paths are eliminated.
+- **Risk for early-adopter release:** **verify rejection, recovery and cleanup before broader distribution**
+- **Fix status:** **bounds implemented; verification results recorded separately**
+- **Recommended follow-up:** Verify exact-limit and CRLF behavior, malformed/empty/oversized/unterminated input, trickle and silent clients, disconnect/recovery and clean shutdown using isolated endpoints. Preserve same-user/elevation rules; this update changes no ACL.
 
 ### [MEDIUM] Scheduled-task ACL hardening is still not explicit
 
@@ -154,4 +156,4 @@ Additional notes:
 
 ## Conclusion
 
-Wardoff is acceptable for distribution to source-first technical early adopters on self-administered machines. The five original pre-release blockers (writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex, WM_ENDSESSION spoofing) are resolved. Known remaining items (same-session mutex DoS, status pipe default DACL, control pipe unbounded read, residual log file targeting) are local hardening debt against same-session adversaries, not exploitable privilege escalation. Wardoff is not yet hardened against a hostile local-attacker model or multi-user deployment scenarios.
+Wardoff is acceptable for distribution to source-first technical early adopters on self-administered machines. The five original pre-release blockers (writable-path autostart, log-directory symlink abuse, named-pipe squatting, cross-session mutex, WM_ENDSESSION spoofing) are resolved. Known remaining items (same-session mutex DoS, status pipe default DACL, residual log file targeting) are local hardening debt against same-session adversaries, not exploitable privilege escalation. The control request read bounds require separate verification and do not establish release acceptance. Wardoff is not yet hardened against a hostile local-attacker model or multi-user deployment scenarios.

@@ -250,6 +250,17 @@ Current request types include:
 - autostart changes
 - internal server shutdown during orderly app exit
 
+Control requests must terminate with LF within 4096 wire bytes, including LF
+and both bytes of CRLF when used. The server uses nonblocking byte reads with
+10 ms polling and one absolute one-second read budget. Fragments do not renew
+the deadline. Empty, malformed, oversized, disconnected or unterminated requests
+are rejected; EOF without LF is rejected even for nonempty JSON. Rejections
+remain nonblocking so a client that does not read its error reply cannot hold
+the next accept through that reply. Accepted requests restore the existing
+blocking reply mode. The server remains sequential, and the separate status
+worker and same-user/elevation rules are retained. Scheduling can add overhead;
+the read budget does not bound UI handling or valid-command reply writes.
+
 `wardoff --status` is handled specially: it prefers the dedicated read-only status pipe so a non-elevated shell can still query an elevated primary runtime without gaining access to the state-changing control pipe. State-changing secondary commands continue to use the session-scoped `WardoffControl` pipe for the current Windows session.
 
 Connected status replies are bounded to prevent a silent or incomplete peer from
@@ -260,8 +271,9 @@ bytes through the first LF, counting CRLF, or nonempty JSON at EOF within the
 limit. Pending overlapped I/O is cancelled and drained before its resources are
 released; scheduling and cancellation completion can add overhead. Client access
 rights are unchanged, and the dedicated status handle remains read-only.
-Connected transport errors do not trigger fallback, and ordinary control commands
-retain their existing behavior. The connection retry loops below are unchanged.
+Connected transport errors do not trigger fallback, and ordinary control clients
+retain their existing write/reply behavior. The connection retry loops below
+are unchanged.
 
 The control pipe is now created with explicit local-only security instead of the process-default descriptor:
 
@@ -270,7 +282,14 @@ The control pipe is now created with explicit local-only security instead of the
 - a medium-integrity mandatory label allows the same interactive Windows user to send control commands to an elevated primary runtime
 - if a caller still hits access denied, Wardoff maps that to a clear product message instead of returning a raw Win32 pipe error
 
-At the moment, the inactive `wardoff --status` path is intentionally conservative but slow: when no primary runtime is present, the client first retries the read-only status pipe and then retries the control pipe before concluding that Wardoff is inactive. Each pipe path currently uses 20 attempts with a 100 ms delay, so the fully inactive path accumulates to roughly 4 seconds before returning `{"state":"inactive"}`. This current delay comes from the sequential named-pipe retry loops, not from UAC.
+When the session mutex is free, `wardoff --status` returns
+`{"state":"inactive"}` with exit code `1` without opening either pipe. When the
+mutex is occupied, it first tries the read-only status endpoint, then the
+legacy control endpoint only if the status endpoint is unavailable. Each
+endpoint retains 20 connection attempts with at most 19 pauses of 100 ms;
+when both are unavailable, those sequential retries can take about four seconds
+plus overhead and return an error, not an inactive result. The fresh connected
+I/O budgets are separate; none of these limits is an overall CLI deadline.
 
 ### Why the UI thread handles requests
 
