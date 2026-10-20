@@ -28,12 +28,12 @@ current [CI workflow](../.github/workflows/ci.yml) and
 | Path | Effects and required access | Cleanup and remaining limits |
 | --- | --- | --- |
 | [Native PowerRequest test](../src/blocker/sleep.rs), `blocker::sleep::tests::activation_reports_an_acquired_request_before_returning` | Creates a real request object, sets SYSTEM/DISPLAY requests, renews them and releases them in ten cycles. It requests no elevation and causes no physical suspend or power-policy write. | Normal release attempts both clears and closes the private handle, including acquisition rollback. This remains a native power action even though it is brief. |
-| [Smoke entrypoint](../tests/smoke_test.ps1) | Stops processes matching the resolved executable path, rebuilds the release binary, launches `--block --hide`, sends Block/Allow commands and writes real user logs. | Matching by path does not prove that the test created a process. There is no ownership guard protecting an existing runtime at that path. A runtime at another path in the same session can receive commands through the singleton. The rebuild means the smoke does not prove use of previously frozen binary bytes. |
+| [Smoke entrypoint](../tests/smoke_test.ps1) | Tests an explicit SHA256-bound existing binary, launches an owned runtime without detaching, sends Block/Allow commands and writes isolated application logs. No build occurs. | Guards refuse known process/task/mutex/pipe conflicts; only retained process handles are stopped. An exclusive disposable VM/session is still required because CLI forwarding cannot atomically pin a primary against concurrent actors. Native adapters remain untested; see [protocol](SMOKE_PROTOCOL.md). |
 | [Block bootstrap](../src/main.rs) and [coordinator](../src/blocker/mod.rs) | Starts local ETW, UpdateOrchestrator monitoring, shutdown-abort polling, PowerRequests and session shutdown blocking. Explicit `--block` inherits the caller's token; the separate default no-argument path can request elevation. | Allow and normal shutdown deactivate layers; failed activation attempts rollback. Starting the real coordinator is not equivalent to an inert IPC fixture. |
 | [Local ETW](../src/blocker/local.rs) and [shutdown abort](../src/blocker/abort.rs) | Starts a real-time Kernel-Process trace where allowed, and can call `AbortSystemShutdownW(None)`. Shutdown-abort code attempts to enable an already assigned shutdown privilege in its process token. | Normal ETW cleanup stops its session and closes the consumer. Shutdown-abort polling can cancel a real pending shutdown while active; it is not a harmless status query. |
 | [UpdateOrchestrator](../src/blocker/update.rs) | When elevated and the Reboot task exists, can set its enabled state to false and recheck it periodically. Without elevation or a usable task, the layer skips. | Normal stop attempts to restore enabled state only when the task was initially enabled. Restoration errors are logged. A task initially disabled stays disabled. Abrupt process termination does not execute this restoration. |
-| [Autostart](../src/autostart.rs) | Requires elevation; enabling also checks the executable and working directory against the interactive medium token. Can create/update `\Wardoff` with a highest-level current-user logon trigger, or delete it. | The current smoke saves only original presence/absence, not task XML, action, enabled state or identity. Its best-effort cleanup cannot restore an overwritten definition and can swallow restoration errors. |
-| Smoke's final forced termination | Re-enters Block, then force-kills the runtime without Allow first. | Process-owned PowerRequest handles do not establish cleanup of Reboot task changes or the ETW session. Rust normal cleanup is bypassed; this script does not prove that those resources were restored. |
+| [Autostart](../src/autostart.rs) | Requires elevation; enabling also checks the executable and working directory against the interactive medium token. Can create/update `\Wardoff` with a highest-level current-user logon trigger, or delete it. | The corrected harness refuses an existing autostart task. It tracks a creation attempt before the command, captures XML/security/action/principal identity and deletes only an unchanged owned task. Conflicts and cleanup failures fail the run; simulated checks do not prove the native adapter. |
+| Smoke's final forced termination | Re-enters Block, then force-kills the runtime without Allow first. | The harness then restores original Reboot Enabled only if definition/security still match, stops exact owned ETW names and verifies absence. Cleanup attempts independent resources and aggregates failures. This behavior has been simulated; real Windows cleanup still requires the authorized VM protocol. |
 
 The smoke does not deliberately initiate physical shutdown, reboot, Sleep or
 Hibernate. Its native effects above are still real. The workflow's Windows runner
@@ -112,19 +112,17 @@ document:
 
 ```powershell
 cargo test --locked blocker::sleep::tests::activation_reports_an_acquired_request_before_returning -- --exact --nocapture --test-threads=1
-powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_test.ps1
+# Native smoke requires explicit binary/hash/target parameters; see SMOKE_PROTOCOL.md.
 ```
 
-Before considering execution, obtain authorization naming a disposable Windows
-target and the permitted native effects. First fix the smoke harness's ownership
-and cleanup in a separate follow-up: refuse conflicting runtimes/tasks, track
-only owned processes, preserve and verify original task XML/identity, and prove
-Reboot-task restoration and owned ETW-session cleanup, including failure and
-forced-termination cases. Those guarantees are not established today. No manual
-native job is wired before that cleanup work is corrected and reviewed.
+Before considering execution, obtain authorization naming the disposable Windows
+target and permitted native effects in [SMOKE_PROTOCOL.md](SMOKE_PROTOCOL.md).
+The ownership and resource-cleanup harness has been prepared and tested with
+simulations and inert children. Its native Task Scheduler/ETW adapters have not
+been exercised. No manual native job is wired and no qualification is cleared
+by that preparation. The existing gate remains intentionally fail-closed.
 
-The next local work is to prepare that harness correction without running the
-real smoke, then version a portable harness for the thirteen isolated CLI checks.
-The CLI evidence must identify its namespace substitutions and source/binary
-binding; it does not qualify production-namespace bytes automatically. Decide on
-VM/native-test execution only when those preparations are concrete and reviewable.
+The next real validation is the exact-binary VM protocol after authorization.
+The portable harness for the thirteen isolated CLI checks and authenticated
+run/package binding remain separate unfinished qualifications. A VM run does
+not establish physical power-transition acceptance.

@@ -1,39 +1,45 @@
+<#
+Native integration smoke for an explicitly authorized disposable Windows VM/session.
+Real Block/Allow, PowerRequests, ETW and scheduled-task effects occur when run.
+No compilation: tests the supplied exact binary. Guards refuse known conflicts;
+a dedicated session with no concurrent Wardoff actors is still required because
+production CLI singleton forwarding cannot pin a target PID atomically.
+#>
 [CmdletBinding()]
-param()
-
+param(
+    [Parameter(Mandatory)][string] $BinaryPath,
+    [Parameter(Mandatory)][ValidatePattern('^[a-fA-F0-9]{64}$')][string] $ExpectedBinarySha256,
+    [Parameter(Mandatory)][string] $OutputDirectory,
+    [switch] $IsolatedTarget,
+    [switch] $RequireAutostartLifecycle
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-$script:Results = [System.Collections.Generic.List[object]]::new()
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'This harness requires PowerShell 7.' }
+if (-not $IsolatedTarget) { throw 'Refusing native smoke: an authorized disposable VM/session is required (-IsolatedTarget describes that prerequisite, not authorization).' }
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$binaryPath = [IO.Path]::GetFullPath($BinaryPath)
+if ([IO.Path]::GetFileName($binaryPath) -ine 'wardoff.exe') { throw 'The supplied production executable must retain the name wardoff.exe.' }
+if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) { throw 'The exact supplied binary does not exist; no build fallback is allowed.' }
+$runRoot = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) ('smoke-' + [guid]::NewGuid().ToString('N'))
+if (Test-Path -LiteralPath $runRoot) { throw 'Evidence destination already exists.' }
+[void](New-Item -ItemType Directory -Path $runRoot -ErrorAction Stop)
+$script:RuntimeEnvironment = @{ APPDATA=(Join-Path $runRoot 'appdata'); LOCALAPPDATA=(Join-Path $runRoot 'localappdata') }
+foreach ($path in $script:RuntimeEnvironment.Values) { [void](New-Item -ItemType Directory -Path $path -ErrorAction Stop) }
+$logPath = Join-Path $script:RuntimeEnvironment.LOCALAPPDATA 'Wardoff/logs/wardoff.jsonl'
+$script:Results = [Collections.Generic.List[object]]::new()
+$script:OwnedProcesses = [Collections.Generic.List[object]]::new()
 $script:BackgroundProcess = $null
 $script:InitialLogLineCount = 0
-
-$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$logPath = Join-Path (Join-Path $env:LOCALAPPDATA 'Wardoff') 'logs\wardoff.jsonl'
-
-function Resolve-BinaryPath {
-    $releasePath = 'release\wardoff.exe'
-    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_BUILD_TARGET)) {
-        $releasePath = Join-Path $env:CARGO_BUILD_TARGET $releasePath
-    }
-    $defaultBinaryPath = Join-Path (Join-Path $repoRoot 'target') $releasePath
-
-    try {
-        $metadataJson = & cargo metadata --format-version 1 --no-deps 2>$null
-        if (-not [string]::IsNullOrWhiteSpace($metadataJson)) {
-            $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
-            if (-not [string]::IsNullOrWhiteSpace($metadata.target_directory)) {
-                return Join-Path $metadata.target_directory $releasePath
-            }
-        }
-    }
-    catch {
-    }
-
-    return $defaultBinaryPath
-}
-
-$binaryPath = Resolve-BinaryPath
+$script:RuntimeOutput = $null
+$script:RuntimeError = $null
+$script:AutostartLifecyclePassed = $false
+$script:Lease = [Diagnostics.Stopwatch]::StartNew()
+$script:BinaryLock = $null
+. (Join-Path $PSScriptRoot 'smoke_helpers.ps1')
+. (Join-Path $PSScriptRoot 'smoke_process.ps1')
+. (Join-Path $PSScriptRoot 'smoke_resources.ps1')
+$script:ResourceState = New-SmokeResourceState -BinaryPath $binaryPath -WorkingDirectory (Split-Path -Parent $binaryPath)
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -223,167 +229,43 @@ function Assert-Condition {
 }
 
 function Invoke-ExternalCommand {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $FilePath,
-        [string[]] $Arguments = @(),
-        [string] $WorkingDirectory = $repoRoot
-    )
-
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
-
-    try {
-        $process = Start-Process -FilePath $FilePath `
-            -ArgumentList $Arguments `
-            -WorkingDirectory $WorkingDirectory `
-            -Wait `
-            -PassThru `
-            -NoNewWindow `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-
-        $stdout = if (Test-Path $stdoutPath) {
-            Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue
-        }
-        else {
-            ''
-        }
-        $stderr = if (Test-Path $stderrPath) {
-            Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue
-        }
-        else {
-            ''
-        }
-        $exitCode = $process.ExitCode
+    param([Parameter(Mandatory)][string] $FilePath, [string[]] $Arguments=@(),
+          [string] $WorkingDirectory=(Split-Path -Parent $binaryPath))
+    if ($script:Lease.Elapsed.TotalSeconds -gt 180) { throw 'Smoke runtime lease exceeded 180 seconds.' }
+    $isProduct = [string]::Equals([IO.Path]::GetFullPath($FilePath), $binaryPath, [StringComparison]::OrdinalIgnoreCase)
+    if ($isProduct -and (@($Arguments | Where-Object { $_ -in @('--block','--allow','--autostart') }).Count -gt 0)) {
+        Assert-SmokeOwnedRuntime
     }
-    catch {
-        throw "Failed to run '$FilePath': $($_.Exception.Message)"
+    if ($isProduct -and (@($Arguments | Where-Object { $_ -in @('--block','--allow','--hide') }).Count -gt 0)) {
+        $Arguments += '--wardoff-detached-runtime'
     }
-    finally {
-        Remove-Item -Path $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    $options=@{ FilePath=$FilePath; Arguments=$Arguments; WorkingDirectory=$WorkingDirectory; Environment=$script:RuntimeEnvironment; TimeoutMilliseconds=15000 }
+    if ($isProduct) {
+        $options.RetainProcess=$true
+        $options.OnStarted={ param($process) $script:OwnedProcesses.Add($process) }
     }
-
-    $stdout = if ($null -eq $stdout) { '' } else { [string]$stdout }
-    $stderr = if ($null -eq $stderr) { '' } else { [string]$stderr }
-    $stdout = [string] $stdout
-    $stderr = [string] $stderr
-    $stdout = $stdout.Trim()
-    $stderr = $stderr.Trim()
-    $text = @($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $text = ($text -join [Environment]::NewLine).Trim()
-    return [pscustomobject]@{
-        ExitCode       = $exitCode
-        StandardOutput = $stdout
-        StandardError  = $stderr
-        Output         = $text
-    }
+    Invoke-SmokeChildCommand @options
 }
 
 function Invoke-ExternalCommandWithRepoProcessTracking {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $FilePath,
-        [string[]] $Arguments = @(),
-        [string] $WorkingDirectory = $repoRoot,
-        [int] $PollIntervalMilliseconds = 25,
-        [int] $PostExitGraceMilliseconds = 250
-    )
-
-    $observedRepoProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-    $observedWardoffProcessIds = [System.Collections.Generic.HashSet[int]]::new()
-    $initialWardoffProcessIds = @(
-        Get-WardoffProcessesByName |
-            ForEach-Object { [int] $_.ProcessId } |
-            Sort-Object -Unique
-    )
-
-    try {
-        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = $FilePath
-        $startInfo.Arguments = @(
-            $Arguments | ForEach-Object {
-                $argumentText = [string] $_
-                if ($argumentText -match '[\s"]') {
-                    '"' + ($argumentText -replace '"', '\"') + '"'
-                }
-                else {
-                    $argumentText
-                }
-            }
-        ) -join ' '
-        $startInfo.WorkingDirectory = $WorkingDirectory
-        $startInfo.UseShellExecute = $false
-        $startInfo.RedirectStandardOutput = $true
-        $startInfo.RedirectStandardError = $true
-
-        $process = [System.Diagnostics.Process]::new()
-        $process.StartInfo = $startInfo
-        $null = $process.Start()
-
-        do {
-            $process.Refresh()
-
-            foreach ($wardoffProcess in @(Get-WardoffProcessesByName)) {
-                $null = $observedWardoffProcessIds.Add([int] $wardoffProcess.ProcessId)
-            }
-
-            foreach ($repoProcess in @(Get-RepoWardoffProcesses)) {
-                $null = $observedRepoProcessIds.Add([int] $repoProcess.ProcessId)
-            }
-
-            if ($process.HasExited) {
-                break
-            }
-
-            Start-Sleep -Milliseconds $PollIntervalMilliseconds
+    param([Parameter(Mandatory)][string] $FilePath, [string[]] $Arguments=@(),
+          [string] $WorkingDirectory=(Split-Path -Parent $binaryPath),
+          [int] $PollIntervalMilliseconds=25, [int] $PostExitGraceMilliseconds=250)
+    $initial=@(Get-WardoffProcessesByName | ForEach-Object { [int]$_.ProcessId })
+    $observed=[Collections.Generic.HashSet[int]]::new()
+    $repoObserved=[Collections.Generic.HashSet[int]]::new()
+    $started=@{ Id=0 }
+    $r=Invoke-SmokeChildCommand -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
+        -Environment $script:RuntimeEnvironment -TimeoutMilliseconds 15000 -RetainProcess `
+        -OnStarted { param($p) $started.Id=$p.Id; $script:OwnedProcesses.Add($p) } `
+        -OnPoll {
+            foreach($p in @(Get-WardoffProcessesByName)){ [void]$observed.Add([int]$p.ProcessId) }
+            foreach($p in @(Get-RepoWardoffProcesses)){ [void]$repoObserved.Add([int]$p.ProcessId) }
         }
-        while ($true)
-
-        $null = $process.WaitForExit()
-        $process.Refresh()
-
-        $extraPolls = [Math]::Max(1, [int] [Math]::Ceiling($PostExitGraceMilliseconds / [Math]::Max(1, $PollIntervalMilliseconds)))
-        for ($poll = 0; $poll -lt $extraPolls; $poll++) {
-            Start-Sleep -Milliseconds $PollIntervalMilliseconds
-            foreach ($wardoffProcess in @(Get-WardoffProcessesByName)) {
-                $null = $observedWardoffProcessIds.Add([int] $wardoffProcess.ProcessId)
-            }
-            foreach ($repoProcess in @(Get-RepoWardoffProcesses)) {
-                $null = $observedRepoProcessIds.Add([int] $repoProcess.ProcessId)
-            }
-        }
-
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $exitCode = $process.ExitCode
-    }
-    catch {
-        throw "Failed to run '$FilePath' with process tracking: $($_.Exception.Message)"
-    }
-
-    $stdout = if ($null -eq $stdout) { '' } else { [string] $stdout }
-    $stderr = if ($null -eq $stderr) { '' } else { [string] $stderr }
-    $stdout = $stdout.Trim()
-    $stderr = $stderr.Trim()
-    $text = @($stdout, $stderr) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-    $text = ($text -join [Environment]::NewLine).Trim()
-
-    return [pscustomobject]([ordered]@{
-        ExitCode                 = $exitCode
-        StandardOutput           = $stdout
-        StandardError            = $stderr
-        Output                   = $text
-        LaunchedProcessId        = $process.Id
-        InitialWardoffProcessIds = $initialWardoffProcessIds
-        FinalWardoffProcessIds   = @(
-            Get-WardoffProcessesByName |
-                ForEach-Object { [int] $_.ProcessId } |
-                Sort-Object -Unique
-        )
-        ObservedWardoffProcessIds = @($observedWardoffProcessIds | Sort-Object)
-        ObservedRepoProcessIds    = @($observedRepoProcessIds | Sort-Object)
-    })
+    [pscustomobject]@{ ExitCode=$r.ExitCode; StandardOutput=$r.StandardOutput; StandardError=$r.StandardError; Output=$r.Output;
+        LaunchedProcessId=$r.LaunchedProcessId; InitialWardoffProcessIds=$initial;
+        FinalWardoffProcessIds=@(Get-WardoffProcessesByName | ForEach-Object { [int]$_.ProcessId });
+        ObservedWardoffProcessIds=@($observed); ObservedRepoProcessIds=@($repoObserved) }
 }
 
 function Convert-ToSingleQuotedPowerShellLiteral {
@@ -417,8 +299,59 @@ function Invoke-DirectPowerShellWardoffCommand {
     )
 }
 
+function Assert-SmokePreflight {
+    param([switch] $Initial)
+    Assert-SmokePreconditions -WardoffProcesses @(Get-WardoffProcessesByName) `
+        -CurrentSessionId (Get-SmokeCurrentSessionId) -BinaryPath $binaryPath `
+        -OwnedProcesses $script:OwnedProcesses.ToArray() -AutostartTaskProbe {
+            if ($Initial) { return (& $script:ResourceState.Adapters.ReadTask '\Wardoff').Exists }
+            return $false
+        }
+    if ($Initial) { Assert-SmokeNamespaceUnused }
+}
+
+function Assert-SmokeNamespaceUnused {
+        $session=Get-SmokeCurrentSessionId
+        $mutex=$null
+        try {
+            $mutex=[Threading.Mutex]::OpenExisting("Local\WardoffInstance-Session-$session")
+            throw 'A primary Wardoff mutex already exists, including a possible renamed runtime.'
+        } catch [Threading.WaitHandleCannotBeOpenedException] {
+            # The named object is absent. Other errors remain fatal.
+        } finally { if($null -ne $mutex){ $mutex.Dispose() } }
+        $pipeNames=@([IO.Directory]::GetFiles('\\.\pipe\'))
+        foreach($name in $pipeNames) {
+            if ($name -match ('(?i)(?:^|\\)Wardoff(?:Control|Status)-Session-' + $session + '$')) {
+                throw 'A Wardoff pipe already exists; refusing to contact its owner.'
+            }
+        }
+}
+
+function Assert-SmokeOwnedRuntime {
+    if ($null -eq $script:BackgroundProcess -or $script:BackgroundProcess.HasExited) {
+        throw 'The owned runtime is not alive; refusing a CLI command that could start or control another primary.'
+    }
+    Assert-SmokePreflight
+}
+
+function Start-SmokeRuntime {
+    Assert-SmokePreflight -Initial
+    $info=[Diagnostics.ProcessStartInfo]::new()
+    $info.FileName=$binaryPath; $info.WorkingDirectory=Split-Path -Parent $binaryPath
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+    foreach($arg in @('--block','--hide','--wardoff-detached-runtime')){ $info.ArgumentList.Add($arg) }
+    foreach($key in $script:RuntimeEnvironment.Keys){ $info.Environment[$key]=$script:RuntimeEnvironment[$key] }
+    $p=[Diagnostics.Process]::new();$p.StartInfo=$info
+    try {
+        [void]$p.Start();[void]$p.Handle
+        $script:OwnedProcesses.Add($p);$script:BackgroundProcess=$p
+        $script:RuntimeOutput=$p.StandardOutput.ReadToEndAsync();$script:RuntimeError=$p.StandardError.ReadToEndAsync()
+    } catch { if($null -eq $script:BackgroundProcess){$p.Dispose()};throw }
+}
+
 function Get-WardoffProcessesByName {
-    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction SilentlyContinue
+    $processes = Get-CimInstance Win32_Process -Filter "Name='wardoff.exe'" -ErrorAction Stop
 
     if ($null -eq $processes) {
         return @()
@@ -572,39 +505,18 @@ function Wait-ForBinaryUnlock {
 }
 
 function Stop-RepoWardoffProcesses {
-    $processes = @(Get-RepoWardoffProcesses)
-
-    if ($processes.Count -gt 0 -and (Test-Path $binaryPath)) {
-        try {
-            $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--allow')
-            Start-Sleep -Seconds 1
-        }
-        catch {
-        }
+    $errors=[Collections.Generic.List[string]]::new()
+    foreach($p in $script:OwnedProcesses.ToArray()) {
+        try { Capture-SmokeOwnedEtw -State $script:ResourceState -Process $p } catch { $errors.Add($_.Exception.Message) }
     }
-
-    foreach ($process in $processes) {
-        try {
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    try {
+        Stop-SmokeOwnedProcesses -OwnedProcesses $script:OwnedProcesses.ToArray() -StopAction {
+            param($p) $p.Kill($true)
+        } -WaitAction {
+            param($p) if (-not $p.WaitForExit(5000)) { throw "Owned child $($p.Id) did not exit." }
         }
-        catch {
-            if ($_.Exception.Message -notmatch 'cannot find') {
-                Write-Warning "Could not stop Wardoff process $($process.ProcessId): $($_.Exception.Message)"
-            }
-        }
-    }
-
-    foreach ($process in $processes) {
-        try {
-            Wait-Process -Id $process.ProcessId -Timeout 5 -ErrorAction Stop
-        }
-        catch {
-        }
-    }
-
-    if (Test-Path $binaryPath) {
-        Wait-ForBinaryUnlock -Path $binaryPath
-    }
+    } catch { $errors.Add($_.Exception.Message) }
+    if($errors.Count){ throw ($errors -join '; ') }
 }
 
 function Get-StatusJson {
@@ -732,18 +644,18 @@ function Resolve-PowercfgRequestsCheck {
 }
 
 try {
-    Stop-RepoWardoffProcesses
+    Assert-SmokePreflight -Initial
+    $script:BinaryLock=[IO.File]::Open($binaryPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $hash=[Security.Cryptography.SHA256]::Create()
+    try { $actualHash=[BitConverter]::ToString($hash.ComputeHash($script:BinaryLock)).Replace('-','').ToLowerInvariant() } finally { $hash.Dispose() }
+    Assert-Condition ($actualHash -ceq $ExpectedBinarySha256.ToLowerInvariant()) 'The supplied binary differs from its expected SHA256.'
+    Initialize-SmokeResources -State $script:ResourceState
 
-    Invoke-TestCase 'cargo build --release succeeds' {
-        $result = Invoke-ExternalCommand -FilePath 'cargo' -Arguments @('build', '--release')
-        Assert-Condition ($result.ExitCode -eq 0) "cargo build --release failed with exit code $($result.ExitCode)."
-    }
-
-    Invoke-TestCase 'target\release\wardoff.exe exists after the release build' {
+    Invoke-TestCase 'The supplied frozen binary exists without rebuilding' {
         Assert-Condition (Test-Path $binaryPath) "Expected binary at $binaryPath."
     }
 
-    Invoke-TestCase 'target\release\wardoff.exe embeds an asInvoker manifest' {
+    Invoke-TestCase 'The supplied frozen binary embeds an asInvoker manifest' {
         $manifestContent = Get-EmbeddedManifestContent -Path $binaryPath
         Assert-Condition (-not [string]::IsNullOrWhiteSpace($manifestContent)) 'The embedded manifest was empty.'
         Assert-Condition ($manifestContent -match 'requestedExecutionLevel\s+level="asInvoker"\s+uiAccess="false"') "The embedded manifest did not request asInvoker. Manifest: $manifestContent"
@@ -827,7 +739,7 @@ try {
     Invoke-TestCase 'Start-Process launches wardoff --block --hide in the background' {
         Stop-RepoWardoffProcesses
         $script:InitialLogLineCount = @(Get-StructuredLogLines).Count
-        $script:BackgroundProcess = Start-Process -FilePath $binaryPath -ArgumentList @('--block', '--hide') -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
+        Start-SmokeRuntime
         Start-Sleep -Seconds 2
         $script:BackgroundProcess.Refresh()
         Assert-Condition (-not $script:BackgroundProcess.HasExited) "Wardoff exited early with code $($script:BackgroundProcess.ExitCode)."
@@ -934,7 +846,7 @@ try {
             $null = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Microsoft\Windows\UpdateOrchestrator\Reboot')
         }
 
-        $autostartDescription = 'wardoff --autostart on creates the Wardoff task and --autostart off removes it'
+        $autostartDescription = 'Autostart trust-boundary behavior leaves task state verified'
         $autostartDecision = Get-AutostartValidationDecision $tokenElevationType
         if ($autostartDecision -eq 'query-failed') {
             Invoke-TestCase $autostartDescription {
@@ -951,39 +863,34 @@ try {
         }
         else {
             Invoke-TestCase $autostartDescription {
-            $taskOriginallyPresent = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
+            Start-SmokeAutostartAttempt -State $script:ResourceState
 
             try {
-                $enableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on')
+                try { $enableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on') }
+                finally { Capture-SmokeAutostartOwnership -State $script:ResourceState }
                 if ($enableResult.ExitCode -eq 0) {
                     $queryEnabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
                     Assert-Condition ($queryEnabled.ExitCode -eq 0) 'schtasks /query /tn "Wardoff" did not find the task after --autostart on.'
 
+                    Capture-SmokeAutostartOwnership -State $script:ResourceState
                     $disableResult = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
                     Assert-Condition ($disableResult.ExitCode -eq 0) "wardoff --autostart off exited with code $($disableResult.ExitCode)."
 
                     $queryDisabled = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
                     Assert-Condition ($queryDisabled.ExitCode -ne 0) 'schtasks /query /tn "Wardoff" still found the task after --autostart off.'
+                    $script:AutostartLifecyclePassed = $true
+                    Add-TestResult -Status 'PASS' -Description 'Positive autostart on/off lifecycle' -Details ''
                 }
                 else {
                     Assert-Condition ($enableResult.Output -match 'untrusted location') "wardoff --autostart on failed without the expected trusted-location refusal. Output: $($enableResult.Output)"
 
                     $queryAfterRefusal = Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')
-                    Assert-Condition (($queryAfterRefusal.ExitCode -eq 0) -eq $taskOriginallyPresent) 'wardoff --autostart on changed the Wardoff task state even though it refused an untrusted executable location.'
+                    Assert-Condition ($queryAfterRefusal.ExitCode -ne 0) 'wardoff --autostart on changed the Wardoff task state even though it refused an untrusted executable location.'
+                    Skip-TestCase 'Positive autostart on/off lifecycle' 'Only trusted-location refusal was tested; a protected authorized VM path is required for positive coverage.'
                 }
             }
             finally {
-                try {
-                    $taskPresentAfterTest = (Invoke-ExternalCommand -FilePath 'schtasks' -Arguments @('/query', '/tn', 'Wardoff')).ExitCode -eq 0
-                    if ($taskOriginallyPresent -and -not $taskPresentAfterTest) {
-                        $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'on')
-                    }
-                    elseif (-not $taskOriginallyPresent -and $taskPresentAfterTest) {
-                        $null = Invoke-ExternalCommand -FilePath $binaryPath -Arguments @('--autostart', 'off')
-                    }
-                }
-                catch {
-                }
+                Capture-SmokeAutostartOwnership -State $script:ResourceState
             }
             }
         }
@@ -1031,9 +938,9 @@ try {
             Assert-Condition ($activeStatus.Status.layers.sleep -eq $true) 'Block did not reacquire idle-power requests.'
         }
         # Deliberately do not call the normal cleanup helper: it sends --allow first.
-        $repoProcesses = @(Get-RepoWardoffProcesses)
-        Assert-Condition ($repoProcesses.Count -eq 1) 'Expected one owned runtime to terminate.'
-        $ownedProcess = Get-Process -Id $repoProcesses[0].ProcessId -ErrorAction Stop
+        Assert-SmokeOwnedRuntime
+        Capture-SmokeOwnedEtw -State $script:ResourceState -Process $script:BackgroundProcess
+        $ownedProcess = $script:BackgroundProcess
         Stop-Process -InputObject $ownedProcess -Force -ErrorAction Stop
         Assert-Condition ($ownedProcess.WaitForExit(5000)) 'The terminated runtime did not exit within five seconds.'
         Assert-Condition (@(Get-RepoWardoffProcesses).Count -eq 0) 'Wardoff was still running after cleanup.'
@@ -1065,8 +972,35 @@ try {
         Add-TestResult -Status 'FAIL' -Description 'powercfg /requests no longer mentions Wardoff after cleanup' -Details $powercfgRequestsCheck.FailureMessage
     }
 }
+catch {
+    Add-TestResult -Status 'FAIL' -Description 'Smoke harness aborted' -Details $_.Exception.Message
+}
 finally {
-    Stop-RepoWardoffProcesses
+    try { Stop-RepoWardoffProcesses } catch { Add-TestResult -Status 'FAIL' -Description 'Owned process cleanup' -Details $_.Exception.Message }
+    $runtimeExited=$true
+    foreach($p in $script:OwnedProcesses.ToArray()) {
+        try { if(-not $p.HasExited){$runtimeExited=$false} } catch {$runtimeExited=$false}
+    }
+    try { Restore-SmokeResources -State $script:ResourceState -RuntimeExited:$runtimeExited -OwnedProcesses $script:OwnedProcesses.ToArray() }
+    catch { Add-TestResult -Status 'FAIL' -Description 'Resource restoration' -Details $_.Exception.Message }
+    if ($RequireAutostartLifecycle -and -not $script:AutostartLifecyclePassed) {
+        Add-TestResult -Status 'FAIL' -Description 'Required positive autostart lifecycle' -Details 'Positive on/off coverage did not pass; a skip or trusted-location refusal does not satisfy it.'
+    }
+    try {
+        if($null -ne $script:BinaryLock) {
+            $script:BinaryLock.Position=0;$hash=[Security.Cryptography.SHA256]::Create()
+            try {$finalHash=[BitConverter]::ToString($hash.ComputeHash($script:BinaryLock)).Replace('-','').ToLowerInvariant()}finally{$hash.Dispose()}
+            Assert-Condition ($finalHash -ceq $ExpectedBinarySha256.ToLowerInvariant()) 'Binary bytes changed during smoke.'
+        }
+        foreach($task in @($script:RuntimeOutput,$script:RuntimeError)){if($null -ne $task){Assert-Condition ($task.Wait(2000)) 'Runtime output drain did not complete.'}}
+    } catch { Add-TestResult -Status 'FAIL' -Description 'Binary and output finalization' -Details $_.Exception.Message }
+    finally {
+        if($null -ne $script:BinaryLock){$script:BinaryLock.Dispose()}
+        foreach($p in $script:OwnedProcesses.ToArray()){$p.Dispose()}
+    }
+    [ordered]@{schema=1;scope='NATIVE_SMOKE_ISOLATED_TARGET';binary_path=$binaryPath;expected_binary_sha256=$ExpectedBinarySha256;
+        runtime_cleanup_complete=$runtimeExited;autostart_lifecycle_passed=$script:AutostartLifecyclePassed;results=@($script:Results);qualification='LIMITED_SMOKE_ONLY';physical_acceptance=$false} |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'smoke-result.json') -Encoding utf8
 
     $passed = @($script:Results | Where-Object { $_.CountInSummary -and $_.Status -eq 'PASS' }).Count
     $counted = @($script:Results | Where-Object { $_.CountInSummary }).Count
@@ -1079,7 +1013,5 @@ finally {
         Write-Host "$passed/$counted tests passed"
     }
 
-    if (@($script:Results | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) {
-        exit 1
-    }
 }
+if (@($script:Results | Where-Object { $_.Status -eq 'FAIL' }).Count -gt 0) { exit 1 }

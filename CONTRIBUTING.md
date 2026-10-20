@@ -133,3 +133,8 @@ In each PR:
 - keep claims honest and source-verifiable
 
 Small, accurate PRs are much easier to review than broad speculative rewrites.
+
+The native smoke now requires PowerShell 7, an explicit existing executable and
+its expected SHA256; it never rebuilds. Run only its simulated safety tests
+locally. The exact commands, disposable-guest prerequisites and effects needing
+separate authorization are in [SMOKE_PROTOCOL.md](docs/SMOKE_PROTOCOL.md).
