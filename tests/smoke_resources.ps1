@@ -83,7 +83,9 @@ function Get-SmokeNativeEtwSessions {
     $tool = @(Get-Command logman.exe -CommandType Application -ErrorAction Stop)[0].Source
     $result = Invoke-SmokeChildCommand -FilePath $tool -Arguments @('query', '-ets') `
         -WorkingDirectory $PSScriptRoot -TimeoutMilliseconds 10000
-    if ($result.ExitCode -ne 0) { throw 'Could not enumerate ETW sessions; smoke cannot establish a baseline.' }
+    if ($result.ExitCode -ne 0) {
+        throw ('Could not enumerate ETW sessions; smoke cannot establish a baseline. logman query -ets exit={0}; stdout={1}; stderr={2}' -f $result.ExitCode, $result.StandardOutput, $result.StandardError)
+    }
     foreach ($line in @($result.StandardOutput -split '\r?\n')) {
         if ([string]$line -match '^\s*(Wardoff-Layer2-Local-\S+)(?:\s|$)') { $Matches[1] }
     }

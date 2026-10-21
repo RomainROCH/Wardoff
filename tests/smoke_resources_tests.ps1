@@ -164,7 +164,8 @@ try {
         Assert-ResourceThrows { Stop-SmokeNativeEtwSession -Name 'Wardoff-Layer2-Local-321-1' } 'fixture logman timeout'
         Assert-ResourceTest ($fixture.Calls[2].TimeoutMilliseconds -eq 10000 -and $fixture.Calls[3].TimeoutMilliseconds -eq 10000) 'Timeout calls lost the fixed deadline.'
         $fixture.Timeout = $false; $fixture.ExitCode = 37
-        Assert-ResourceThrows { Get-SmokeNativeEtwSessions } 'Could not enumerate'
+        $queryFailure = 'logman query -ets exit=37; stdout=' + $fixture.Stdout + '; stderr=' + $fixture.Stderr
+        Assert-ResourceThrows { Get-SmokeNativeEtwSessions } $queryFailure
         Assert-ResourceThrows { Stop-SmokeNativeEtwSession -Name 'Wardoff-Layer2-Local-321-1' } 'Could not stop'
         $before = $fixture.Calls.Count
         Assert-ResourceThrows { Stop-SmokeNativeEtwSession -Name 'foreign-name' } 'Invalid owned'
