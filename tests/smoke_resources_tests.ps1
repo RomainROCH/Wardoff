@@ -85,6 +85,70 @@ try {
     Assert-ResourceThrows { Restore-SmokeResources $f.State -RuntimeExited $true } 'does not belong'
     Assert-ResourceTest (-not $f.Fixture.Writes.Contains('delete')) 'Foreign principal task was deleted.'; $cases++
 
+    foreach ($extendedField in @('ActionPath', 'WorkingDirectory', 'Both', 'Expected')) {
+        $f = New-ResourceFixture; Initialize-SmokeResources $f.State; Start-SmokeAutostartAttempt $f.State
+        $f.Fixture.Auto = New-FixtureAutostart
+        if ($extendedField -in @('ActionPath', 'Both')) { $f.Fixture.Auto.ActionPath = '\\?\C:\fixture\wardoff.exe' }
+        if ($extendedField -in @('WorkingDirectory', 'Both')) { $f.Fixture.Auto.WorkingDirectory = '\\?\C:\fixture' }
+        if ($extendedField -eq 'Expected') { $f.State.BinaryPath = '\\?\C:\fixture\wardoff.exe'; $f.State.WorkingDirectory = '\\?\C:\fixture' }
+        Capture-SmokeAutostartOwnership $f.State
+        $comparison = $f.State.AutostartIdentityChecks[0]
+        Assert-ResourceTest ($comparison.Matches -and $comparison.Fields.Count -eq 3) 'Canonical DOS/extended identity was rejected.'
+        $saved = $comparison | ConvertTo-Json -Depth 5 | ConvertFrom-Json
+        Assert-ResourceTest ($saved.Fields[0].Expected -ceq $f.State.BinaryPath -and $saved.Fields[0].Actual -ceq $f.Fixture.Auto.ActionPath -and
+            $saved.Fields[0].NormalizedExpected -ceq 'C:\fixture\wardoff.exe' -and $saved.Fields[0].NormalizedActual -ceq 'C:\fixture\wardoff.exe') 'Serialized identity evidence lost raw or normalized paths.'
+        Restore-SmokeResources $f.State -RuntimeExited $true
+        Assert-ResourceTest ($f.Fixture.Writes.Contains('delete') -and -not $f.Fixture.Auto.Exists) 'Equivalent owned task was not cleaned.'
+        $cases++
+    }
+
+    foreach ($field in @('ActionPath', 'WorkingDirectory', 'Principal')) {
+        $f = New-ResourceFixture; Initialize-SmokeResources $f.State; Start-SmokeAutostartAttempt $f.State
+        $f.Fixture.Auto = New-FixtureAutostart
+        $f.Fixture.Auto.$field = switch ($field) {
+            'ActionPath' { '\\?\C:\fixture\foreign.exe' }
+            'WorkingDirectory' { '\\?\C:\foreign' }
+            'Principal' { 'S-1-foreign' }
+        }
+        Assert-ResourceThrows { Capture-SmokeAutostartOwnership $f.State } 'does not belong'
+        $saved = $f.State.AutostartIdentityChecks[0] | ConvertTo-Json -Depth 5 | ConvertFrom-Json
+        $mismatch = @($saved.Fields | Where-Object { -not $_.Matches })
+        Assert-ResourceTest ($mismatch.Count -eq 1 -and $mismatch[0].Field -ceq $field -and $mismatch[0].Actual -ceq $f.Fixture.Auto.$field -and
+            $null -ne $mismatch[0].NormalizedExpected -and $null -ne $mismatch[0].NormalizedActual -and $null -eq $f.State.OwnedAutostart) 'Mismatch evidence did not isolate its exact field/values.'
+        Assert-ResourceThrows { Restore-SmokeResources $f.State -RuntimeExited $true } ('"Field":"' + $field + '"')
+        Assert-ResourceTest (-not $f.Fixture.Writes.Contains('delete')) 'Mismatched task was deleted.'; $cases++
+    }
+
+    $invalidPaths = @('', 'wardoff.exe', 'C:wardoff.exe', '\fixture\wardoff.exe',
+        '\\server\share\wardoff.exe', '\\?\UNC\server\share\wardoff.exe', '\\.\C:\fixture\wardoff.exe',
+        '\\?\GLOBALROOT\Device\HarddiskVolume1\wardoff.exe', '\\?\Volume{fixture}\wardoff.exe',
+        'C:/fixture/wardoff.exe', 'C:\fixture\\wardoff.exe', 'C:\fixture\',
+        'C:\fixture\.\wardoff.exe', '\\?\C:\fixture\..\wardoff.exe',
+        'C:\fixture.\wardoff.exe', '\\?\C:\fixture \wardoff.exe',
+        'C:\fixture\wardoff.exe:stream', 'C:\fixture\NUL.exe', 'C:\COM1\wardoff.exe', 'C:\LPT¹\wardoff.exe',
+        'C:\fixture\wardoff?.exe', ('C:\fixture\' + [char]1 + 'wardoff.exe'))
+    foreach ($invalid in $invalidPaths) {
+        foreach ($field in @('ActionPath', 'WorkingDirectory')) {
+            $f = New-ResourceFixture; Initialize-SmokeResources $f.State; Start-SmokeAutostartAttempt $f.State
+            $f.Fixture.Auto = New-FixtureAutostart; $f.Fixture.Auto.$field = $invalid
+            Assert-ResourceThrows { Capture-SmokeAutostartOwnership $f.State } 'does not belong'
+            $saved = $f.State.AutostartIdentityChecks[0] | ConvertTo-Json -Depth 5 | ConvertFrom-Json
+            $detail = @($saved.Fields | Where-Object { $_.Field -ceq $field })[0]
+            Assert-ResourceTest (-not $detail.Matches -and $detail.Actual -ceq $invalid -and -not [string]::IsNullOrWhiteSpace($detail.Error)) 'Unsafe path was accepted or its diagnostic was lost.'
+            Assert-ResourceThrows { Restore-SmokeResources $f.State -RuntimeExited $true } 'does not belong'
+            Assert-ResourceTest (-not $f.Fixture.Writes.Contains('delete')) 'Unsafe identity authorized task deletion.'; $cases++
+        }
+    }
+
+    foreach ($field in @('Xml', 'Sddl', 'Enabled')) {
+        $f = New-ResourceFixture; Initialize-SmokeResources $f.State; Start-SmokeAutostartAttempt $f.State
+        $f.Fixture.Auto = New-FixtureAutostart; $f.Fixture.Auto.ActionPath = '\\?\C:\fixture\wardoff.exe'
+        Capture-SmokeAutostartOwnership $f.State
+        if ($field -eq 'Enabled') { $f.Fixture.Auto.Enabled = $false } else { $f.Fixture.Auto.$field = 'foreign' }
+        Assert-ResourceThrows { Restore-SmokeResources $f.State -RuntimeExited $true } 'definition or security changed'
+        Assert-ResourceTest (-not $f.Fixture.Writes.Contains('delete')) 'Changed definition/security/enabled state was accepted after path normalization.'; $cases++
+    }
+
     $start = [DateTime]::SpecifyKind([datetime]'2026-10-20T10:00:00', [DateTimeKind]::Utc)
     $milliseconds = ([DateTimeOffset]$start).ToUnixTimeMilliseconds()
     $process = [pscustomobject]@{ Id = 321; StartTime = $start; HasExited = $true; ExitTime = $start.AddSeconds(2) }

@@ -999,7 +999,8 @@ finally {
         foreach($p in $script:OwnedProcesses.ToArray()){$p.Dispose()}
     }
     [ordered]@{schema=1;scope='NATIVE_SMOKE_ISOLATED_TARGET';binary_path=$binaryPath;expected_binary_sha256=$ExpectedBinarySha256;
-        runtime_cleanup_complete=$runtimeExited;autostart_lifecycle_passed=$script:AutostartLifecyclePassed;results=@($script:Results);qualification='LIMITED_SMOKE_ONLY';physical_acceptance=$false} |
+        runtime_cleanup_complete=$runtimeExited;autostart_lifecycle_passed=$script:AutostartLifecyclePassed;
+        autostart_identity_checks=@($script:ResourceState.AutostartIdentityChecks.ToArray());results=@($script:Results);qualification='LIMITED_SMOKE_ONLY';physical_acceptance=$false} |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runRoot 'smoke-result.json') -Encoding utf8
 
     $passed = @($script:Results | Where-Object { $_.CountInSummary -and $_.Status -eq 'PASS' }).Count

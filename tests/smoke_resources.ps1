@@ -147,6 +147,66 @@ function Test-SmokeTaskIdentity {
         ($IgnoreEnabled -or $Expected.Enabled -eq $Actual.Enabled)
 }
 
+function ConvertTo-SmokeAutostartIdentityPath {
+    param([AllowEmptyString()][string] $Path)
+    # Only equate canonical local DOS paths with their extended-length spelling.
+    # Extended paths bypass Win32 parsing; do not collapse dots, spaces or devices.
+    # https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Empty autostart identity path.' }
+    $local = if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) { $Path.Substring(4) } else { $Path }
+    if ($local -cnotmatch '^[A-Za-z]:\\' -or $local.Contains('/')) {
+        throw 'Autostart identity requires a canonical local drive path.'
+    }
+    $tail = $local.Substring(3)
+    if ($tail -match '[\x00-\x1f<>:"|?*]') { throw 'Ambiguous autostart identity path characters.' }
+    if ($tail.Length -gt 0) {
+        foreach ($segment in $tail.Split('\')) {
+            if ($segment.Length -eq 0 -or $segment -match '[ .]$' -or
+                $segment -match '^(?i:CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(?:\.|$)') {
+                throw 'Ambiguous autostart identity path segment.'
+            }
+        }
+    }
+    $full = [IO.Path]::GetFullPath($local)
+    if (-not [string]::Equals($full, $local, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Autostart identity path must already be canonical.'
+    }
+    return $full
+}
+
+function Get-SmokeAutostartIdentityComparison {
+    param([object] $State, [object] $Task)
+    $fields = [Collections.Generic.List[object]]::new()
+    foreach ($field in @('ActionPath', 'WorkingDirectory', 'Principal')) {
+        $expected = switch ($field) {
+            'ActionPath' { $State.BinaryPath }
+            'WorkingDirectory' { $State.WorkingDirectory }
+            'Principal' { $State.ExpectedPrincipal }
+        }
+        $actual = [string]$Task.$field
+        $normalizedExpected = $normalizedActual = $null
+        $errorText = $null
+        try {
+            if ($field -eq 'Principal') {
+                $normalizedExpected = $expected; $normalizedActual = $actual
+            } else {
+                $normalizedExpected = ConvertTo-SmokeAutostartIdentityPath $expected
+                $normalizedActual = ConvertTo-SmokeAutostartIdentityPath $actual
+            }
+        } catch { $errorText = $_.Exception.Message }
+        $fields.Add([pscustomobject]@{
+            Field = $field; Expected = $expected; Actual = $actual
+            NormalizedExpected = $normalizedExpected; NormalizedActual = $normalizedActual
+            Matches = ($null -eq $errorText -and [string]::Equals($normalizedExpected, $normalizedActual, [StringComparison]::OrdinalIgnoreCase))
+            Error = $errorText
+        })
+    }
+    return [pscustomobject]@{
+        Matches = (@($fields | Where-Object { -not $_.Matches }).Count -eq 0)
+        Fields = $fields.ToArray()
+    }
+}
+
 function New-SmokeResourceState {
     param([Parameter(Mandatory = $true)][string] $BinaryPath,
           [Parameter(Mandatory = $true)][string] $WorkingDirectory,
@@ -158,6 +218,7 @@ function New-SmokeResourceState {
         BinaryPath = [IO.Path]::GetFullPath($BinaryPath); WorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory)
         Adapters = $Adapters; Initialized = $false; ExpectedPrincipal = ''
         Reboot = $null; Autostart = $null; AutostartAttempted = $false; OwnedAutostart = $null
+        AutostartIdentityChecks = [Collections.Generic.List[object]]::new()
         BaselineEtw = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         OwnedEtw = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         ProtocolRequiresExclusiveDisposableSession = $true
@@ -190,10 +251,10 @@ function Capture-SmokeAutostartOwnership {
     if (-not $State.Initialized -or -not $State.AutostartAttempted) { throw 'No owned autostart creation attempt.' }
     $task = Copy-SmokeTaskSnapshot (& $State.Adapters.ReadTask '\Wardoff')
     if (-not $task.Exists) { return }
-    if (-not [string]::Equals([IO.Path]::GetFullPath($task.ActionPath), $State.BinaryPath, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([IO.Path]::GetFullPath($task.WorkingDirectory), $State.WorkingDirectory, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($task.Principal, $State.ExpectedPrincipal, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Autostart task identity does not belong to this smoke run.'
+    $comparison = Get-SmokeAutostartIdentityComparison -State $State -Task $task
+    $State.AutostartIdentityChecks.Add($comparison)
+    if (-not $comparison.Matches) {
+        throw ('Autostart task identity does not belong to this smoke run. Comparison=' + ($comparison | ConvertTo-Json -Depth 5 -Compress))
     }
     if ($null -ne $State.OwnedAutostart -and -not (Test-SmokeTaskIdentity $State.OwnedAutostart $task)) {
         throw 'Owned autostart task definition or security changed.'

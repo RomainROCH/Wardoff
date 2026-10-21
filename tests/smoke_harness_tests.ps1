@@ -31,7 +31,7 @@ $script:BackgroundProcess=$null
 $script:Lease=[Diagnostics.Stopwatch]::StartNew()
 $script:RuntimeEnvironment=@{APPDATA='fixture-app';LOCALAPPDATA='fixture-local'}
 $fixture=@{Processes=@();ProcessFailure=$false;Task=$false;NamespaceConflict=$false;NamespaceCalls=0;Commands=0;Arguments=@();Captures=0}
-$script:ResourceState=@{Adapters=@{ReadTask={param($path) [pscustomobject]@{Exists=$fixture.Task}}}}
+$script:ResourceState=@{Adapters=@{ReadTask={param($path) [pscustomobject]@{Exists=$fixture.Task}}};AutostartIdentityChecks=[Collections.Generic.List[object]]::new()}
 function Get-WardoffProcessesByName {if($fixture.ProcessFailure){throw 'fixture enumeration failed'};return $fixture.Processes}
 function Get-SmokeCurrentSessionId {return 7}
 function Assert-SmokeNamespaceUnused {$fixture.NamespaceCalls++;if($fixture.NamespaceConflict){throw 'fixture namespace conflict'}}
@@ -75,11 +75,17 @@ $script:Results=[Collections.Generic.List[object]]::new();$script:BinaryLock=$nu
 $script:RuntimeOutput=$null;$script:RuntimeError=$null
 $runRoot=$env:TEMP;$ExpectedBinarySha256=('a'*64)
 $RequireAutostartLifecycle=$false;$script:AutostartLifecyclePassed=$false
+$script:ResourceState.AutostartIdentityChecks.Add([pscustomobject]@{Matches=$true;Fields=@(
+    [pscustomobject]@{Field='ActionPath';Expected='C:\fixture\wardoff.exe';Actual='\\?\C:\fixture\wardoff.exe';NormalizedExpected='C:\fixture\wardoff.exe';NormalizedActual='C:\fixture\wardoff.exe';Matches=$true;Error=$null}
+)})
 $text=$main.Finally.Extent.Text
 & ([scriptblock]::Create($text.Substring(1,$text.Length-2)))
 Assert-True ($cleanup.Stopped -eq 1 -and $cleanup.Restored -eq 1) 'Stop failure prevented resource restoration.'
 Assert-True (@($script:Results|Where-Object Status -eq 'FAIL').Count -eq 2) 'Cleanup errors were swallowed.'
 Assert-True ($runtime.Disposed -and $cleanup.Receipt -match 'Resource restoration') 'Finalization skipped handle disposal or result evidence.';$cases++
+$identityEvidence=($cleanup.Receipt|ConvertFrom-Json).autostart_identity_checks
+Assert-True ($identityEvidence.Count -eq 1 -and $identityEvidence[0].Fields[0].Expected -ceq 'C:\fixture\wardoff.exe' -and
+    $identityEvidence[0].Fields[0].Actual -ceq '\\?\C:\fixture\wardoff.exe' -and $identityEvidence[0].Fields[0].NormalizedActual -ceq 'C:\fixture\wardoff.exe') 'Outer cleanup lost raw or normalized identity evidence.'
 $RequireAutostartLifecycle=$true;$script:Results=[Collections.Generic.List[object]]::new()
 & ([scriptblock]::Create($text.Substring(1,$text.Length-2)))
 Assert-True (@($script:Results|Where-Object Description -eq 'Required positive autostart lifecycle').Count -eq 1) 'Missing positive coverage was accepted.';$cases++
