@@ -55,6 +55,19 @@ The binary is `target\release\wardoff.exe`. Cargo currently declares `0.2.0`,
 which does not make this development build the existing public v0.2.0 asset.
 A successful build alone does not qualify a release or authorize publication.
 
+The checked-in `.cargo/config.toml` enables `crt-static` for
+`x86_64-pc-windows-msvc`, so the intended single-executable distribution does not
+need a separate MSVC runtime installation. Windows system DLLs remain dependencies.
+`RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS` override Cargo's target flags; if either
+is set, retain `-C target-feature=+crt-static` in those flags.
+
+After building, inspect the exact executable's imports (for example,
+`dumpbin /dependents target\release\wardoff.exe` from an MSVC developer shell).
+Reject a portable package that still imports `VCRUNTIME*.dll` or `MSVCP*.dll`,
+then check `--help` and `--version` in a clean Windows guest before the authorized
+native smoke. Static linkage must be verified on the resulting bytes; the source
+setting alone does not establish that a package starts or that its protections work.
+
 ## Native and system validation
 
 Unfiltered `cargo test` includes

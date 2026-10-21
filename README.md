@@ -122,6 +122,10 @@ The compiled binary is:
 target\release\wardoff.exe
 ```
 
+For the supported Windows x64 MSVC target, [the Cargo configuration](.cargo/config.toml)
+requests static C runtime linkage. See the [build validation notes](CONTRIBUTING.md#build)
+before distributing a new executable; this setting does not qualify an older binary.
+
 ## Signed binaries
 
 The source code is free and open under the MIT license. Anyone can build Wardoff from source.
