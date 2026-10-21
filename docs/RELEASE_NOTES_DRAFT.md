@@ -35,25 +35,42 @@ not a replacement for that asset.
 
 ## Validation and package status
 
-Source checks, isolated IPC fixtures and local package checks are separate
-evidence. The retained local package belongs to source
-`06b95136b28b4de75e779632c5b7f501c5b16f7e`, with executable SHA256
-`0e3a4fe985e5945c78e65fd78006d38698117a8c98f8459d111308008b027c4f`.
-It is a verification artifact, not a public release. This CI/documentation
-preparation does not replace that package or qualify a new executable.
+The current local candidate was built from
+`183d798c61d4e252f1847a873bbc3ceec8f71b43`: 1,925,632-byte executable, SHA256
+`534db29520b902e602cd80d9b39c4fd768f464e329e33b9365aaa901c85feb60`.
+It still reports `wardoff 0.2.0` and is `NOT_PUBLIC_RELEASE`. The locked offline
+MSVC release build passed; dependency inspection found no external CRT imports.
+The earlier `06b9513` package and its separate namespace-fixture evidence remain
+historical artifacts; neither is substituted for these bytes.
 
-The extracted production-namespace package was checked with read-only help and
-version commands. Connected CLI cases used a separately built source copy with
-three IPC/mutex prefixes changed. They do not establish connected behavior of
-the production-namespace executable. A portable in-repository CLI fixture and
-its CI evidence are still required.
+Two separate native runs on these exact production-namespace bytes in an
+offline disposable Windows 11 VM establish the following limited coverage:
 
-Native PowerRequest acquisition and the real system smoke remain **NOT RUN**
-under the current scope. Physical S3/monitor, Hibernate and Modern Standby
-acceptance remains incomplete. Full/release qualification stays blocked while
-the required native, system, portable CLI, exact-package and hardware evidence
-is missing. A Safe PASS, a benchmark or a VM result for another hash does not
-qualify the future download.
+- The first run passed 16/19 counted checks: help/version, inactive and running
+  JSON status, Block/Allow, JSON logs, PowerRequests acquisition, release,
+  reacquisition and absence after owned runtime termination. Its three failures
+  concern autostart ownership/restoration/lifecycle; three additional checks
+  were skipped. Layer 4 was observed in status, without a real shutdown test.
+- The subsequent targeted autostart run used the corrected comparator from
+  `da4ab5d5aebcb39ea97d7314a84808c18162de1a`. Creation, task identity, removal
+  and cleanup passed. Captured COM action/working-directory paths carry the
+  extended DOS prefix; normalization accepts their canonical local spelling
+  while retaining principal and exact task-definition/security checks.
+
+These are complementary results, **not one wholly passing full smoke**.
+The targeted driver's isolated `localappdata` directory was missing: two
+logging errors (OS error 3) are retained in its stderr. Its on/off commands
+exited 0 and task cleanup passed; that run does not validate logging. The first
+run's JSON-log checks remain separate evidence. Guest idle policies were
+restored, the VMs closed, and parent images preserved.
+
+Not established: task execution at logon, the two non-elevated native status
+paths skipped by the elevated run, Layer 3 on a system with its actual Reboot
+task (absent in this guest), and physical shutdown, S3/monitor, Hibernate or
+Modern Standby behavior. The status flags and PowerRequests observations do not
+prove those transitions. Full qualification remains unestablished. A limited
+experimental distribution would need an explicit scope/version/publication
+decision; this local package creates no release or publication authorization.
 
 ## Product limits
 
