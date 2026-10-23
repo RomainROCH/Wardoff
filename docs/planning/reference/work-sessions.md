@@ -1,7 +1,8 @@
 # Work sessions
 
-Section goal: protect work for a reason and duration, with ownership a human can
-inspect and cancel. These are planned contracts, not existing CLI features.
+Section goal: add optional protection for a reason and duration alongside simple
+indefinite Block/Allow, with ownership a human can inspect and cancel. These are
+planned contracts, not existing CLI features.
 
 ## Items
 
@@ -23,6 +24,7 @@ owner may release only its own session through the new API. Missing/reused PIDs,
 disconnect, duplicate release, zero/overflow durations and resume after expiry
 have deterministic tests. Timed expiry releases protection and never powers off
 the PC. Existing `--block` retains its explicit indefinite manual intent;
+expiring or releasing an optional task/timer cannot cancel that manual request.
 `--allow` remains global stop. It cancels sessions and pending wake restoration;
 old owner messages cannot silently rearm protection. Global stop leaves user
 work running. Expose reason and remaining duration; do not log sensitive arguments.
@@ -34,15 +36,18 @@ existing same-user security boundary, not a new hostile-local-user defense.
 
 Status: pending. Depends on: RM-reference-004. Priority: P1. Size: L.
 
-Goal: ordinary users can start a timed session, understand it and stop it.
+Goal: ordinary users can use Block/Allow directly, or optionally start a timed
+session, understand it and stop it.
 
 Work: extend [tray/mod.rs](../../../src/tray/mod.rs) and add a small native
-session view using the existing Windows stack. Offer background-work and
+session view using the existing Windows stack. Keep one-action permanent
+Block/Allow available without creating a task or timer. Offer background-work and
 presentation choices, 15/30/60-minute shortcuts and custom duration. Show the
 same state as CLI diagnostics. Validate the small view before expanding settings.
 
-Acceptance: keyboard-only and screen-reader users can start, inspect, extend,
-stop one session and stop all. Preserve red Block/green Allow semantics, with
+Acceptance: keyboard-only and screen-reader users can use permanent Block/Allow,
+start, inspect and extend an optional session, stop it without clearing manual
+Block, and stop all. Preserve red Block/green Allow semantics, with
 text and accessible names rather than color alone. Show degraded/unavailable
 protection visibly, reason, remaining time and an OS-limit explanation. No hidden
 default shutdown on expiry. Include English/French critical controls with

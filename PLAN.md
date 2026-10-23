@@ -13,15 +13,17 @@ For monetization, sponsorship, signed-binary, paid-support, or broader commercia
 
 The maintainer requested a competitive, zero-budget product roadmap on
 2026-10-23. The [product vision](docs/PRODUCT_VISION.md) defines the target:
-understandable protection tied to real work, with clear ownership, duration and
-Windows limits. The [competitive research](docs/COMPARISON.md) explains why timers,
+user control over supported shutdown, restart and idle-power paths. Simple
+Block/Allow and indefinite manual protection remain central; optional task-bound
+protection adds clear ownership and duration without replacing them.
+The [competitive research](docs/COMPARISON.md) explains why timers,
 process attachment and AI integrations alone are not sufficient differentiation.
 
 Use [the reference roadmap](docs/planning/reference/index.md) for ordered slices,
-dependencies, acceptance and evidence. All new slices are pending. Recommended
-next work is `RM-reference-001`, a tested integration baseline, followed by
-read-only diagnostics. This is a planning decision, not a claim of shipped
-features or authorization to implement every slice automatically.
+dependencies, acceptance and evidence. The maintainer authorized starting with
+`RM-reference-001`, a tested integration baseline, with the philosophy above
+preserved. Other slices remain pending, starting with read-only diagnostics.
+This is not a claim of shipped features or automatic execution of every slice.
 
 ## Current repository status
 

@@ -12,6 +12,11 @@ Status: pending. Depends on: RM-reference-007. Priority: P1. Size: M.
 
 Goal: a new user can obtain, try and remove a tested build without building Rust.
 
+Security gate: review the residual findings carried by `RM-reference-001`,
+including the status pipe's default DACL, before broadening distribution beyond
+the existing source-first/self-administered scope. A passing smoke test does not
+close those findings.
+
 Work: prepare a portable candidate with existing CI/release infrastructure,
 version/build identification, SHA-256 checksums, a short quick start and removal
 instructions. Explain unsigned/SmartScreen limits honestly. Review WinGet/Scoop

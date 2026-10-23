@@ -1,19 +1,22 @@
 # Foundations
 
 Section goal: make the current runtime safe to extend and its claims explainable.
-All source paths below refer to existing owners, not permission to edit them now.
+Source paths identify existing owners. Only the active slice recorded in the
+index is being executed; later slices remain planned work.
 
 ## Items
 
 ### RM-reference-001 Tested integration and truth baseline
 
-Status: pending. Depends on: none. Priority: P0. Size: M.
+Status: in-progress. Depends on: none. Priority: P0. Size: M.
 
 Goal: one recoverable integration head with known limits and no duplicated fixes.
 
 Work:
 - Inspect current branches, PR state and active worktrees. Reconcile developer
-  tooling and the existing IPC request-bound fix on the intended `dev` base.
+  tooling and the existing IPC request-bound fix against the actual integration
+  state. On 2026-10-23, remote main `8c45977` already contains both originals;
+  `dev` still points to the older `465c24e`, so the local candidate uses main.
   Do not recreate that fix or disturb another agent's unmerged work.
 - Recheck open findings in [SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) against
   actual code; distinguish fixed findings, residual risks and untested cases.
@@ -33,12 +36,13 @@ oversized, unterminated, silent and trickling clients, healthy fragmented
 requests, independent status availability and shutdown with an incomplete client.
 Retain exact command, source SHA, exit status and concise results. If the suite
 was renamed, record the mapping and equivalent cases rather than omit the gate.
-Run the real smoke only in an isolated
-environment and record skips. The integration report names retained work,
+Run the real smoke only in an isolated environment and record skips. The
+integration report names retained work,
 unmerged dependencies and the permitted claim set. Merge/publication follows
 its authorization; a local integration is not described as remotely released.
 
-Evidence: none for this slice. Notes: old successful checks are inputs, not proof
+Evidence: [baseline record](baseline-2026-10-23.md). Fresh Git/PR inspection and
+local MSVC checks passed; isolated smoke is pending. Notes: old successful checks are inputs, not proof
 for a new combined binary. No new product feature is part of this slice.
 
 ### RM-reference-002 Read-only explanation and diagnostics
@@ -55,7 +59,9 @@ compatible; a future `doctor` command is a proposal, not current syntax.
 
 Acceptance: distinguish requested, API-active, failed, unavailable and untested
 conditions without claiming physical effectiveness from a boolean. Explain
-missing UpdateOrchestrator tasks, elevation/path restrictions and unavailable
+shutdown/restart coverage alongside power behavior, and show indefinite manual
+Block as a normal first-class choice, not a missing timer or incomplete task.
+Explain missing UpdateOrchestrator tasks, elevation/path restrictions and unavailable
 IPC. No UAC, runtime startup, task mutation or power-plan edits during inspection.
 Test inactive, partial failure, occupied-mutex failure and elevated/non-elevated
 paths. Diagnostic output omits usernames, full personal paths and command arguments

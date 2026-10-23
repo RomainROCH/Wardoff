@@ -1,18 +1,22 @@
 # Wardoff reference roadmap
 
-Created: 2026-10-23. Source baseline: `39aadd2`. Planning artifact only.
+Created: 2026-10-23. Original planning baseline: `39aadd2`.
+The maintainer authorized starting slice 001 with the original philosophy preserved.
 
 ## Description
 
 Turn the [product vision](../../PRODUCT_VISION.md) into small, verifiable changes
-that improve work protection on Windows. [PLAN.md](../../../PLAN.md) remains the
+that improve user control over shutdown, restart and idle power on Windows.
+[PLAN.md](../../../PLAN.md) remains the
 scope entrypoint; this folder owns detailed sequencing, acceptance and evidence.
 The [comparison](../../COMPARISON.md) records the research behind the priorities.
 
 ## Goals and non-goals
 
-Deliver understandable protection, independent bounded sessions, safe command
-automation, and freely obtainable builds backed by reproducible evidence.
+Preserve simple Block/Allow and indefinite manual protection. Add understandable
+diagnostics, optional independent bounded sessions, safe command automation, and
+freely obtainable builds backed by reproducible evidence. Optional sessions
+cannot downgrade or expire permanent manual Block.
 Do not pursue universal shutdown vetoes, IFEO, a driver, a background service,
 cross-platform support, accounts, telemetry or paid infrastructure in this roadmap.
 Do not change Windows power plans or lock policies to manufacture a passing test.
@@ -20,14 +24,14 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 ## Operating rules
 
 - Work one selected slice at a time. Read its dependencies and acceptance first.
-- New slices are `pending`; none has implementation acceptance evidence yet.
+- Future slices remain `pending`; current acceptance/evidence is recorded below.
 - Evidence identifies source SHA, artifact hash where relevant, commands,
   environment and skips. Never turn a VM result into a physical-device claim.
 - Split an L item into reviewable implementation steps before coding. Resolve
   protocol and lifecycle details in that slice's design before edits begin.
 - Reuse valid checks. Never add a paid resource or a billable fallback.
 - Publication, outreach and changes to third-party tool configuration need their
-  applicable authorization; this planning task performs none of them.
+  applicable authorization; local implementation alone does not authorize them.
 - Reevaluate after each milestone or at most four completed slices. Record new
   evidence in [reevaluation-log.md](reevaluation-log.md).
 
@@ -36,8 +40,11 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 The local baseline has tray/CLI, layered shutdown protection, Power Requests,
 JSONL logs, IPC and autostart. It also has bounded log tails and local validation
 scripts. It does not have the future sessions, timers, doctor, panel or wrapper.
-The IPC request-bound fix exists on a separate branch/PR and must be reconciled
-with the actual integration target, rather than assumed merged.
+Fresh remote inspection found `origin/main` at `8c45977`, containing both the
+developer tooling (`39aadd2`) and IPC request-bound fix (`6039955`) by exact
+ancestry. PR 6 remains a draft against the older `dev` even though its commits
+are already in main. Slice 001 consolidates that main with this local roadmap;
+it must not recreate those fixes or treat old PR metadata as the integration truth.
 
 The [idle-power record](../../IDLE_POWER_VALIDATION.md) documents eight VM cases
 on an older exact candidate. Physical host S3/display, Hibernate and Modern
@@ -50,7 +57,7 @@ machine/binary and does not establish performance leadership.
 | Milestone | User-visible outcome | Gate |
 | --- | --- | --- |
 | M1: know what is protected | One tested baseline, understandable read-only explanation, separate system/display intent | 001-003 accepted; failures and unavailable capabilities visible |
-| M2: protect a task safely | Overlapping timed sessions, usable controls, cancellation and battery/resume behavior | 004, 005 and 007 accepted; lifecycle tests and available Windows cases recorded |
+| M2: extend the manual choice safely | Optional overlapping timed sessions, usable controls, cancellation and battery/resume behavior | 004, 005 and 007 accepted; manual Block/Allow preserved and available Windows cases recorded |
 | M3: easy to adopt and automate | Tested free portable candidate, command workflow and a locally reviewable comparison report | 006, 008 and 009 accepted; external publication is a separately authorized follow-up |
 | M4: extend only on demand | A justified optional integration with an explicit local contract | 010 accepted only if its demand and privacy gate pass |
 
@@ -79,14 +86,15 @@ cost. No adoption or revenue estimate is assumed.
 
 ## Current slice and progress
 
-- Active: none. Started: none. Implementation evidence: none for these new slices.
-- Recommended next: `RM-reference-001` only, after verifying the current Git/PR state.
+- Active: `RM-reference-001`. Started: 2026-10-23 with maintainer authorization.
+- Candidate: local consolidation of `30638ce` and remote main `8c45977`.
+- Next after acceptance: `RM-reference-002`; other slices remain pending.
 - Stop condition: its recorded integration/evidence gate, or a material unresolved
   conflict, permission boundary or need for a paid resource.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | pending | 0/3 | Existing sources inform planning, not acceptance |
+| [Foundations](foundations.md) | in-progress | 0/3 | Slice 001: integration and validation in progress |
 | [Work sessions](work-sessions.md) | pending | 0/4 | none |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 
