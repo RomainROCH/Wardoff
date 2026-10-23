@@ -4,14 +4,18 @@
 
 ### 2026-10-23 - A successful host build hid a portable-startup failure
 
-- Status: under investigation; linked ID: RM-reference-001.
+- Status: loader correction verified; desktop-runtime gate open; linked ID:
+  RM-reference-001.
 - Impact: isolated smoke of the exact MSVC executable failed even on read-only
   CLI actions with `STATUS_DLL_NOT_FOUND`. Its PE imports include
   `VCRUNTIME140.dll`, which is an undeclared prerequisite for the portable
   contract. The development host's installed runtime can mask this failure.
-- Decision: test static CRT linkage, inspect the resulting imports and rerun
-  smoke in a fresh clone without installing a redistributable. Keep the baseline
-  gate open until the actual outcome is recorded; no paid resource is needed.
+- Decision: commit `5249c17` selects static CRT linkage. Full and explicit IPC
+  checks pass; PE imports omit the external CRT and clean-Windows CLI startup
+  works without a redistributable. The complete runtime smoke still fails in
+  service session 0, and the separate desktop attempt could not select a safe
+  existing session. Keep slice 001 active and diagnose the runtime in a proper
+  isolated desktop environment. See the [baseline record](baseline-2026-10-23.md).
 
 ### 2026-10-23 - Preserve Wardoff's philosophy while starting the roadmap
 
@@ -26,7 +30,8 @@
 
 ### 2026-10-23 - Remote main already integrates earlier work
 
-- Status: integration in progress; linked ID: RM-reference-001.
+- Status: integrated locally; runtime acceptance in progress; linked ID:
+  RM-reference-001.
 - Impact: fresh fetch found main `8c45977` containing `39aadd2` and `6039955`,
   plus subsequent IPC/status, smoke, release and test improvements. Old `dev`
   and the still-open IPC draft no longer describe the actual integration state.

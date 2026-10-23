@@ -87,14 +87,17 @@ cost. No adoption or revenue estimate is assumed.
 ## Current slice and progress
 
 - Active: `RM-reference-001`. Started: 2026-10-23 with maintainer authorization.
-- Candidate: local consolidation of `30638ce` and remote main `8c45977`.
+- Candidate: merge `a44c89a` plus portable-linkage fix `5249c17`.
+- Local Full and clean-Windows CLI startup passed. Desktop-runtime smoke remains
+  open; the service-session run failed and the desktop attempt was unavailable.
+  See the [baseline record](baseline-2026-10-23.md).
 - Next after acceptance: `RM-reference-002`; other slices remain pending.
 - Stop condition: its recorded integration/evidence gate, or a material unresolved
   conflict, permission boundary or need for a paid resource.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | in-progress | 0/3 | Slice 001: integration and validation in progress |
+| [Foundations](foundations.md) | in-progress | 0/3 | [001: local checks passed; desktop-runtime gate open](baseline-2026-10-23.md) |
 | [Work sessions](work-sessions.md) | pending | 0/4 | none |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 
