@@ -12,6 +12,8 @@ small change.
 | Find code, tests and common pitfalls | [Development guide](DEVELOPMENT.md) |
 | Start an agent session | [Agent entrypoint](../AGENTS.md) |
 | Understand current scope and priorities | [Plan](../PLAN.md) |
+| Understand the long-term product direction | [Product vision](PRODUCT_VISION.md) |
+| Select the next concrete development slice | [Reference roadmap](planning/reference/index.md) |
 
 ## Maintained contracts
 
@@ -34,7 +36,7 @@ the code you are changing; they do not redefine product or architecture contract
 - [Security audit](SECURITY_AUDIT.md): findings and residual risks at the audited state.
 - [Resource benchmark](benchmarks/2026-09-29-v0.2.0/README.md): protocol, raw data,
   limitations and reproduction tools for one machine and binary.
-- [Product comparison](COMPARISON.md): comparative background.
+- [Competitive research](COMPARISON.md): dated primary-source research, current gaps and hypotheses to test.
 - [Release notes draft](RELEASE_NOTES_DRAFT.md): unpublished release copy.
 - [Outreach drafts](OUTREACH_DRAFTS.md): unpublished community messages.
 

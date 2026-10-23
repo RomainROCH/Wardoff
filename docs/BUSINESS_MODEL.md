@@ -7,6 +7,20 @@
 
 It is a living document. It records what was decided, why, and what comes next. Changes to this document require an explicit decision — do not update it to chase code or market drift without discussion.
 
+## Zero-budget product work — 2026-10-23
+
+The maintainer explicitly requested a product vision and concrete competitive
+roadmap with no expenditure. The [reference roadmap](planning/reference/index.md)
+therefore requires no paid certificate, runner, API, subscription, hardware or
+marketing. Existing commercial options below remain optional future scenarios;
+they do not authorize purchases or create prerequisites for product development.
+
+Free portable distribution and later package-manager submission are independent
+of signed-binary sales. The earlier sales-trigger example below is superseded
+for that product work. Likewise, IFEO is not a prerequisite for a future 1.0;
+release scope follows [PLAN.md](../PLAN.md), not a commercial milestone example.
+No pricing, revenue forecast or paid support commitment is changed here.
+
 ## Core principles
 
 These principles are non-negotiable. Every monetization decision must satisfy all four.
@@ -142,10 +156,10 @@ This section tracks when to reassess or add new monetization elements.
 | Authenticode certificate acquired | Layer 2 is live. Ship first signed binary with next release. |
 | First 10 signed binary sales | Reassess pricing. Consider adding a "pay what you want" option. |
 | First 3 consulting requests | Layer 3 is live. Define rates and booking flow. |
-| First 50 signed binary sales | Consider Winget/Scoop/Chocolatey packaging (free, unsigned) alongside signed direct download. |
+| Tested free portable workflow passes its roadmap gate | Consider free package-manager distribution independently of signed-binary sales; maintainer authorization and repository review still apply. |
 | Consistent monthly revenue > 200 € | Consider Open Collective for transparent finances. |
 | First enterprise inquiry | Evaluate whether a lightweight support package makes sense. Do not over-engineer. |
-| v1.0 ships (IFEO, Event Log, profiles) | Reassess signed binary pricing. Consider a "v1 upgrade" for existing buyers or keep it flat. |
+| A future v1.0 ships with scope defined in PLAN.md | Reassess any then-active signed-binary offer separately; no purchase or IFEO prerequisite is implied. |
 
 ## What this document does NOT cover
 

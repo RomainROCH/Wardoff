@@ -94,6 +94,9 @@ Today, a new agent should assume this order of priority:
 3. treat larger feature ideas as later backlog unless `PLAN.md` explicitly moves them forward
 
 For the current roadmap summary, read [`PLAN.md`](PLAN.md).
+For the longer-term direction and concrete pending milestones, read the
+[product vision](docs/PRODUCT_VISION.md) and
+[reference roadmap](docs/planning/reference/index.md).
 
 ## Installation
 

@@ -1,0 +1,91 @@
+# Foundations
+
+Section goal: make the current runtime safe to extend and its claims explainable.
+All source paths below refer to existing owners, not permission to edit them now.
+
+## Items
+
+### RM-reference-001 Tested integration and truth baseline
+
+Status: pending. Depends on: none. Priority: P0. Size: M.
+
+Goal: one recoverable integration head with known limits and no duplicated fixes.
+
+Work:
+- Inspect current branches, PR state and active worktrees. Reconcile developer
+  tooling and the existing IPC request-bound fix on the intended `dev` base.
+  Do not recreate that fix or disturb another agent's unmerged work.
+- Recheck open findings in [SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) against
+  actual code; distinguish fixed findings, residual risks and untested cases.
+- Bind existing and new acceptance evidence to exact heads. Use
+  [DEVELOPMENT.md](../../DEVELOPMENT.md) and the
+  [validation matrix](../../MVP_VALIDATION_MATRIX.md), including isolated smoke.
+- Before any push, verify repository visibility, runner billing and triggered
+  automation. If execution cannot be guaranteed to cost zero, keep validation
+  local and prepare the candidate without triggering billable work.
+
+Acceptance: Full checks, developer fixtures and smoke-safety fixtures pass on
+the chosen head. After integrating the existing request-bound fix, run
+`cargo test --locked --test ipc_request_limits -- --nocapture`, including
+`isolated_runtime_rejects_bad_clients_and_recovers` from
+`tests/ipc_request_limits.rs`. Record rejection/recovery for malformed,
+oversized, unterminated, silent and trickling clients, healthy fragmented
+requests, independent status availability and shutdown with an incomplete client.
+Retain exact command, source SHA, exit status and concise results. If the suite
+was renamed, record the mapping and equivalent cases rather than omit the gate.
+Run the real smoke only in an isolated
+environment and record skips. The integration report names retained work,
+unmerged dependencies and the permitted claim set. Merge/publication follows
+its authorization; a local integration is not described as remotely released.
+
+Evidence: none for this slice. Notes: old successful checks are inputs, not proof
+for a new combined binary. No new product feature is part of this slice.
+
+### RM-reference-002 Read-only explanation and diagnostics
+
+Status: pending. Depends on: RM-reference-001. Priority: P0. Size: M.
+
+Goal: tell a person why protection is active, unavailable or limited.
+
+Work: extend [cli.rs](../../../src/cli.rs),
+[main.rs](../../../src/main.rs) and affected layer owners with a read-only
+explanation surface. Specify additive, versioned JSON fields and stable reason
+codes before implementation. Keep existing `--status` output/exit behavior
+compatible; a future `doctor` command is a proposal, not current syntax.
+
+Acceptance: distinguish requested, API-active, failed, unavailable and untested
+conditions without claiming physical effectiveness from a boolean. Explain
+missing UpdateOrchestrator tasks, elevation/path restrictions and unavailable
+IPC. No UAC, runtime startup, task mutation or power-plan edits during inspection.
+Test inactive, partial failure, occupied-mutex failure and elevated/non-elevated
+paths. Diagnostic output omits usernames, full personal paths and command arguments
+by default; any fuller export needs preview and explicit user selection.
+
+Evidence: none. Notes: reuse bounded JSONL logs; do not introduce a remote support
+service or Windows Event Log dependency.
+
+### RM-reference-003 System and display intent
+
+Status: pending. Depends on: RM-reference-002. Priority: P1. Size: M.
+
+Goal: protect a background task while letting its display turn off normally.
+
+Work: model independent system/display requests in
+[sleep.rs](../../../src/blocker/sleep.rs) and pure decisions in
+[runtime_policy.rs](../../../src/runtime_policy.rs). Preserve current explicit
+Block behavior and rollback. New selections expose user intent without claiming
+new shutdown coverage. A display request also needs a system request, as described
+by [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest).
+
+Acceptance: system-only acquires no display request; presentation intent acquires
+both. Failure of either acquisition rolls back correctly, and repeated mode
+changes/quit release exactly the requests owned. Test status accuracy, resume,
+and preservation of the existing power plan. Record actual display/idle behavior
+only on available test environments; never mark missing hardware as a pass.
+
+Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrite.
+
+## Session log
+
+- 2026-10-23: created pending slices from the product/competition research; no
+  implementation or new runtime validation performed.

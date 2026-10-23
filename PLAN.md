@@ -9,6 +9,20 @@ For the product, start with [README.md](README.md). For development, use
 
 For monetization, sponsorship, signed-binary, paid-support, or broader commercialization decisions, follow `docs/BUSINESS_MODEL.md` rather than inferring policy from engineering docs.
 
+## Product direction and detailed roadmap
+
+The maintainer requested a competitive, zero-budget product roadmap on
+2026-10-23. The [product vision](docs/PRODUCT_VISION.md) defines the target:
+understandable protection tied to real work, with clear ownership, duration and
+Windows limits. The [competitive research](docs/COMPARISON.md) explains why timers,
+process attachment and AI integrations alone are not sufficient differentiation.
+
+Use [the reference roadmap](docs/planning/reference/index.md) for ordered slices,
+dependencies, acceptance and evidence. All new slices are pending. Recommended
+next work is `RM-reference-001`, a tested integration baseline, followed by
+read-only diagnostics. This is a planning decision, not a claim of shipped
+features or authorization to implement every slice automatically.
+
 ## Current repository status
 
 Wardoff is a source-first Windows MVP. [Cargo.toml](Cargo.toml) owns the current
@@ -44,7 +58,8 @@ Keep top-level docs and user-facing answers conservative:
 
 ## What a new agent should conclude today
 
-The project is **past greenfield planning** and **not** waiting for a broad feature brainstorm.
+The project is **past greenfield planning**. The new product direction now has a
+researched roadmap; begin with its prerequisites rather than a new broad brainstorm.
 
 The most likely near-term work is to make the current MVP easier to understand, validate, and harden before expanding the scope.
 
@@ -73,11 +88,17 @@ Make the current source-first MVP easier to adopt without overstating it:
 
 ### 3. Cautious post-MVP expansion
 
-Only after the current MVP feels stable should the project take on the next layer of user-facing scope. The first candidate area is better local shutdown visibility/handling, but it must stay honest about Windows limits and must not turn `shutdown /t 0 /f` into a fake promise.
+After the tested baseline, follow the explicit gates in the reference roadmap:
+explain protection, separate system/display intent, add owned timed sessions and
+human controls, validate recovery, then improve free adoption and command workflows.
+Better local visibility remains valuable; stronger interception is not a required
+next step and must not turn `shutdown /t 0 /f` into a fake promise.
 
 ## Later backlog, not current MVP
 
-These remain later-phase ideas, not present-tense product claims:
+These are not present-tense product claims. Timers, focused session controls and
+free distribution now have pending roadmap slices; the remaining ideas stay
+deferred unless new evidence justifies them:
 
 - stronger local `shutdown.exe` handling approaches
 - Windows Event Log integration
@@ -94,3 +115,7 @@ When someone asks only **"what's next?"**, answer from this file in this order:
 1. current focus is MVP hardening and clearer validation/documentation
 2. next likely engineering work is improving the already-shipped layers and operator flow
 3. later-phase feature ideas exist, but they are backlog items, not the current committed scope
+
+For the maintainer's longer-term ambition, use the linked vision and roadmap;
+do not treat unimplemented slices as current supported features. The execution
+budget is zero: no paid tools, certificates, runners, hardware or services.
