@@ -102,7 +102,7 @@ timestamp normalization. These measurements describe that test case.
 | Rust change ready for review | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Mode Full` | Fast checks, strict Clippy, release build |
 | Documentation only | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Mode Docs` | Local Markdown destinations exist; valid UTF-8 without NUL bytes |
 | Developer scripts | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/developer_checks.ps1` | Checker success/failure paths in temporary fixtures |
-| Smoke safety helpers | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_safety.ps1` | Guard and cleanup behavior with fake processes/tasks; no runtime launched |
+| Smoke safety helpers | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_safety.ps1` | Guard, cleanup and ordinary/extended Windows path identity with fake processes/tasks; no runtime launched |
 | Runtime integration | `powershell -NoProfile -ExecutionPolicy Bypass -File tests/smoke_test.ps1` | State-changing Windows integration; isolated environment |
 
 The check script resolves the repository from its own location, stops at the
@@ -111,6 +111,15 @@ or run the smoke suite. Cargo tests include brief real Windows Power Request
 acquisition/release and token checks, plus read-only CLI subprocesses with
 isolated log fixtures. They do not launch the long-lived runtime, edit scheduled
 tasks or cause a physical power transition.
+
+Run runtime integration in a signed-in Windows desktop inside the isolated test
+environment. Record its session ID and native token elevation type. A service or
+VM-agent process in session 0 does not substitute for desktop acceptance. If
+startup exits early, retain runtime stderr and JSONL before cleanup; the
+[baseline diagnosis](planning/reference/baseline-2026-10-23.md#service-session-failure-diagnosis)
+shows a display Power Request refused in session 0 while the same executable
+worked in the desktop. Follow the [validation matrix](MVP_VALIDATION_MATRIX.md)
+for acceptance and remaining manual checks.
 
 Individual Cargo commands, useful for focused diagnosis:
 

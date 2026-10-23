@@ -2,9 +2,37 @@
 
 ## Out-of-scope and unforeseen findings
 
+### 2026-10-23 - Desktop validation resolves the startup failure
+
+- Status: baseline accepted locally; linked IDs: RM-reference-001,
+  RM-reference-002.
+- Impact: stderr identified `PowerRequestDisplayRequired` rejected with
+  `ERROR_NOT_SUPPORTED` in service session 0. It still failed after a desktop
+  was opened; the same executable passed in desktop session 1 with both full
+  and limited UAC tokens. This is evidence for this VM's execution contexts,
+  not a universal Windows service restriction.
+- Decision: run desktop acceptance in the actual signed-in desktop and retain
+  startup stderr/JSONL. Preserve transactional Block failure and its rollback.
+  Accept slice 001 from the [baseline evidence](baseline-2026-10-23.md), keeping
+  physical-power and disruptive manual gaps explicit. No power-plan or lock-policy
+  change, product fallback, paid resource or publication was used.
+
+### 2026-10-23 - A writable smoke fixture hid an autostart test defect
+
+- Status: corrected and verified; linked ID: RM-reference-001.
+- Impact: smoke can pass its autostart case by safely refusing a writable
+  executable location. A separate protected install created the task, exposing
+  a false ownership failure: its canonical `\\?\` paths were compared literally
+  with ordinary paths.
+- Decision: commit `d04df86` corrects only the test comparison, preserving exact
+  task XML and extended-path component semantics. RED/GREEN fixtures, developer
+  checks and protected-fixture desktop smoke pass. Structured events confirm
+  actual task creation and removal; a separate tray run confirms task launch,
+  Block/Allow controls, autostart-off, Explorer recovery and clean Quit.
+
 ### 2026-10-23 - A successful host build hid a portable-startup failure
 
-- Status: loader correction verified; desktop-runtime gate open; linked ID:
+- Status: loader and desktop-runtime follow-up verified; linked ID:
   RM-reference-001.
 - Impact: isolated smoke of the exact MSVC executable failed even on read-only
   CLI actions with `STATUS_DLL_NOT_FOUND`. Its PE imports include
@@ -12,10 +40,10 @@
   contract. The development host's installed runtime can mask this failure.
 - Decision: commit `5249c17` selects static CRT linkage. Full and explicit IPC
   checks pass; PE imports omit the external CRT and clean-Windows CLI startup
-  works without a redistributable. The complete runtime smoke still fails in
-  service session 0, and the separate desktop attempt could not select a safe
-  existing session. Keep slice 001 active and diagnose the runtime in a proper
-  isolated desktop environment. See the [baseline record](baseline-2026-10-23.md).
+  works without a redistributable. The initial service-session smoke failed and
+  a separate desktop attempt could not select a safe session. The later signed-in
+  desktop follow-up above resolves that gate. See the
+  [baseline record](baseline-2026-10-23.md).
 
 ### 2026-10-23 - Preserve Wardoff's philosophy while starting the roadmap
 
@@ -30,7 +58,7 @@
 
 ### 2026-10-23 - Remote main already integrates earlier work
 
-- Status: integrated locally; runtime acceptance in progress; linked ID:
+- Status: integrated and accepted locally; linked ID:
   RM-reference-001.
 - Impact: fresh fetch found main `8c45977` containing `39aadd2` and `6039955`,
   plus subsequent IPC/status, smoke, release and test improvements. Old `dev`

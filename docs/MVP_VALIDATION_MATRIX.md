@@ -36,6 +36,7 @@ Keep validation language conservative:
 | Area | Notes |
 | --- | --- |
 | OS | Windows 10 or Windows 11 |
+| Desktop context | Run runtime acceptance in a signed-in, isolated Windows desktop; record session ID and native token elevation type. A service or VM-agent session 0 is a different test context. |
 | Build target | `cargo build --release --locked` then validate `target\release\wardoff.exe` |
 | Logs | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` |
 | Admin rights | Required for Layer 3, Layer 4, Update Orchestrator task checks, and autostart task changes |

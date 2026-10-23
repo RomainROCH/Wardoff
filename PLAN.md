@@ -24,8 +24,8 @@ dependencies, acceptance and evidence. The maintainer authorized starting with
 `RM-reference-001`, a tested integration baseline, with the philosophy above
 preserved. Other slices remain pending, starting with read-only diagnostics.
 The [baseline evidence](docs/planning/reference/baseline-2026-10-23.md) records
-successful local checks and a portable-startup fix; desktop-runtime smoke
-remains an open gate for slice 001.
+successful local checks, portable startup, elevated and non-elevated desktop
+smoke, and tray checks. Slice 001 is accepted locally; slice 002 remains pending.
 This is not a claim of shipped features or automatic execution of every slice.
 
 ## Current repository status

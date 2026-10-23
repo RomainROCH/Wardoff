@@ -86,18 +86,21 @@ cost. No adoption or revenue estimate is assumed.
 
 ## Current slice and progress
 
-- Active: `RM-reference-001`. Started: 2026-10-23 with maintainer authorization.
-- Candidate: merge `a44c89a` plus portable-linkage fix `5249c17`.
-- Local Full and clean-Windows CLI startup passed. Desktop-runtime smoke remains
-  open; the service-session run failed and the desktop attempt was unavailable.
-  See the [baseline record](baseline-2026-10-23.md).
-- Next after acceptance: `RM-reference-002`; other slices remain pending.
-- Stop condition: its recorded integration/evidence gate, or a material unresolved
-  conflict, permission boundary or need for a paid resource.
+- Completed: `RM-reference-001`, accepted locally on 2026-10-23.
+- Tested integration: merge `a44c89a`, portable-linkage fix `5249c17` and smoke
+  path-ownership correction `d04df86`.
+- Local Full, clean-Windows CLI startup and desktop smoke passed. Elevated smoke
+  reports 18/18 with three skips; non-elevated smoke reports 14/14 with seven
+  skips. The corrected elevated suite also passed from a protected fixture,
+  exercising actual autostart creation/removal. Tray checks passed separately.
+  See the [baseline record](baseline-2026-10-23.md) for exact inputs and limits.
+- No active slice. Next: `RM-reference-002`; later slices remain pending.
+- The completed gate does not imply physical-power certification or publication.
+  No paid resource was used.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | in-progress | 0/3 | [001: local checks passed; desktop-runtime gate open](baseline-2026-10-23.md) |
+| [Foundations](foundations.md) | in-progress | 1/3 | [001: accepted integration and desktop evidence](baseline-2026-10-23.md) |
 | [Work sessions](work-sessions.md) | pending | 0/4 | none |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 

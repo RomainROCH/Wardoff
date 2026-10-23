@@ -8,7 +8,7 @@ index is being executed; later slices remain planned work.
 
 ### RM-reference-001 Tested integration and truth baseline
 
-Status: in-progress. Depends on: none. Priority: P0. Size: M.
+Status: done. Depends on: none. Priority: P0. Size: M.
 
 Goal: one recoverable integration head with known limits and no duplicated fixes.
 
@@ -43,10 +43,13 @@ its authorization; a local integration is not described as remotely released.
 
 Evidence: [baseline record](baseline-2026-10-23.md). Fresh Git/PR inspection,
 Full MSVC checks and the explicit eight-case IPC gate passed. Isolated CLI
-startup passed after a static-CRT fix. The complete runtime smoke failed in
-service session 0; a separate desktop attempt could not safely select a session.
-That gate remains open. Notes: old successful checks are inputs, not proof for
-a new combined binary. No new product feature is part of this slice.
+startup passed after a static-CRT fix. Follow-up desktop smoke passed with full
+and limited UAC tokens; the service-session failure was traced to a refused
+display Power Request. A test-only correction handles equivalent Windows paths
+without weakening task ownership checks. Protected-path autostart and tray
+checks passed; owned runtime/task cleanup and guest shutdown were verified.
+Recorded skips and physical/manual gaps remain explicit. No new product feature
+is part of this slice.
 
 ### RM-reference-002 Read-only explanation and diagnostics
 
@@ -99,5 +102,9 @@ Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrit
 - 2026-10-23: created pending slices from the product/competition research; no
   implementation or new runtime validation performed.
 - 2026-10-23: consolidated current main and the roadmap; fixed portable MSVC
-  startup. Full/IPC checks and clean-Windows CLI startup passed. Slice 001
-  remains active pending desktop-runtime validation; later slices are pending.
+  startup. Full/IPC checks and clean-Windows CLI startup passed. At that
+  checkpoint, slice 001 stayed active pending desktop-runtime validation.
+- 2026-10-23: completed the desktop follow-up, diagnosed the session-0 Power
+  Request failure and corrected smoke path identity. Accepted slice 001 with
+  elevated/non-elevated smoke, protected-path autostart and tray evidence.
+  Slice 002 and later work remain pending.
