@@ -499,19 +499,20 @@ function Get-SmokeAutostartTaskIdentity {
             throw 'Wardoff autostart task has an unexpected number of actions.'
         }
         $action = $actions.Item(1)
-        $expectedPath = [System.IO.Path]::GetFullPath($binaryPath)
-        $actualPath = [System.IO.Path]::GetFullPath([string]$action.Path)
-        $expectedWorkingDirectory = [System.IO.Path]::GetFullPath((Split-Path -Parent $binaryPath))
-        $actualWorkingDirectory = [System.IO.Path]::GetFullPath([string]$action.WorkingDirectory)
-        if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::Equals($actualWorkingDirectory, $expectedWorkingDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $actualIdentity = [pscustomobject]@{
+            Xml                = [string]$task.Xml
+            Path               = [string]$action.Path
+            WorkingDirectory   = [string]$action.WorkingDirectory
+        }
+        $expectedIdentity = [pscustomobject]@{
+            Xml                = [string]$task.Xml
+            Path               = $binaryPath
+            WorkingDirectory   = (Split-Path -Parent $binaryPath)
+        }
+        if (-not (Test-SmokeAutostartTaskIdentity -ExpectedIdentity $expectedIdentity -ActualIdentity $actualIdentity)) {
             throw 'Refusing to claim an autostart task that does not target the smoke executable and its directory.'
         }
-        return [pscustomobject]@{
-            Xml                = [string]$task.Xml
-            Path               = $actualPath
-            WorkingDirectory   = $actualWorkingDirectory
-        }
+        return $actualIdentity
     }
     catch {
         throw "Smoke test could not verify ownership of the Wardoff autostart task: $($_.Exception.Message)"

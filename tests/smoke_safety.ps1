@@ -148,11 +148,84 @@ try {
         Assert-SmokePreconditions -WardoffProcesses @() -CurrentSessionId 7 -BinaryPath $binaryPath -AutostartTaskProbe { throw 'Task Scheduler query failed.' }
     } 'Task Scheduler query failed'
 
-    $taskIdentity = [pscustomobject]@{ Xml = '<Task><Action /></Task>'; Path = $binaryPath; WorkingDirectory = (Split-Path -Parent $binaryPath) }
-    $sameTaskIdentity = [pscustomobject]@{ Xml = $taskIdentity.Xml; Path = $taskIdentity.Path; WorkingDirectory = $taskIdentity.WorkingDirectory }
-    $changedTaskIdentity = [pscustomobject]@{ Xml = '<Task><ChangedAction /></Task>'; Path = $taskIdentity.Path; WorkingDirectory = $taskIdentity.WorkingDirectory }
-    Assert-True (Test-SmokeAutostartTaskIdentity -ExpectedIdentity $taskIdentity -ActualIdentity $sameTaskIdentity) 'An unchanged smoke-created task was not recognized as owned.'
-    Assert-True (-not (Test-SmokeAutostartTaskIdentity -ExpectedIdentity $taskIdentity -ActualIdentity $changedTaskIdentity)) 'A changed task definition was still recognized as owned.'
+    $taskXml = '<Task><Actions><Exec><Command>Wardoff</Command></Exec></Actions></Task>'
+    $taskIdentity = [pscustomobject]@{
+        Xml = $taskXml
+        Path = 'C:\Program Files\Wardoff\target\release\wardoff.exe'
+        WorkingDirectory = 'C:\Program Files\Wardoff\target\release'
+    }
+    $identityFixtures = @(
+        [pscustomobject]@{
+            Description = 'an unchanged ordinary path'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = $taskIdentity.Path; WorkingDirectory = $taskIdentity.WorkingDirectory }
+            Owned = $true
+        }
+        [pscustomobject]@{
+            Description = 'an extended DOS path equivalent to an ordinary path'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{
+                Xml = $taskXml
+                Path = '\\?\C:\Program Files\Wardoff\target\release\wardoff.exe'
+                WorkingDirectory = '\\?\C:\Program Files\Wardoff\target\release'
+            }
+            Owned = $true
+        }
+        [pscustomobject]@{
+            Description = 'an extended UNC path equivalent to an ordinary UNC path'
+            Expected = [pscustomobject]@{
+                Xml = $taskXml
+                Path = '\\fileserver\share\Wardoff\target\release\wardoff.exe'
+                WorkingDirectory = '\\fileserver\share\Wardoff\target\release'
+            }
+            Actual = [pscustomobject]@{
+                Xml = $taskXml
+                Path = '\\?\UNC\fileserver\share\Wardoff\target\release\wardoff.exe'
+                WorkingDirectory = '\\?\UNC\fileserver\share\Wardoff\target\release'
+            }
+            Owned = $true
+        }
+        [pscustomobject]@{
+            Description = 'a task with changed XML'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{ Xml = '<Task><ChangedAction /></Task>'; Path = $taskIdentity.Path; WorkingDirectory = $taskIdentity.WorkingDirectory }
+            Owned = $false
+        }
+        [pscustomobject]@{
+            Description = 'a task with a different executable'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = 'C:\Program Files\Wardoff\target\release\other.exe'; WorkingDirectory = $taskIdentity.WorkingDirectory }
+            Owned = $false
+        }
+        [pscustomobject]@{
+            Description = 'a task with a different working directory'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = $taskIdentity.Path; WorkingDirectory = 'C:\Program Files\Wardoff\target\other' }
+            Owned = $false
+        }
+        [pscustomobject]@{
+            Description = 'a task with a neighboring executable name'
+            Expected = $taskIdentity
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = 'C:\Program Files\Wardoff\target\release\wardoff.exe.bak'; WorkingDirectory = $taskIdentity.WorkingDirectory }
+            Owned = $false
+        }
+        [pscustomobject]@{
+            Description = 'an extended path with a final dot in a component'
+            Expected = [pscustomobject]@{ Xml = $taskXml; Path = '\\?\C:\Program Files\Wardoff\target\release\wardoff.exe'; WorkingDirectory = '\\?\C:\Program Files\Wardoff\target\release' }
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = '\\?\C:\Program Files\Wardoff\target\release.\wardoff.exe'; WorkingDirectory = '\\?\C:\Program Files\Wardoff\target\release.' }
+            Owned = $false
+        }
+        [pscustomobject]@{
+            Description = 'an extended path with a final space in a component'
+            Expected = [pscustomobject]@{ Xml = $taskXml; Path = '\\?\C:\Program Files\Wardoff\target\release\wardoff.exe'; WorkingDirectory = '\\?\C:\Program Files\Wardoff\target\release' }
+            Actual = [pscustomobject]@{ Xml = $taskXml; Path = '\\?\C:\Program Files\Wardoff\target\release \wardoff.exe'; WorkingDirectory = '\\?\C:\Program Files\Wardoff\target\release ' }
+            Owned = $false
+        }
+    )
+    foreach ($fixture in $identityFixtures) {
+        $isOwned = Test-SmokeAutostartTaskIdentity -ExpectedIdentity $fixture.Expected -ActualIdentity $fixture.Actual
+        Assert-True ($isOwned -eq $fixture.Owned) "Autostart identity fixture '$($fixture.Description)' returned $isOwned instead of $($fixture.Owned)."
+    }
 
     $owned = [pscustomobject]@{ Id = 201; HasExited = $false }
     $unowned = [pscustomobject]@{ Id = 202; HasExited = $false }

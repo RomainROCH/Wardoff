@@ -113,14 +113,39 @@ function Stop-SmokeOwnedProcesses {
     }
 }
 
+function Convert-SmokePathToExtended {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    if ($Path.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $Path
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\', [System.StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
+}
+
 function Test-SmokeAutostartTaskIdentity {
     param(
         [Parameter(Mandatory = $true)][object] $ExpectedIdentity,
         [Parameter(Mandatory = $true)][object] $ActualIdentity
     )
     return [string]::Equals($ExpectedIdentity.Xml, $ActualIdentity.Xml, [System.StringComparison]::Ordinal) -and
-        [string]::Equals($ExpectedIdentity.Path, $ActualIdentity.Path, [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals($ExpectedIdentity.WorkingDirectory, $ActualIdentity.WorkingDirectory, [System.StringComparison]::OrdinalIgnoreCase)
+        [string]::Equals(
+            (Convert-SmokePathToExtended -Path ([string]$ExpectedIdentity.Path)),
+            (Convert-SmokePathToExtended -Path ([string]$ActualIdentity.Path)),
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -and
+        [string]::Equals(
+            (Convert-SmokePathToExtended -Path ([string]$ExpectedIdentity.WorkingDirectory)),
+            (Convert-SmokePathToExtended -Path ([string]$ActualIdentity.WorkingDirectory)),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
 }
 
 function Get-EmbeddedManifestContent {
