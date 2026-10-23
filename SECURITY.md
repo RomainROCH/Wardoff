@@ -7,7 +7,7 @@ Wardoff is a Windows-native utility that intentionally runs elevated for some fe
 | Version | Status |
 | --- | --- |
 | `dev` branch | Supported |
-| `v0.1.0-mvp` (latest tagged release) | Supported |
+| `v0.2.0` (latest published release) | Supported |
 
 Older versions are not supported for security reporting.
 

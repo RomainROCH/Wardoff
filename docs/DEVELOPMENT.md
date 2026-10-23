@@ -69,8 +69,21 @@ Effects remain in the existing runtime and subsystem owners.
 The two pipes have different contracts: status reads must remain available
 without elevation; control commands retain same-user/session access checks.
 The ordinary inactive status path checks the session mutex and returns without
-pipe retries. If the mutex is occupied but neither pipe responds, the sequential
-fallback can take about four seconds; that case is tracked in [PLAN.md](../PLAN.md).
+pipe retries. The local status-latency change shares one absolute two-second
+connection deadline between the status pipe and its legacy control fallback,
+preserving the initial status startup grace. The fallback uses the remaining
+budget rather than starting another full wait. This targets about two seconds
+plus scheduling overhead when both endpoints are unavailable; connected reply
+reads are outside the budget, and ordinary control commands keep their existing
+20-attempt policy.
+
+Local validation of this change passed formatting, compilation checks, strict
+Clippy and the safe Rust suite (74 tests). The native Power Request test
+`blocker::sleep::tests::activation_reports_an_acquired_request_before_returning`
+was explicitly excluded. The suite included the eight focused Windows IPC cases. In
+isolated CLI runs with the session mutex occupied and both endpoints unavailable,
+median duration decreased from 3882 ms to 2110 ms with matching output after
+timestamp normalization. These measurements describe that test case.
 
 ## Validation
 
@@ -111,7 +124,14 @@ cargo test --locked instance::tests
 cargo test --locked session_scope::tests
 cargo test --locked autostart::tests
 cargo test --locked --test log_tail_cli
+cargo test --locked --test instance_lifecycle
 ```
+
+The `instance_lifecycle` target includes the production instance-claim code with
+a test-only, fail-closed name provider. Each native case uses a unique local
+mutex name and real Win32 handles to exercise primary/secondary claims, guard
+cleanup and bounded retries. It does not start protection, use production mutex
+names or validate a real elevated relaunch or physical power transition.
 
 The docs checker covers tracked and untracked, non-ignored Markdown. It checks
 local link destinations, not heading fragments, external websites or factual
@@ -121,11 +141,13 @@ remain separate from development checks.
 Both [CI](../.github/workflows/ci.yml) and the
 [release workflow](../.github/workflows/release.yml) run the same Full check,
 developer-tooling fixtures, smoke-safety fixtures and the real smoke suite on
-Windows. Full itself remains safe for routine development and does not run the
-state-changing smoke suite. A failed check prevents release publication.
+Windows. Full includes the brief native Power Request test and does not run the
+state-changing smoke suite. A failed required check prevents draft creation.
 
-The workflows retain one standard Windows job per existing event, with no added
-matrix or scheduled runs. Standard GitHub-hosted runners are
+CI retains one standard Windows job; tag releases separate read-only validation
+from a draft-only writer, with no added matrix or scheduled runs. The checked
+binary is reused by smoke without compilation. See [RELEASING.md](RELEASING.md)
+for provenance, exact-artifact gates and manual publication. Standard GitHub-hosted runners are
 [free for public repositories](https://docs.github.com/en/actions/concepts/billing-and-usage).
 CI binary artifacts expire after seven days. Reassess billing before making the
 repository private or moving to a larger or paid runner.

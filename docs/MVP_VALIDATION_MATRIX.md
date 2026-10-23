@@ -162,6 +162,10 @@ it never means a universal veto. Request visibility alone is not a sleep test.
 
 ### Hardware procedure (manual, not CI)
 
+The [physical power validation kit](PHYSICAL_POWER_VALIDATION.md) provides passive
+preparation, read-only evidence collection and the eight-case S3 worksheet.
+Preparation does not launch Wardoff or perform a power transition.
+
 Use a prepared test PC, or a disposable VM only if it exposes the required power
 states. Do not run disruptive tests on a workstation with unsaved work. Do not
 enable Hibernate, change button/lid actions, set request overrides or edit a

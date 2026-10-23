@@ -33,6 +33,87 @@ try {
     try { Assert-Throws {} 'canary' } catch { $canaryCaught = $true }
     Assert-True $canaryCaught 'Assert-Throws accepted an action that did not throw.'
 
+    & {
+        # Load only these function definitions; never execute the smoke runtime.
+        $smokePath = Join-Path $PSScriptRoot 'smoke_test.ps1'
+        $parseErrors = $null
+        $smokeAst = [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$null, [ref]$parseErrors)
+        if ($parseErrors) { throw (($parseErrors | ForEach-Object { $_.Message }) -join [Environment]::NewLine) }
+        foreach ($functionName in @('Get-SmokePreflightWardoffProcesses', 'Assert-SmokePreflight')) {
+            $definitions = @($smokeAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName
+            }, $true))
+            Assert-True ($definitions.Count -eq 1) "Expected exactly one smoke function named $functionName."
+            . ([scriptblock]::Create($definitions[0].Extent.Text))
+        }
+
+        $preflightState = @{ Processes = @(); ProcessError = $false; TaskExists = $false; TaskError = $false; TaskCalls = 0 }
+        function Get-WardoffProcessesByName {
+            if ($preflightState.ProcessError) { throw 'Fixture process enumeration failed.' }
+            return @($preflightState.Processes)
+        }
+        function Get-SmokeCurrentSessionId { return 7 }
+        function Get-SmokeAutostartTaskExists {
+            $preflightState.TaskCalls++
+            if ($preflightState.TaskError) { throw 'Fixture task query failed.' }
+            return $preflightState.TaskExists
+        }
+        $script:OwnedProcesses = [System.Collections.Generic.List[object]]::new()
+        $script:OwnedProcesses.Add([pscustomobject]@{ Id = 901; HasExited = $false })
+
+        Assert-SmokePreflight
+        Assert-True ($preflightState.TaskCalls -eq 1) 'An empty process inventory did not reach the fake task probe.'
+
+        $preflightState.ProcessError = $true
+        Assert-Throws { Assert-SmokePreflight } 'could not query Wardoff processes before mutation'
+        Assert-True ($preflightState.TaskCalls -eq 1) 'A failed process query reached the task probe.'
+        $preflightState.ProcessError = $false
+
+        $preflightState.Processes = @([pscustomobject]@{ ProcessId = 902; SessionId = 7; ExecutablePath = 'C:\other\wardoff.exe'; CreationDate = $null })
+        Assert-Throws { Assert-SmokePreflight } 'conflicting Wardoff runtime process'
+        Assert-True ($preflightState.TaskCalls -eq 1) 'A conflicting process reached the task probe.'
+
+        $preflightState.Processes = @([pscustomobject]@{ ProcessId = 901; SessionId = 7; ExecutablePath = $binaryPath; CreationDate = $null })
+        Assert-SmokePreflight
+        Assert-True ($preflightState.TaskCalls -eq 2) 'The fake owned process did not pass the real preflight.'
+
+        $preflightState.Processes = @()
+        $preflightState.TaskExists = $true
+        Assert-Throws { Assert-SmokePreflight } 'autostart task already exists'
+        Assert-True ($preflightState.TaskCalls -eq 3) 'The fake existing task was not checked.'
+
+        $preflightState.TaskExists = $false
+        $preflightState.TaskError = $true
+        Assert-Throws { Assert-SmokePreflight } 'Fixture task query failed'
+        Assert-True ($preflightState.TaskCalls -eq 4) 'The fake task failure was not checked.'
+
+        Assert-Throws {
+            Assert-SmokePreconditions -WardoffProcesses $null -CurrentSessionId 7 -BinaryPath $binaryPath -AutostartTaskProbe { return $false }
+        } 'WardoffProcesses'
+        Write-Output 'Smoke preflight fixtures passed (7 cases; no runtime or task access).'
+    }
+
+    $buildFixture = Join-Path ([IO.Path]::GetTempPath()) ('wardoff-smoke-build-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    try {
+        [IO.File]::WriteAllBytes($buildFixture, [byte[]](1, 2, 3))
+        $buildCalls = @{ Count = 0 }
+        $buildAction = { $buildCalls.Count++; return [pscustomobject]@{ ExitCode = 0 } }
+        Invoke-SmokeReleaseBuild -UseExistingBinary $true -BinaryPath $buildFixture -BuildAction $buildAction
+        Assert-True ($buildCalls.Count -eq 0) 'Existing-binary smoke unexpectedly invoked Cargo.'
+        Invoke-SmokeReleaseBuild -UseExistingBinary $false -BinaryPath $buildFixture -BuildAction $buildAction
+        Assert-True ($buildCalls.Count -eq 1) 'Ordinary smoke did not invoke its build action.'
+        Assert-Throws {
+            Invoke-SmokeReleaseBuild -UseExistingBinary $true -BinaryPath ($buildFixture + '.missing') -BuildAction $buildAction
+        } 'existing release binary'
+        Assert-True ($buildCalls.Count -eq 1) 'Missing-binary smoke fell back to compilation.'
+        Assert-Throws {
+            Invoke-SmokeReleaseBuild -UseExistingBinary $false -BinaryPath $buildFixture -BuildAction { return [pscustomobject]@{ ExitCode = 7 } }
+        } 'exit code 7'
+    } finally {
+        if (Test-Path -LiteralPath $buildFixture) { Remove-Item -LiteralPath $buildFixture -Force }
+    }
+
     $probeState = @{ Calls = 0 }
     $emptyProbe = { $probeState.Calls++; return $false }
     Assert-SmokePreconditions -WardoffProcesses @() -CurrentSessionId 7 -BinaryPath $binaryPath -AutostartTaskProbe $emptyProbe

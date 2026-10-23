@@ -23,8 +23,8 @@ use crate::instance::{
     claim_primary_instance, claim_primary_instance_with_retry, InstanceClaim, InstanceGuard,
 };
 use crate::ipc::{
-    read_status, send_request, ClientError, IpcRequest, IpcResponse, IpcServer, PendingRequest,
-    IPC_WAKE_MESSAGE,
+    read_status, send_request, send_status_request_with_connect_deadline, ClientError, IpcRequest,
+    IpcResponse, IpcServer, PendingRequest, IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
 use crate::runtime_policy::{
@@ -54,6 +54,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
 const ELEVATED_RELAUNCH_MUTEX_RETRY_DELAY: Duration = Duration::from_millis(100);
+const STATUS_PIPE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 
 // Callback bridge for the Win32 message loop on the application thread. `run`
 // registers it only while its local Application is alive and clears callbacks
@@ -335,18 +336,25 @@ fn handle_status_request() -> Result<i32, Box<dyn Error>> {
 }
 
 fn handle_secondary_status_request() -> Result<i32, Box<dyn Error>> {
-    match read_status() {
+    // Give the read-only pipe its startup grace, then share the remaining discovery
+    // budget with the legacy control fallback. Connected reply reads are unchanged.
+    let connect_deadline = Instant::now() + STATUS_PIPE_DISCOVERY_TIMEOUT;
+    match read_status(Some(connect_deadline)) {
         Ok(status) => {
             println!("{}", status.to_json()?);
             Ok(0)
         }
-        Err(ClientError::Unavailable) => handle_secondary_status_request_via_control_pipe(),
+        Err(ClientError::Unavailable) => {
+            handle_secondary_status_request_via_control_pipe(connect_deadline)
+        }
         Err(ClientError::Transport(message)) => Err(Box::new(other_error(message))),
     }
 }
 
-fn handle_secondary_status_request_via_control_pipe() -> Result<i32, Box<dyn Error>> {
-    match send_request(&IpcRequest::Status) {
+fn handle_secondary_status_request_via_control_pipe(
+    connect_deadline: Instant,
+) -> Result<i32, Box<dyn Error>> {
+    match send_status_request_with_connect_deadline(connect_deadline) {
         Ok(IpcResponse::Status { status }) => {
             println!("{}", status.to_json()?);
             Ok(0)

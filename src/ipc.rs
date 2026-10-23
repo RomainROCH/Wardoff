@@ -13,19 +13,19 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::mem::size_of;
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Sender},
-    Arc,
+    Arc, Mutex, MutexGuard,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
-    HLOCAL, LPARAM, WPARAM,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE,
+    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_PATH_NOT_FOUND,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WPARAM,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -35,12 +35,12 @@ use windows::Win32::Security::{
     TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+    ReadFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
     PIPE_ACCESS_OUTBOUND,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE,
+    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
@@ -48,12 +48,107 @@ use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
 const IPC_SERVER_THREAD_NAME: &str = "wardoff-ipc-server";
 const STATUS_SERVER_THREAD_NAME: &str = "wardoff-status-server";
 const PIPE_BUFFER_SIZE: u32 = 4096;
+// Includes the terminating newline; all current control commands are much smaller.
+const MAX_REQUEST_BYTES: usize = 4096;
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(1);
+const REQUEST_READ_POLL_DELAY: Duration = Duration::from_millis(10);
 const PIPE_CONNECT_ATTEMPTS: usize = 20;
 const PIPE_CONNECT_DELAY: Duration = Duration::from_millis(100);
 const INITIAL_PIPE_CLAIM_ATTEMPTS: usize = 10;
 const INITIAL_PIPE_CLAIM_DELAY: Duration = Duration::from_millis(100);
 const CONTROL_PIPE_SECURITY_SDDL_PREFIX: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;";
 const CONTROL_PIPE_SECURITY_SDDL_SUFFIX: &str = ")S:(ML;;NW;;;ME)";
+
+// The regression fixture installs this only for its process-unique status pipe.
+// No hook state or synchronization is compiled into the application.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod status_shutdown_test {
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
+
+    #[derive(Debug)]
+    pub(crate) enum Event {
+        GateContended,
+        Wake(Option<i32>),
+    }
+
+    struct Pause {
+        reached: mpsc::Sender<()>,
+        resume: mpsc::Receiver<()>,
+    }
+
+    struct Hook {
+        endpoint: String,
+        pause: Option<Pause>,
+        wake: Option<mpsc::Sender<Event>>,
+        gate_reported: bool,
+    }
+
+    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+
+    pub(crate) fn install(
+        endpoint: String,
+    ) -> (mpsc::Receiver<()>, mpsc::Sender<()>, mpsc::Receiver<Event>) {
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let mut hook = HOOK.lock().expect("status regression hook lock");
+        assert!(hook.is_none(), "status regression hook already installed");
+        *hook = Some(Hook {
+            endpoint,
+            pause: Some(Pause {
+                reached: reached_tx,
+                resume: resume_rx,
+            }),
+            wake: Some(wake_tx),
+            gate_reported: false,
+        });
+        (reached_rx, resume_tx, wake_rx)
+    }
+
+    pub(super) fn pause_replacement(endpoint: &str) {
+        let pause = {
+            let mut hook = HOOK.lock().expect("status regression hook lock");
+            hook.as_mut()
+                .filter(|hook| hook.endpoint == endpoint)
+                .and_then(|hook| hook.pause.take())
+        };
+        if let Some(pause) = pause {
+            pause.reached.send(()).expect("status regression paused");
+            pause
+                .resume
+                .recv_timeout(Duration::from_secs(5))
+                .expect("status regression resume timed out");
+        }
+    }
+
+    pub(super) fn record_gate_contention(endpoint: &str) {
+        let mut hook = HOOK.lock().expect("status regression hook lock");
+        if let Some(current) = hook.as_mut().filter(|hook| hook.endpoint == endpoint) {
+            if !current.gate_reported {
+                if let Some(events) = current.wake.as_ref() {
+                    let _ = events.send(Event::GateContended);
+                }
+                current.gate_reported = true;
+            }
+        }
+    }
+
+    pub(super) fn record_wake(endpoint: &str, result: &std::io::Result<()>) {
+        let mut hook = HOOK.lock().expect("status regression hook lock");
+        if let Some(current) = hook.as_mut().filter(|hook| hook.endpoint == endpoint) {
+            if let Some(wake) = current.wake.take() {
+                let _ = wake.send(Event::Wake(
+                    result.as_ref().err().and_then(|error| error.raw_os_error()),
+                ));
+            }
+            if current.pause.is_none() && current.wake.is_none() {
+                *hook = None;
+            }
+        }
+    }
+}
 
 /// Wakes the UI thread when the IPC server has queued a new request.
 pub(crate) const IPC_WAKE_MESSAGE: u32 = WM_APP + 1;
@@ -114,7 +209,35 @@ pub(crate) enum ClientError {
 pub(crate) struct IpcServer {
     control_join_handle: Option<JoinHandle<()>>,
     status_join_handle: Option<JoinHandle<()>>,
-    status_shutdown_requested: Arc<AtomicBool>,
+    status_shutdown_requested: Arc<StatusShutdown>,
+}
+
+#[derive(Default)]
+struct StatusShutdown {
+    requested: AtomicBool,
+    accept_gate: Mutex<()>,
+}
+
+impl StatusShutdown {
+    fn lock_accept(&self) -> MutexGuard<'_, ()> {
+        #[cfg(test)]
+        if matches!(
+            self.accept_gate.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ) {
+            if let Ok(endpoint) = current_status_pipe_path() {
+                status_shutdown_test::record_gate_contention(&endpoint);
+            }
+        }
+        self.accept_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn request(&self) {
+        let _accept = self.lock_accept();
+        self.requested.store(true, Ordering::Release);
+    }
 }
 
 impl IpcServer {
@@ -125,7 +248,7 @@ impl IpcServer {
     ) -> Result<Self, String> {
         let control_pipe_path = current_control_pipe_path()?;
         let status_pipe_path = current_status_pipe_path()?;
-        let status_shutdown_requested = Arc::new(AtomicBool::new(false));
+        let status_shutdown_requested = Arc::new(StatusShutdown::default());
         let (startup_tx, startup_rx) = mpsc::channel();
         let control_request_tx = request_tx.clone();
         let mut control_join_handle = Some(
@@ -189,8 +312,7 @@ impl IpcServer {
 
     /// Stops accepting new status-pipe clients before the main runtime begins shutdown work.
     pub(crate) fn begin_shutdown(&self) {
-        self.status_shutdown_requested
-            .store(true, Ordering::Release);
+        self.status_shutdown_requested.request();
         let _ = wake_status_server();
     }
 
@@ -234,8 +356,22 @@ impl IpcServer {
 
 /// Sends a JSON control request to the primary Wardoff runtime.
 pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientError> {
+    send_request_with_connect_deadline(request, None)
+}
+
+/// Requests status through the legacy control pipe using the remaining discovery budget.
+pub(crate) fn send_status_request_with_connect_deadline(
+    connect_deadline: Instant,
+) -> Result<IpcResponse, ClientError> {
+    send_request_with_connect_deadline(&IpcRequest::Status, Some(connect_deadline))
+}
+
+fn send_request_with_connect_deadline(
+    request: &IpcRequest,
+    connect_deadline: Option<Instant>,
+) -> Result<IpcResponse, ClientError> {
     let control_pipe_path = current_control_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_control_pipe(&control_pipe_path)?;
+    let mut pipe = connect_control_pipe(&control_pipe_path, connect_deadline)?;
     let payload = serde_json::to_string(request).map_err(|error| {
         ClientError::Transport(format!(
             "Wardoff could not serialize its IPC request: {error}"
@@ -281,10 +417,10 @@ pub(crate) fn send_request(request: &IpcRequest) -> Result<IpcResponse, ClientEr
     })
 }
 
-/// Reads the current runtime status through the dedicated read-only status pipe.
-pub(crate) fn read_status() -> Result<StatusOutput, ClientError> {
+/// Reads status; an optional deadline limits connection retries, not a connected reply read.
+pub(crate) fn read_status(connect_deadline: Option<Instant>) -> Result<StatusOutput, ClientError> {
     let status_pipe_path = current_status_pipe_path().map_err(ClientError::Transport)?;
-    let mut pipe = connect_status_pipe(&status_pipe_path)?;
+    let mut pipe = connect_status_pipe(&status_pipe_path, connect_deadline)?;
     let mut status_line = String::new();
     let bytes_read = {
         let mut reader = BufReader::new(&mut pipe);
@@ -554,7 +690,7 @@ fn run_server_loop(
 fn run_status_server_loop(
     request_tx: Sender<PendingRequest>,
     ui_thread_id: u32,
-    shutdown_requested: Arc<AtomicBool>,
+    shutdown_requested: Arc<StatusShutdown>,
     startup_tx: Sender<ServerStartupResult>,
 ) {
     let status_pipe_path = match current_status_pipe_path() {
@@ -593,44 +729,41 @@ fn run_status_server_loop(
     let mut initial_pipe = Some(initial_pipe);
 
     loop {
-        if shutdown_requested.load(Ordering::Acquire) {
-            break;
-        }
+        // Publish the next instance before shutdown can set its flag and wake it.
+        // The synchronous connection wait must stay outside this short gate.
+        let pipe = {
+            let _accept = shutdown_requested.lock_accept();
+            if shutdown_requested.requested.load(Ordering::Acquire) {
+                break;
+            }
 
-        let mut pipe = match initial_pipe.take() {
-            Some(pipe) => match connect_pipe_client(pipe, &status_pipe_path) {
-                Ok(pipe) => pipe,
-                Err(error) => {
-                    warn!("Wardoff stopped its status server after an IPC error: {error}");
-                    logger::log_event(
-                        "status_server_stopped",
-                        EventSource::Ipc,
-                        format!(
-                            "Wardoff stopped its read-only status pipe after an IPC error: {error}"
-                        ),
-                        false,
-                    );
-                    break;
-                }
-            },
-            None => match accept_status_client(&status_pipe_path) {
-                Ok(pipe) => pipe,
-                Err(error) => {
-                    warn!("Wardoff stopped its status server after an IPC error: {error}");
-                    logger::log_event(
-                        "status_server_stopped",
-                        EventSource::Ipc,
-                        format!(
-                            "Wardoff stopped its read-only status pipe after an IPC error: {error}"
-                        ),
-                        false,
-                    );
-                    break;
-                }
-            },
+            #[cfg(test)]
+            if initial_pipe.is_none() {
+                status_shutdown_test::pause_replacement(&status_pipe_path);
+            }
+
+            match initial_pipe.take() {
+                Some(pipe) => Ok(pipe),
+                None => create_status_pipe_instance(&status_pipe_path).map_err(|(error, _)| error),
+            }
+        };
+        let mut pipe = match pipe.and_then(|pipe| connect_pipe_client(pipe, &status_pipe_path)) {
+            Ok(pipe) => pipe,
+            Err(error) => {
+                warn!("Wardoff stopped its status server after an IPC error: {error}");
+                logger::log_event(
+                    "status_server_stopped",
+                    EventSource::Ipc,
+                    format!(
+                        "Wardoff stopped its read-only status pipe after an IPC error: {error}"
+                    ),
+                    false,
+                );
+                break;
+            }
         };
 
-        if shutdown_requested.load(Ordering::Acquire) {
+        if shutdown_requested.requested.load(Ordering::Acquire) {
             break;
         }
 
@@ -702,19 +835,13 @@ fn accept_control_client(
     connect_pipe_client(pipe, control_pipe_path)
 }
 
-fn accept_status_client(status_pipe_path: &str) -> Result<File, String> {
-    let pipe = create_status_pipe_instance(status_pipe_path).map_err(|(error, _)| error)?;
-    connect_pipe_client(pipe, status_pipe_path)
-}
-
 fn wait_for_server_startup(
     startup_rx: &mpsc::Receiver<ServerStartupResult>,
     control_join_handle: &mut Option<JoinHandle<()>>,
     status_join_handle: &mut Option<JoinHandle<()>>,
-    status_shutdown_requested: &Arc<AtomicBool>,
+    status_shutdown_requested: &Arc<StatusShutdown>,
 ) -> Result<(), String> {
     let mut control_ready = false;
-    let mut status_ready = false;
 
     for _ in 0..2 {
         let startup_result = match startup_rx.recv() {
@@ -725,7 +852,6 @@ fn wait_for_server_startup(
                     status_join_handle,
                     status_shutdown_requested,
                     control_ready,
-                    status_ready,
                 );
                 return Err(
                     "Wardoff could not confirm that both named-pipe servers claimed their initial instances."
@@ -743,24 +869,21 @@ fn wait_for_server_startup(
                         status_join_handle,
                         status_shutdown_requested,
                         control_ready,
-                        status_ready,
                     );
                     return Err(error);
                 }
             },
-            ServerStartupKind::Status => match startup_result.result {
-                Ok(()) => status_ready = true,
-                Err(error) => {
+            ServerStartupKind::Status => {
+                if let Err(error) = startup_result.result {
                     cleanup_failed_server_startup(
                         control_join_handle,
                         status_join_handle,
                         status_shutdown_requested,
                         control_ready,
-                        status_ready,
                     );
                     return Err(error);
                 }
-            },
+            }
         }
     }
 
@@ -770,15 +893,12 @@ fn wait_for_server_startup(
 fn cleanup_failed_server_startup(
     control_join_handle: &mut Option<JoinHandle<()>>,
     status_join_handle: &mut Option<JoinHandle<()>>,
-    status_shutdown_requested: &Arc<AtomicBool>,
+    status_shutdown_requested: &Arc<StatusShutdown>,
     control_ready: bool,
-    status_ready: bool,
 ) {
-    status_shutdown_requested.store(true, Ordering::Release);
-
-    if status_ready {
-        let _ = wake_status_server();
-    }
+    status_shutdown_requested.request();
+    // The status worker can already be waiting while its startup ACK is queued.
+    let _ = wake_status_server();
     if control_ready {
         let _ = send_request(&IpcRequest::ShutdownServer);
     }
@@ -903,20 +1023,95 @@ fn is_retryable_initial_pipe_claim_error(error_code: u32) -> bool {
 }
 
 fn read_request(pipe: &mut File) -> Result<IpcRequest, String> {
-    let mut request_line = String::new();
-    let bytes_read = {
-        let mut reader = BufReader::new(pipe);
-        reader
-            .read_line(&mut request_line)
-            .map_err(|error| format!("Wardoff could not read an IPC request: {error}"))?
-    };
+    // Nonblocking byte reads also handle a JSON line split across pipe messages.
+    // The pipe is owned by this server thread; no helper thread or pending I/O survives a timeout.
+    let handle = HANDLE(pipe.as_raw_handle());
+    let read_mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
+    unsafe { SetNamedPipeHandleState(handle, Some(&read_mode), None, None) }
+        .map_err(|error| format!("Wardoff could not bound its IPC request read: {error}"))?;
 
-    if bytes_read == 0 {
-        return Err("Wardoff received an empty IPC request.".to_string());
+    let result = read_request_until_deadline(pipe);
+    // Valid commands keep the existing reply behavior. Rejections remain nonblocking:
+    // a client that never reads its error reply must not stall the next accept either.
+    if result.is_ok() {
+        let reply_mode = PIPE_READMODE_MESSAGE | PIPE_WAIT;
+        unsafe { SetNamedPipeHandleState(handle, Some(&reply_mode), None, None) }
+            .map_err(|error| format!("Wardoff could not restore its IPC reply mode: {error}"))?;
     }
+    result
+}
 
-    serde_json::from_str(request_line.trim_end())
-        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))
+fn read_request_until_deadline(pipe: &mut File) -> Result<IpcRequest, String> {
+    let deadline = Instant::now() + REQUEST_READ_TIMEOUT;
+    let mut request_line = Vec::with_capacity(MAX_REQUEST_BYTES);
+    loop {
+        if Instant::now() >= deadline {
+            return Err("Wardoff timed out reading an IPC request.".to_string());
+        }
+
+        let mut buffer = [0; 512];
+        let mut bytes_read = 0;
+        // std::fs::File::read maps ERROR_NO_DATA to EOF on Windows. Preserve that
+        // Win32 result here so an idle connected client really waits for the deadline.
+        let read = unsafe {
+            ReadFile(
+                HANDLE(pipe.as_raw_handle()),
+                Some(&mut buffer),
+                Some(&mut bytes_read),
+                None,
+            )
+        };
+        let error_code = unsafe { GetLastError() };
+        match read {
+            Ok(()) if bytes_read == 0 => {
+                return Err(incomplete_request_error(request_line.is_empty()))
+            }
+            Ok(()) => {
+                let bytes_read = bytes_read as usize;
+                let newline = buffer[..bytes_read].iter().position(|byte| *byte == b'\n');
+                let line_bytes = newline.map_or(bytes_read, |position| position + 1);
+                if request_line.len() + line_bytes > MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+                request_line.extend_from_slice(&buffer[..line_bytes]);
+                if newline.is_some() {
+                    let line = std::str::from_utf8(&request_line)
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"))?;
+                    if line.trim().is_empty() {
+                        return Err("Wardoff received an empty IPC request.".to_string());
+                    }
+                    return serde_json::from_str(line.trim_end())
+                        .map_err(|error| format!("Wardoff received malformed IPC JSON: {error}"));
+                }
+                // A full buffer without a newline cannot complete within the frame limit.
+                if request_line.len() == MAX_REQUEST_BYTES {
+                    return Err(format!(
+                        "Wardoff IPC request exceeds {MAX_REQUEST_BYTES} bytes."
+                    ));
+                }
+            }
+            Err(_) if error_code == ERROR_NO_DATA => {
+                // One absolute deadline, not a fresh timeout for every arriving byte.
+                thread::sleep(
+                    REQUEST_READ_POLL_DELAY.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(_) if error_code == ERROR_BROKEN_PIPE => {
+                return Err(incomplete_request_error(request_line.is_empty()));
+            }
+            Err(error) => return Err(format!("Wardoff could not read an IPC request: {error}")),
+        }
+    }
+}
+
+fn incomplete_request_error(empty: bool) -> String {
+    if empty {
+        "Wardoff received an empty IPC request.".to_string()
+    } else {
+        "Wardoff received an IPC request without a terminating newline.".to_string()
+    }
 }
 
 fn write_response(pipe: &mut File, response: &IpcResponse) -> Result<(), String> {
@@ -944,7 +1139,10 @@ fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), Str
         .map_err(|error| format!("Wardoff could not flush its status reply: {error}"))
 }
 
-fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
+fn connect_control_pipe(
+    control_pipe_path: &str,
+    connect_deadline: Option<Instant>,
+) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
@@ -964,9 +1162,8 @@ fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
                         if code == ERROR_FILE_NOT_FOUND.0 as i32
                             || code == ERROR_PATH_NOT_FOUND.0 as i32
                             || code == ERROR_PIPE_BUSY.0 as i32
-                ) && attempt + 1 < PIPE_CONNECT_ATTEMPTS
+                ) && wait_before_pipe_retry(attempt, connect_deadline)
                 {
-                    thread::sleep(PIPE_CONNECT_DELAY);
                     continue;
                 }
 
@@ -978,7 +1175,10 @@ fn connect_control_pipe(control_pipe_path: &str) -> Result<File, ClientError> {
     final_connect_error(control_pipe_path, last_error_code)
 }
 
-fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
+fn connect_status_pipe(
+    status_pipe_path: &str,
+    connect_deadline: Option<Instant>,
+) -> Result<File, ClientError> {
     let mut last_error_code = None;
 
     for attempt in 0..PIPE_CONNECT_ATTEMPTS {
@@ -994,9 +1194,8 @@ fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
                         if code == ERROR_FILE_NOT_FOUND.0 as i32
                             || code == ERROR_PATH_NOT_FOUND.0 as i32
                             || code == ERROR_PIPE_BUSY.0 as i32
-                ) && attempt + 1 < PIPE_CONNECT_ATTEMPTS
+                ) && wait_before_pipe_retry(attempt, connect_deadline)
                 {
-                    thread::sleep(PIPE_CONNECT_DELAY);
                     continue;
                 }
 
@@ -1006,6 +1205,28 @@ fn connect_status_pipe(status_pipe_path: &str) -> Result<File, ClientError> {
     }
 
     final_connect_error(status_pipe_path, last_error_code)
+}
+
+fn pipe_retry_delay(attempt: usize, remaining: Option<Duration>) -> Option<Duration> {
+    if attempt + 1 >= PIPE_CONNECT_ATTEMPTS {
+        return None;
+    }
+    let delay = remaining.map_or(PIPE_CONNECT_DELAY, |remaining| {
+        remaining.min(PIPE_CONNECT_DELAY)
+    });
+    (!delay.is_zero()).then_some(delay)
+}
+
+fn wait_before_pipe_retry(attempt: usize, connect_deadline: Option<Instant>) -> bool {
+    let remaining =
+        connect_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    match pipe_retry_delay(attempt, remaining) {
+        Some(delay) => {
+            thread::sleep(delay);
+            true
+        }
+        None => false,
+    }
 }
 
 fn final_connect_error(path: &str, last_error_code: Option<i32>) -> Result<File, ClientError> {
@@ -1156,10 +1377,13 @@ fn current_process_user_sid_string(control_pipe_path: &str) -> Result<String, St
 
 fn wake_status_server() -> std::io::Result<()> {
     let status_pipe_path = current_status_pipe_path().map_err(std::io::Error::other)?;
-    OpenOptions::new()
+    let result = OpenOptions::new()
         .read(true)
-        .open(status_pipe_path)
-        .map(|_| ())
+        .open(&status_pipe_path)
+        .map(|_| ());
+    #[cfg(test)]
+    status_shutdown_test::record_wake(&status_pipe_path, &result);
+    result
 }
 
 fn wake_ui_thread(ui_thread_id: u32) -> Result<(), String> {
@@ -1205,6 +1429,29 @@ impl Drop for LocalAllocatedWideString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_retries_keep_the_original_limit_without_a_deadline() {
+        assert_eq!(pipe_retry_delay(0, None), Some(PIPE_CONNECT_DELAY));
+        assert_eq!(
+            pipe_retry_delay(PIPE_CONNECT_ATTEMPTS - 2, None),
+            Some(PIPE_CONNECT_DELAY)
+        );
+        assert_eq!(pipe_retry_delay(PIPE_CONNECT_ATTEMPTS - 1, None), None);
+    }
+
+    #[test]
+    fn connection_retries_only_sleep_within_the_remaining_budget() {
+        assert_eq!(
+            pipe_retry_delay(0, Some(Duration::from_millis(40))),
+            Some(Duration::from_millis(40))
+        );
+        assert_eq!(pipe_retry_delay(0, Some(Duration::ZERO)), None);
+        assert_eq!(
+            pipe_retry_delay(0, Some(Duration::from_secs(1))),
+            Some(PIPE_CONNECT_DELAY)
+        );
+    }
 
     #[test]
     fn control_pipe_access_denied_maps_to_product_message() {

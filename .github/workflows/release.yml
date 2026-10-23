@@ -1,31 +1,49 @@
-name: Release
+name: Release draft
 
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TARGET_DIR: target
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
-  release:
+  validate:
+    if: github.repository == 'RomainROCH/Wardoff' && github.ref_type == 'tag'
     runs-on: windows-latest
-
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      binary-sha256: ${{ steps.binary.outputs.sha256 }}
     steps:
-      - name: Checkout
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
-          fetch-tags: true
+          persist-credentials: false
+
+      - name: Validate tag, versions, main provenance and exact CI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .\scripts\release-candidate.ps1 -Mode Validate -ContextPath "$env:RUNNER_TEMP/release-context.json"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          toolchain: stable-x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
       - name: Full local checks
@@ -40,60 +58,80 @@ jobs:
         shell: pwsh
         run: .\tests\smoke_safety.ps1
 
-      - name: Smoke tests
+      - name: Release guard tests
         shell: pwsh
-        run: .\tests\smoke_test.ps1
+        run: .\tests\release_guards.ps1
 
-      - name: Generate changelog
-        id: changelog
+      - name: Record the built binary hash
+        id: binary
         shell: pwsh
+        run: '"sha256=$((Get-FileHash target/release/wardoff.exe -Algorithm SHA256).Hash)" >> $env:GITHUB_OUTPUT'
+
+      - name: Smoke tests on the same binary
+        shell: pwsh
+        run: .\tests\smoke_test.ps1 -UseExistingBinary
+
+      - name: Verify and package the exact checked binary
+        shell: pwsh
+        env:
+          CHECKED_SHA256: ${{ steps.binary.outputs.sha256 }}
+        run: .\scripts\release-candidate.ps1 -Mode Package -ContextPath "$env:RUNNER_TEMP/release-context.json" -PackageDirectory "$env:RUNNER_TEMP/release-package" -ExpectedSha256 $env:CHECKED_SHA256
+
+      - name: Save immutable candidate artifact
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wardoff-release-candidate
+          path: ${{ runner.temp }}/release-package/*
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    needs: validate
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout the same candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an exact artifact ID and hash
+        shell: pwsh
+        env:
+          CHECKED_ARTIFACT_ID: ${{ needs.validate.outputs.artifact-id }}
+          CHECKED_SHA256: ${{ needs.validate.outputs.binary-sha256 }}
         run: |
-          $currentTag = "${{ github.ref_name }}"
-          $previousTag = git describe --tags --abbrev=0 "$currentTag^" 2>$null
+          . .\scripts\release-guard.ps1
+          Assert-ReleaseTransferInputs -ArtifactId $env:CHECKED_ARTIFACT_ID -Sha256 $env:CHECKED_SHA256
 
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousTag)) {
-            $previousTag = $null
-          }
+      - name: Download the exact artifact from validation
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.validate.outputs.artifact-id }}
+          path: ${{ runner.temp }}/release-package
+          merge-multiple: true
 
-          if ($previousTag) {
-            $commitRange = "$previousTag..$currentTag"
-            $changelogHeader = "## Changes since $previousTag"
-          } else {
-            $commitRange = $currentTag
-            $changelogHeader = "## Changes"
-          }
-
-          $changelog = git log --oneline $commitRange
-
-          if ([string]::IsNullOrWhiteSpace($changelog)) {
-            $changelog = "- No changes found."
-          }
-
-          $releaseBody = @(
-            "This is an unsigned binary built and tested by CI. Official signed downloads are not available yet."
-            ""
-            $changelogHeader
-            ""
-            $changelog
-          ) -join [Environment]::NewLine
-
-          "release_body<<EOF" >> $env:GITHUB_OUTPUT
-          $releaseBody >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-      - name: Create GitHub Release
+      - name: Recheck and create a draft only
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_BODY: ${{ steps.changelog.outputs.release_body }}
+          CHECKED_SHA256: ${{ needs.validate.outputs.binary-sha256 }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            --title "${{ github.ref_name }}" `
-            --notes "$env:RELEASE_BODY"
-
-      - name: Upload release asset
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ github.ref_name }}" target/release/wardoff.exe --clobber
+          .\scripts\release-candidate.ps1 -Mode Validate -ContextPath "$env:RUNNER_TEMP/rechecked-context.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Release preflight failed.' }
+          . .\scripts\release-guard.ps1
+          $package = "$env:RUNNER_TEMP/release-package"
+          $null = Assert-ReleaseArtifact -PackageDirectory $package -CandidateCommit $env:GITHUB_SHA -TagName $env:RELEASE_TAG -ExpectedSha256 $env:CHECKED_SHA256 -ExpectedBuildRunId ([long]$env:GITHUB_RUN_ID)
+          # --verify-tag checks existence only. Resolve again, including annotated tags.
+          $refs = @(git ls-remote --exit-code "https://github.com/$env:GITHUB_REPOSITORY.git" "refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}")
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot recheck the remote release tag.' }
+          if ((Resolve-ReleaseTagCommit -TagName $env:RELEASE_TAG -RemoteRefs $refs) -ne $env:GITHUB_SHA) { throw 'Remote tag moved after validation.' }
+          gh release create $env:RELEASE_TAG "$package/wardoff.exe" "$package/build-info.json" "$package/SHA256SUMS.txt" --repo $env:GITHUB_REPOSITORY --verify-tag --draft --title $env:RELEASE_TAG --notes-file docs/RELEASE_NOTES_DRAFT.md
+          if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed; inspect any partial draft manually.' }
+          $created = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft,tagName | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $created.isDraft -ne $true -or $created.tagName -cne $env:RELEASE_TAG) { throw 'The created release was not confirmed as a draft.' }
