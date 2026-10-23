@@ -2,6 +2,17 @@
 
 ## Out-of-scope and unforeseen findings
 
+### 2026-10-23 - A successful host build hid a portable-startup failure
+
+- Status: under investigation; linked ID: RM-reference-001.
+- Impact: isolated smoke of the exact MSVC executable failed even on read-only
+  CLI actions with `STATUS_DLL_NOT_FOUND`. Its PE imports include
+  `VCRUNTIME140.dll`, which is an undeclared prerequisite for the portable
+  contract. The development host's installed runtime can mask this failure.
+- Decision: test static CRT linkage, inspect the resulting imports and rerun
+  smoke in a fresh clone without installing a redistributable. Keep the baseline
+  gate open until the actual outcome is recorded; no paid resource is needed.
+
 ### 2026-10-23 - Preserve Wardoff's philosophy while starting the roadmap
 
 - Status: resolved direction; linked IDs: RM-reference-001, RM-reference-002,

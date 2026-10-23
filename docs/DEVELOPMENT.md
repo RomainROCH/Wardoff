@@ -21,6 +21,15 @@ different dependency set. Cargo commands use the configured target directory.
 The default release output is `target/release/wardoff.exe`; an explicit
 `CARGO_BUILD_TARGET` adds a target-triple subdirectory.
 
+The repository's [MSVC target configuration](../.cargo/config.toml) selects
+[static C runtime linkage](https://doc.rust-lang.org/reference/linkage.html#static-and-dynamic-c-runtimes).
+Keep it in source and release builds so the executable does not require a
+separate Visual C++ Redistributable. Windows system DLLs remain dependencies.
+Rebuild with updated build tools to receive fixes in the linked runtime; a
+machine-wide redistributable update cannot replace that embedded copy.
+Custom `RUSTFLAGS` can override Cargo configuration, so inspect the resulting
+binary and test portable startup in a clean Windows environment.
+
 Building does not launch Wardoff. `cargo run` does: default startup can ask for
 elevation and arm protection. For runtime testing, first read the
 [validation matrix](MVP_VALIDATION_MATRIX.md).
@@ -45,7 +54,7 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Tray menu, Explorer restart, icon | [tray/mod.rs](../src/tray/mod.rs), [tray/icon.rs](../src/tray/icon.rs) | main `handle_tray_action`; manual tray checks |
 | Autostart / trusted executable path | [autostart.rs](../src/autostart.rs) | runtime policy checkbox fallback; elevated smoke checks |
 | JSONL events, rotation and tail | [logger/mod.rs](../src/logger/mod.rs) | [log_tail_cli.rs](../tests/log_tail_cli.rs) exercises real CLI with isolated log fixtures |
-| Release manifest | [build.rs](../build.rs), [wardoff.manifest](../wardoff.manifest) | release build and smoke manifest check |
+| Release manifest and runtime linkage | [build.rs](../build.rs), [wardoff.manifest](../wardoff.manifest), [MSVC config](../.cargo/config.toml) | release build, PE imports and isolated smoke |
 | Developer checks and docs links | [check.ps1](../scripts/check.ps1), [check-docs.ps1](../scripts/check-docs.ps1) | [developer_checks.ps1](../tests/developer_checks.ps1) |
 | Safe smoke setup and cleanup | [smoke_test.ps1](../tests/smoke_test.ps1) | [smoke_safety.ps1](../tests/smoke_safety.ps1); validation matrix |
 

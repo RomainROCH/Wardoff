@@ -54,6 +54,14 @@ release guards, then the state-changing Windows smoke in the disposable hosted
 runner. Native Power Request tests are not excluded there. Full builds with
 `--locked`; smoke uses `-UseExistingBinary` and cannot compile a replacement.
 
+The [MSVC target configuration](../.cargo/config.toml) links the C runtime
+statically for the portable executable. Before claiming portable startup,
+inspect its PE imports (for example, `dumpbin /DEPENDENTS` in an MSVC developer
+prompt) and test the exact binary on clean supported Windows without an
+installed Visual C++ runtime. A development machine or hosted runner can have
+that runtime installed and conceal an accidental dynamic dependency. Record
+the clean-environment result and explicit skips with the artifact hash.
+
 The hash is taken before smoke and must match afterward. Package checks verify
 help/version, the real embedded manifest resource, Windows file version and MSVC
 host. They copy that binary without rebuilding it and produce:
