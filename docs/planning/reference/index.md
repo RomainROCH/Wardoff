@@ -106,7 +106,12 @@ cost. No adoption or revenue estimate is assumed.
   standard/admin Doctor, same-binary smoke, autostart identity and cross-token
   reading passed. Its [acceptance record](diagnostics-plan.md#acceptance-2026-10-24)
   retains exact hashes, failed attempts, cleanup and limits.
-- Next: `RM-reference-003`, after the accepted diagnostic phase is backed up.
+- Diagnostic backup: `origin/codex/reference-baseline` was verified at
+  `7997d84f2c95087ed3c45fa8a29425fc800cc61d` on 2026-10-24; the Git durability
+  check passed. This branch push triggered neither CI nor release automation.
+- Active: `RM-reference-003`, started 2026-10-24. Its
+  [implementation plan](power-intent-plan.md) is reviewed; behavior is not
+  implemented yet.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.

@@ -81,7 +81,7 @@ a remote support service or Windows Event Log dependency.
 
 ### RM-reference-003 System and display intent
 
-Status: pending. Depends on: RM-reference-002. Priority: P1. Size: M.
+Status: in-progress. Depends on: RM-reference-002. Priority: P1. Size: M.
 
 Goal: protect a background task while letting its display turn off normally.
 
@@ -98,7 +98,8 @@ changes/quit release exactly the requests owned. Test status accuracy, resume,
 and preservation of the existing power plan. Record actual display/idle behavior
 only on available test environments; never mark missing hardware as a pass.
 
-Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrite.
+Evidence: [reviewed implementation plan](power-intent-plan.md); no new
+runtime acceptance yet. Notes: no synthetic input, lock suppression or power-plan rewrite.
 
 ## Session log
 
@@ -116,3 +117,5 @@ Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrit
 - 2026-10-24: accepted slice 002 from `8dd14a5` after Full MSVC checks and
   standard/admin desktop, autostart and cross-token acceptance. Retained failed
   attempts and explicit physical-power gaps. Slice 003 follows the phase backup.
+- 2026-10-24: verified the diagnostic phase backup at `7997d84`, then selected
+  slice 003 and prepared its explicit intent, compatibility and rollback plan.

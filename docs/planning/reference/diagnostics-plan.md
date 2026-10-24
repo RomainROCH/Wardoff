@@ -300,7 +300,8 @@ without modifying its power plan. These are not physical idle-power tests.
 
 This slice is accepted locally at source
 `8dd14a53a82fe38b4a97fae128c632c825ce4d75`. Local acceptance is distinct from
-a release or remote backup; no phase push is claimed here. The validated
+a release. The initial acceptance preceded the separately verified backup
+recorded below. The validated
 release artifact has SHA-256
 `038EF3BBBCF813EDA82FECB9C2B500AF0B78F5B1892BA40897D49347726B7181` and is
 2,063,872 bytes.
@@ -346,8 +347,10 @@ execution deadlines.
 
 These checks add no physical idle, Modern Standby, Hibernate, forced-shutdown
 or tray-interaction acceptance. No purchase was made and other worktrees were left
-untouched. Remote backup and phase push remain unclaimed until separately
-verified.
+untouched. The subsequent phase backup was separately verified at
+`7997d84f2c95087ed3c45fa8a29425fc800cc61d` on
+`origin/codex/reference-baseline`; the Git durability gate passed. This feature
+branch push triggered neither CI nor release automation.
 
 An abandoned COM thread is insufficient for a reliable timeout: Windows documents
 a possible DLL-detach deadlock when process exit encounters locks held by another

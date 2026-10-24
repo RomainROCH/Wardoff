@@ -28,9 +28,10 @@ Keep the zero-budget constraint and all conditional acceptance gates.
 The [baseline evidence](docs/planning/reference/baseline-2026-10-23.md) records
 successful local checks, portable startup, elevated and non-elevated desktop
 smoke, and tray checks. Slice 001 is accepted and backed up on the working branch.
-Slice 002 has passed its [diagnostic acceptance](docs/planning/reference/diagnostics-plan.md#acceptance-2026-10-24);
-slice 003 is next after the phase backup. Later features remain planned until
-their acceptance passes.
+Slice 002 has passed its [diagnostic acceptance](docs/planning/reference/diagnostics-plan.md#acceptance-2026-10-24)
+and verified phase backup. Slice 003 is active with its
+[reviewed power-intent plan](docs/planning/reference/power-intent-plan.md).
+Later features remain planned until their acceptance passes.
 
 ## Current repository status
 
