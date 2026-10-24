@@ -90,7 +90,8 @@ cost. No adoption or revenue estimate is assumed.
 
 ## Current slice and progress
 
-- Completed: `RM-reference-001`, accepted locally on 2026-10-23.
+- Completed: `RM-reference-001` and `RM-reference-002`, accepted locally on
+  2026-10-23 and 2026-10-24 respectively.
 - Tested integration: merge `a44c89a`, portable-linkage fix `5249c17` and smoke
   path-ownership correction `d04df86`.
 - Local Full, clean-Windows CLI startup and desktop smoke passed. Elevated smoke
@@ -101,15 +102,18 @@ cost. No adoption or revenue estimate is assumed.
 - Baseline backup: `origin/codex/reference-baseline` was verified at
   `d85a509043ec1611491eec13726d5e608bbbc665` on 2026-10-24. This feature-branch
   push triggers neither the dev/main CI nor the tag-only release workflow.
-- Active: `RM-reference-002`, started 2026-10-24. Its
-  [implementation contract](diagnostics-plan.md) records the current design/checks.
+- Diagnostic acceptance: source `8dd14a5`, Full MSVC checks (123 tests),
+  standard/admin Doctor, same-binary smoke, autostart identity and cross-token
+  reading passed. Its [acceptance record](diagnostics-plan.md#acceptance-2026-10-24)
+  retains exact hashes, failed attempts, cleanup and limits.
+- Next: `RM-reference-003`, after the accepted diagnostic phase is backed up.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | in-progress | 1/3 | [001: accepted integration and desktop evidence](baseline-2026-10-23.md) |
+| [Foundations](foundations.md) | in-progress | 2/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24) |
 | [Work sessions](work-sessions.md) | pending | 0/4 | none |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 

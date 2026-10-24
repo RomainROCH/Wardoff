@@ -27,8 +27,10 @@ sequential execution: validate each phase, push its accepted work, then continue
 Keep the zero-budget constraint and all conditional acceptance gates.
 The [baseline evidence](docs/planning/reference/baseline-2026-10-23.md) records
 successful local checks, portable startup, elevated and non-elevated desktop
-smoke, and tray checks. Slice 001 is accepted and backed up on the working branch;
-slice 002 is active. Later features remain planned until their acceptance passes.
+smoke, and tray checks. Slice 001 is accepted and backed up on the working branch.
+Slice 002 has passed its [diagnostic acceptance](docs/planning/reference/diagnostics-plan.md#acceptance-2026-10-24);
+slice 003 is next after the phase backup. Later features remain planned until
+their acceptance passes.
 
 ## Current repository status
 
@@ -45,6 +47,7 @@ The branch already contains a working runtime plus CLI centered on one main prom
 - idle-sleep and automatic display-timeout prevention through Power Requests (no explicit Sleep/Hibernate veto)
 - tray UI with Block/Allow state and power actions
 - CLI control surface
+- read-only `doctor` explanations and versioned JSON diagnostics
 - structured rotating JSONL logs
 - named-pipe IPC and single-instance behavior
 - Task Scheduler autostart

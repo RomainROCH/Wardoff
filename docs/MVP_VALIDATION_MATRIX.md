@@ -111,6 +111,13 @@ Record actual timings with Windows scheduling/launch latency; do not claim a har
 wall-clock deadline. Retain hashes, source revision, stdout/exit codes and cleanup
 evidence with the [diagnostic contract](planning/reference/diagnostics-plan.md).
 
+The [2026-10-24 diagnostic acceptance](planning/reference/diagnostics-plan.md#acceptance-2026-10-24)
+records the offline signed-in VM results for source `8dd14a5`: standard/admin
+Doctor, autostart identity, standard inspection of an elevated runtime and
+same-binary smoke passed. Cleanup left no Wardoff process, probe, owned harness
+task or autostart task. These inspection checks establish no new physical-power,
+forced-shutdown or hardware coverage.
+
 ## Admin-only checks
 
 Run these in an elevated session when you want manual confidence beyond the automated smoke coverage.

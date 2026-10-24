@@ -53,7 +53,7 @@ is part of this slice.
 
 ### RM-reference-002 Read-only explanation and diagnostics
 
-Status: in-progress. Depends on: RM-reference-001. Priority: P0. Size: M.
+Status: done. Depends on: RM-reference-001. Priority: P0. Size: M.
 
 Goal: tell a person why protection is active, unavailable or limited.
 
@@ -61,7 +61,8 @@ Work: extend [cli.rs](../../../src/cli.rs),
 [main.rs](../../../src/main.rs) and affected layer owners with a read-only
 explanation surface. Specify additive, versioned JSON fields and stable reason
 codes before implementation. Keep existing `--status` output/exit behavior
-compatible; a future `doctor` command is a proposal, not current syntax.
+compatible. The implemented `doctor` command and its supported syntax are
+documented in the [README](../../../README.md).
 
 Acceptance: distinguish requested, API-active, failed, unavailable and untested
 conditions without claiming physical effectiveness from a boolean. Explain
@@ -73,8 +74,9 @@ Test inactive, partial failure, occupied-mutex failure and elevated/non-elevated
 paths. Diagnostic output omits usernames, full personal paths and command arguments
 by default; any fuller export needs preview and explicit user selection.
 
-Evidence: [implementation contract](diagnostics-plan.md); implementation and
-acceptance remain in progress. Notes: reuse bounded JSONL logs; do not introduce
+Evidence: [accepted implementation and Windows checks](diagnostics-plan.md#acceptance-2026-10-24),
+including standard/admin Doctor and same-binary smoke, autostart identity and
+cross-token inspection. Notes: reuse bounded JSONL logs; do not introduce
 a remote support service or Windows Event Log dependency.
 
 ### RM-reference-003 System and display intent
@@ -111,3 +113,6 @@ Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrit
   Slice 002 and later work remain pending.
 - 2026-10-24: verified the baseline push, selected slice 002 and recorded its
   diagnostic contract under the maintainer's serial-roadmap authorization.
+- 2026-10-24: accepted slice 002 from `8dd14a5` after Full MSVC checks and
+  standard/admin desktop, autostart and cross-token acceptance. Retained failed
+  attempts and explicit physical-power gaps. Slice 003 follows the phase backup.

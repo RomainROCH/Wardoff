@@ -1,7 +1,8 @@
 # Read-only diagnostics implementation contract
 
-Slice: `RM-reference-002`. Started: 2026-10-24. Status: design/implementation in
-progress. This specifies the change; the commands below are not yet shipped.
+Slice: `RM-reference-002`. Started: 2026-10-24. Status: locally accepted on
+2026-10-24; not remotely released. This specifies the change and records its
+local acceptance evidence.
 
 ## Goal and authority
 
@@ -240,12 +241,15 @@ slice. Timers, sessions, power-intent controls and release tags belong to later 
 
 ## Windows implementation evidence
 
-### Implementation checkpoint, 2026-10-24
+### Historical implementation checkpoint, 2026-10-24
+
+The checkpoints below record earlier candidates. Their pending results are
+historical and are superseded by the acceptance below.
 
 Implementation commit `d4781ca` passed the Full MSVC checks (119 tests, strict
 Clippy, release build and docs) and static review. Its release SHA-256 is
 `E0137A1F30B48BB191C3E6FCF6CE0F6D7B245FDC2FE4C539017398E4F4B82F62`.
-The phase is not accepted or backed up remotely yet.
+At that checkpoint the phase was not accepted or backed up remotely.
 
 The isolated signed-in Windows desktop passed the normal-token Doctor cases:
 inactive human/JSON, exact legacy status, Block/Allow, a legacy runtime and an
@@ -254,12 +258,12 @@ unchanged. Same-binary normal smoke passed 14/14 with seven explicit skips and
 an observed zero exit code. A first fixture lost the child exit code despite
 successful smoke output; its corrected process-handle collector was rerun.
 
-Elevated local inspection remains an open regression on that candidate. Token
-creation, medium integrity and suspended process creation succeed, but the full
-restricted child exits with `0xC0000142` before producing output. The same native
-cmd/self-child regressions pass on the development host and fail in the elevated
-VM task. This is not evidence that inspection completed. An empty-desktop-name
-experiment reproduced the same failure and was removed. Investigation continues
+Elevated local inspection was an open regression on that candidate. Token
+creation, medium integrity and suspended process creation succeeded, but the full
+restricted child exited with `0xC0000142` before producing output. The same native
+cmd/self-child regressions passed on the development host and failed in the
+elevated VM task. This was not evidence that inspection completed. An empty-desktop-name
+experiment reproduced the same failure and was removed. Investigation continued
 without granting privileges or changing existing system ACLs.
 
 The subsequent isolated experiment reproduced the failure with default object
@@ -272,10 +276,11 @@ The same three elevated VM native regressions then passed, including a child
 querying its own non-elevated token and the owned job/stdout/cleanup path. The
 Green test executable SHA-256 was
 `BFE859FF68280B0C25D44BD87C61F96BDED66EE27EEF2C61AF5D3EF4013DB11A`.
-The final release and remaining desktop acceptance still need rerunning.
+At that historical checkpoint the final release and remaining desktop
+acceptance still needed rerunning.
 
-Cross-token and autostart-identity acceptance are also still pending. Private
-drivers, raw outputs, source/binary hashes and failed attempts are retained in the
+At that checkpoint cross-token and autostart-identity acceptance were still
+pending. Private drivers, raw outputs, source/binary hashes and failed attempts are retained in the
 phase's isolated lab evidence; fixture parsing alone is not runtime acceptance.
 
 The subsequent release from `0413065` passed the Full checks (122 tests), all
@@ -284,11 +289,65 @@ seven skips). Autostart acceptance then exposed a separate identity-comparison
 defect: registration's existing current-user helper returns an account name,
 while inspection compared it directly with a resolved SID. The new native
 regression failed on that comparison. Normalize both identities to SIDs before
-comparison; do not change registration, task permissions or elevation. The final
-candidate must repeat desktop, autostart and cross-token acceptance after this
-fix. The interrupted control connection was traced to the VM's automatic sleep;
+comparison; do not change registration, task permissions or elevation. That
+historical candidate still required desktop, autostart and cross-token
+acceptance after this fix. The interrupted control connection was traced to the
+VM's automatic sleep;
 the controller now keeps only the test desktop active during diagnostics,
 without modifying its power plan. These are not physical idle-power tests.
+
+## Acceptance, 2026-10-24
+
+This slice is accepted locally at source
+`8dd14a53a82fe38b4a97fae128c632c825ce4d75`. Local acceptance is distinct from
+a release or remote backup; no phase push is claimed here. The validated
+release artifact has SHA-256
+`038EF3BBBCF813EDA82FECB9C2B500AF0B78F5B1892BA40897D49347726B7181` and is
+2,063,872 bytes.
+
+Full MSVC validation passed: documentation, formatting, locked checks, 123
+top-level tests (91 binary, 10 lifecycle, 8 IPC, 4 log, and 10 budget), strict
+Clippy, and the locked release build. One helper test is deliberately ignored
+and invoked by its restricted-parent test.
+
+The offline VM acceptance used a read-only baseline and fresh child in signed-in
+session 1. Standard (`TokenElevationType=3`) and elevated (`=2`) callers each
+passed nine Doctor cases:
+inactive human/JSON, exact legacy inactive status, live Block, Allow, legacy
+runtime, occupied mutex/unreachable IPC, and environment integrity. Positive
+history/privacy fixtures passed; absent Update-task results followed the tested
+context. Doctor performed no task mutation; the active power plan was unchanged.
+
+Same-binary smoke passed 14/14 for the normal context with seven skips and
+18/18 for the admin context with three skips. The outer collector, interactive
+driver and scheduled harness task returned exit 0; before/after hashes matched. Admin autostart
+cases passed for absent, matched/enabled/restricted, legacy-creator
+unverified/enabled-null, and final absence. Doctor left task XML unchanged and
+only the explicit fixture toggles changed state.
+
+Cross-token acceptance passed: an elevated runtime in context 2 was inspected
+by a standard context 3; the report was live with system and display API-active
+requests and `untested` effectiveness, then Allow left both requests inactive.
+The owned runtime was reaped and both harness tasks were deleted with exit 0.
+
+Final read-only inspection found zero Wardoff processes, helpers, owned harness
+tasks, and Wardoff autostart tasks. Eighty-one raw result files were archived
+privately; the archive ZIP SHA-256 is
+`66bbaf9c8fc4711dba5b98d7d0009584111ed09b187a0cf55faef3f11e318d96`.
+Six JSONL files are archived separately with ZIP SHA-256
+`d28cfd23777be0a3bc8620e901c85e0e8baaff21cc093c13b31a23703e787ab0`.
+The final collectors recorded no CLI timeout or incomplete stream. Maximum
+stream-drain times were 849 ms (standard) and 903 ms (elevated); maximum Doctor
+case durations, including unreachable IPC, were 2,200 ms and 2,188 ms. These
+measurements establish no hard wall-clock guarantee. Failed attempts remain
+retained. One private one-second asynchronous-drain failure is retained; the
+rerun uses a bounded five-second drain and ledger, without changing product
+execution deadlines.
+
+These checks add no physical idle, Modern Standby, Hibernate, forced-shutdown
+or tray-interaction acceptance. No purchase was made and other worktrees were left
+untouched. Remote backup and phase push remain unclaimed until separately
+verified.
 
 An abandoned COM thread is insufficient for a reliable timeout: Windows documents
 a possible DLL-detach deadlock when process exit encounters locks held by another
