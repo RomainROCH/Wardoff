@@ -42,6 +42,7 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Task | First code | Companion / acceptance |
 | --- | --- | --- |
 | CLI arguments, conflicts, JSON status | [cli.rs](../src/cli.rs) | [main.rs](../src/main.rs) dispatch; README command contract |
+| Idle-power intent value | [power_intent.rs](../src/power_intent.rs) | [cli.rs](../src/cli.rs) parsing; `runtime_policy.rs` and `blocker/sleep.rs` lifecycle |
 | Doctor report, reason codes, filtered history | [diagnostics.rs](../src/diagnostics.rs) | [diagnostics contract](planning/reference/diagnostics-plan.md); CLI serialization tests |
 | Read-only Windows inspection and child cleanup | [diagnostics_probe.rs](../src/diagnostics_probe.rs) | autostart identity/path checks; update presence; helper process tests |
 | Retained asynchronous layer observations | [blocker/observation.rs](../src/blocker/observation.rs) | local/update/remote worker lifecycles; coordinator single-capture status |
@@ -49,12 +50,12 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Elevation, console detach, relaunch | [windows_util.rs](../src/windows_util.rs) | `prepare_default_launch`, `prepare_runtime_console_launch` in main; smoke manifest/CLI checks |
 | Mode transitions, activation rollback | [blocker/mod.rs](../src/blocker/mod.rs) | `Application::set_mode` in main; affected layer |
 | Interactive shutdown and Windows callbacks | [blocker/shutdown.rs](../src/blocker/shutdown.rs) | main callbacks; VM-only shutdown acceptance |
-| Idle-power requests, cleanup and resume | [blocker/sleep.rs](../src/blocker/sleep.rs) | runtime policy wake tests; main `handle_power_broadcast`; physical resume checks |
+| Idle-power requests, intent flips, cleanup and resume | [blocker/sleep.rs](../src/blocker/sleep.rs) | [power_intent.rs](../src/power_intent.rs); runtime policy wake tests; main `handle_power_broadcast`; physical resume checks |
 | Update reboot task | [blocker/update.rs](../src/blocker/update.rs) | validation matrix admin/absent-task cases |
 | Remote abort / local ETW | [blocker/remote.rs](../src/blocker/remote.rs), [blocker/local.rs](../src/blocker/local.rs) | [abort.rs](../src/blocker/abort.rs); shutdown-layer limits |
 | Control/status transport, retries, access checks | [ipc.rs](../src/ipc.rs) | main `handle_ipc_request`; security audit residual risks |
 | Session names and singleton handoff | [session_scope.rs](../src/session_scope.rs), [instance.rs](../src/instance.rs) | main `forward_request_to_primary`; handoff acceptance |
-| Tray menu, Explorer restart, icon | [tray/mod.rs](../src/tray/mod.rs), [tray/icon.rs](../src/tray/icon.rs) | main `handle_tray_action`; manual tray checks |
+| Tray menu, Explorer restart, icon | [tray/mod.rs](../src/tray/mod.rs), [tray/icon.rs](../src/tray/icon.rs) | `runtime_policy::tray_mode_presentation`; main `handle_tray_action`; manual tray checks |
 | Autostart / trusted executable path | [autostart.rs](../src/autostart.rs) | runtime policy checkbox fallback; elevated smoke checks |
 | JSONL events, rotation and tail | [logger/mod.rs](../src/logger/mod.rs) | [log_tail_cli.rs](../tests/log_tail_cli.rs) exercises real CLI with isolated log fixtures |
 | Release manifest and runtime linkage | [build.rs](../build.rs), [wardoff.manifest](../wardoff.manifest), [MSVC config](../.cargo/config.toml) | release build, PE imports and isolated smoke |
@@ -75,8 +76,10 @@ the global application pointer is only valid while `run` owns the application
 and the callbacks are registered.
 
 `runtime_policy` contains decisions without Windows effects: initial mode/tray
-surface, secondary command mapping, wake restoration and autostart checkbox
-fallback. It must not acquire handles, spawn threads, access tasks or log events.
+surface, selected power intent, secondary command mapping, wake restoration and
+autostart checkbox fallback. It must not acquire handles, spawn threads, access
+tasks or log events. The pure intent value has no persisted setting or tray
+control; the existing Block/default/Hide/tray Block paths retain the full pair.
 Effects remain in the existing runtime and subsystem owners.
 
 The two pipes have different contracts: status reads must remain available
@@ -160,6 +163,12 @@ The docs checker covers tracked and untracked, non-ignored Markdown. It checks
 local link destinations, not heading fragments, external websites or factual
 accuracy. Review those explicitly when changing them. Dated benchmark scripts
 remain separate from development checks.
+
+Power-intent validation must cover both `--display-timeout allow` (system-only)
+and `prevent` (system plus display), default reversion, legacy-runtime rejection
+with explicit restart guidance and continued legacy IPC, unchanged settings, and
+wake/tray restoration. These focused checks are in progress; no VM result is
+implied here.
 
 Both [CI](../.github/workflows/ci.yml) and the
 [release workflow](../.github/workflows/release.yml) run the same Full check,

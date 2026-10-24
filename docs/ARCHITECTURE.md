@@ -58,6 +58,10 @@ thread ownership and effectful lifecycle remain unchanged; `main.rs` still appli
 the decisions. The empty `config.rs` placeholder was removed because it owned no
 configuration behavior.
 
+`src/power_intent.rs` is the pure value type for the selected idle-power request:
+system-only or system-and-display. It has no Windows effects, persistence, tray
+policy, or additional dependency.
+
 ### `src/blocker/`
 
 Contains the layered protection logic.
@@ -166,23 +170,37 @@ If a Block-mode transition fails partway through, `BlockerCoordinator` rolls bac
 ## Idle-power request ownership (intentional architecture change)
 
 The sleep layer uses one process-owned Power Request object with
-`PowerRequestSystemRequired` and `PowerRequestDisplayRequired`, replacing the
+`PowerRequestSystemRequired` and an optional `PowerRequestDisplayRequired`, replacing the
 thread-affine `SetThreadExecutionState` worker and its 30-second refresh.
 The purpose is explicit ownership, synchronous activation errors, and a Wardoff
 reason in `powercfg /requests`; this does not add a veto over explicit sleep or
 hibernate. The existing `windows` dependency provides these APIs.
 
-Block acquires both requests transactionally. Allow, rollback, normal exit and
-forced-session cleanup release them and close the handle. The handle is private
+Block acquires the selected request set transactionally; the default is both
+requests. An active intent change flips only the display request on the same
+owned object, so the system request remains uninterrupted. If that flip fails,
+the previous mask, counts and active state remain authoritative. Allow, rollback,
+normal exit and forced-session cleanup release the acquired requests and close the
+handle. The handle is private
 to this process and is never duplicated or inherited. Windows closes process
 handles on termination; forced termination must also be checked in the smoke
 test. No power plan, registry, policy, button or lid setting is written.
 
+Startup rollback releases only requests acquired by the attempted activation.
+The selected intent is retained through resume renewal and tray Sleep/Hibernate
+restore; a failed transition restores the prior mode and intent decision rather
+than inventing a new one. Coordinator mode and tray UI rollback therefore restore
+the exact prior mode-plus-intent state.
+
+The tray command and cached thread state carry both values through recreation.
+Pure `TrayModePresentation` decisions keep the existing full-pair/Allow surface
+and enable the existing Block action with an explicit keep-display-on label in
+system-only Block. No new menu control is created.
 The existing resume callback is sufficient. Microsoft's
 [PowerSetRequest contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest)
 documents termination of requests at user-initiated sleep entry. When the
 runtime remains in Block, that callback replaces the old owned request object
-and reacquires the pair. It does not assume that the handle itself becomes
+and reacquires the selected request set. It does not assume that the handle itself becomes
 invalid. A tray power action already releases requests through Allow and
 reacquires them through the existing restore-to-Block path. There is no new
 resume state machine, display/presence subscription, timer, or battery-limit
@@ -190,8 +208,8 @@ bypass. Duplicate resume notifications must never accumulate request counts.
 Physical S3/S4 and Modern Standby resume behavior remains a manual validation
 requirement; API lifecycle tests are not evidence of an actual sleep transition.
 
-`layers.sleep` retains its JSON name and means that Wardoff acquired the request
-pair, not that Windows guarantees every power transition is prevented. System
+`layers.sleep` retains its JSON name and means that Wardoff acquired the selected
+request set, not that Windows guarantees every power transition is prevented. System
 policy can ignore requests. A failed initial acquisition uses the coordinator's
 existing rollback; a failed resume acquisition reports an inactive sleep layer
 and an error without disabling unrelated shutdown protections.

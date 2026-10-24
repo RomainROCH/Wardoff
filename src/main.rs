@@ -12,6 +12,7 @@ mod diagnostics_probe;
 mod instance;
 mod ipc;
 mod logger;
+mod power_intent;
 mod runtime_policy;
 mod session_scope;
 mod tray;
@@ -29,8 +30,9 @@ use crate::ipc::{
     IpcResponse, IpcServer, PendingRequest, IPC_WAKE_MESSAGE,
 };
 use crate::logger::EventSource;
+use crate::power_intent::PowerIntent;
 use crate::runtime_policy::{
-    ipc_request_for, pending_wake_restore_for_tray_power_action,
+    control_error_message, ipc_request_for, pending_wake_restore_for_tray_power_action,
     pending_wake_restore_ready_for_resume, resolved_autostart_state_for_tray, runtime_options_for,
     PendingWakeRestore, RuntimeOptions, TraySurface,
 };
@@ -83,7 +85,8 @@ fn bootstrap(
     logger::initialize_structured_logging().map_err(other_error)?;
 
     let blocker_coordinator =
-        create_blocker_coordinator(options.initial_mode).map_err(other_error)?;
+        create_blocker_coordinator(options.initial_mode, options.power_intent)
+            .map_err(other_error)?;
     ensure_message_queue();
     let ui_thread_id = unsafe { GetCurrentThreadId() };
     let tray_service = match options.tray_surface {
@@ -92,6 +95,7 @@ fn bootstrap(
             spawn_tray_service(
                 TrayVisibility::Visible,
                 blocker_coordinator.mode(),
+                blocker_coordinator.power_intent(),
                 ui_thread_id,
             )
             .map_err(other_error)?,
@@ -100,6 +104,7 @@ fn bootstrap(
             spawn_tray_service(
                 TrayVisibility::Hidden,
                 blocker_coordinator.mode(),
+                blocker_coordinator.power_intent(),
                 ui_thread_id,
             )
             .map_err(other_error)?,
@@ -269,6 +274,7 @@ fn run_main() -> Result<i32, Box<dyn Error>> {
         RequestedAction::Autostart { enabled } => handle_autostart_request(enabled),
         action @ (RequestedAction::Default
         | RequestedAction::Block
+        | RequestedAction::BlockWithPowerIntent { .. }
         | RequestedAction::Allow
         | RequestedAction::Hide) => handle_runtime_request(
             action,
@@ -560,7 +566,9 @@ where
 {
     match send_request(&request) {
         Ok(IpcResponse::Ok) => Ok(0),
-        Ok(IpcResponse::Error { message }) => Err(Box::new(other_error(message))),
+        Ok(IpcResponse::Error { message }) => Err(Box::new(other_error(control_error_message(
+            &request, message,
+        )))),
         Ok(IpcResponse::Status { .. }) => Err(Box::new(other_error(
             "Wardoff received a status payload for a control command.".to_string(),
         ))),
@@ -581,8 +589,8 @@ fn ensure_message_queue() {
 
 fn application_start_message(options: RuntimeOptions) -> String {
     format!(
-        "Wardoff started in {} mode with {}.",
-        mode_label(options.initial_mode),
+        "Wardoff started in {} with {}.",
+        configuration_label(options.initial_mode, options.power_intent),
         tray_surface_label(options.tray_surface)
     )
 }
@@ -605,6 +613,32 @@ impl Application {
 
     fn handle_ipc_request(&mut self, request: IpcRequest) -> IpcResponse {
         match request {
+            IpcRequest::SetPowerIntent { intent } => {
+                self.clear_pending_block_restore_after_wake();
+                match self.set_configuration(BlockerMode::Block, intent, EventSource::Ipc) {
+                    Ok(()) => {
+                        logger::log_event(
+                            "power_intent_request_processed",
+                            EventSource::Ipc,
+                            format!(
+                                "Wardoff applied {}.",
+                                configuration_label(BlockerMode::Block, intent)
+                            ),
+                            true,
+                        );
+                        IpcResponse::Ok
+                    }
+                    Err(message) => {
+                        logger::log_event(
+                            "power_intent_request_processed",
+                            EventSource::Ipc,
+                            &message,
+                            false,
+                        );
+                        IpcResponse::Error { message }
+                    }
+                }
+            }
             IpcRequest::SetMode { mode } => {
                 let requested_mode: BlockerMode = mode.into();
                 self.clear_pending_block_restore_after_wake();
@@ -787,8 +821,9 @@ impl Application {
 
     fn run_power_action(&mut self, action: PowerAction) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
+        let previous_intent = self.blocker_coordinator.power_intent();
         self.pending_block_restore_after_wake =
-            pending_wake_restore_for_tray_power_action(previous_mode, action);
+            pending_wake_restore_for_tray_power_action(previous_mode, previous_intent, action);
         if let Err(error) = self.set_mode(BlockerMode::Allow, EventSource::Tray) {
             self.clear_pending_block_restore_after_wake();
             return Err(error);
@@ -830,7 +865,9 @@ impl Application {
                     false,
                 );
                 if previous_mode == BlockerMode::Block {
-                    return match self.set_mode(BlockerMode::Block, EventSource::Tray) {
+                    return match self.set_configuration(
+                        BlockerMode::Block, previous_intent, EventSource::Tray,
+                    ) {
                         Ok(()) => Err(format!(
                             "{message} Wardoff restored Block mode after the failed {:?} request.",
                             action
@@ -852,41 +889,57 @@ impl Application {
     }
 
     fn set_mode(&mut self, mode: BlockerMode, source: EventSource) -> Result<(), String> {
+        let intent = if mode == BlockerMode::Block {
+            PowerIntent::default()
+        } else {
+            self.blocker_coordinator.power_intent()
+        };
+        self.set_configuration(mode, intent, source)
+    }
+
+    fn set_configuration(
+        &mut self,
+        mode: BlockerMode,
+        intent: PowerIntent,
+        source: EventSource,
+    ) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
-
-        if previous_mode == mode {
-            return self.sync_tray(previous_mode);
-        }
-
-        if let Err(error) = self.blocker_coordinator.set_mode(mode) {
-            let error_message = format!(
-                "Wardoff could not switch from {} mode to {} mode: {error}",
-                mode_label(previous_mode),
-                mode_label(mode)
-            );
-            logger::log_event("state_changed", source, error_message.clone(), false);
-            return Err(error_message);
-        }
+        let previous_intent = self.blocker_coordinator.power_intent();
+        let changed = match self.blocker_coordinator.set_configuration(mode, intent) {
+            Ok(changed) => changed,
+            Err(error) => {
+                let error_message = format!(
+                    "Wardoff could not change from {} to {}: {error}",
+                    configuration_label(previous_mode, previous_intent),
+                    configuration_label(mode, intent)
+                );
+                logger::log_event("state_changed", source, error_message.clone(), false);
+                return Err(error_message);
+            }
+        };
 
         if let Err(tray_error) = self.sync_tray(self.blocker_coordinator.mode()) {
-            let rollback_result = self.blocker_coordinator.set_mode(previous_mode);
+            let rollback_result = self
+                .blocker_coordinator
+                .set_configuration(previous_mode, previous_intent);
             let final_mode = self.blocker_coordinator.mode();
+            let final_intent = self.blocker_coordinator.power_intent();
             let tray_resync_result = self.sync_tray(final_mode);
 
             let mut error_message = format!(
-                "Wardoff could not update the tray UI after switching to {} mode: {tray_error}",
-                mode_label(mode)
+                "Wardoff could not update the tray UI after applying {}: {tray_error}",
+                configuration_label(mode, intent)
             );
 
             match rollback_result {
                 Ok(_) => error_message.push_str(&format!(
-                    " Wardoff rolled the blocker state back to {} mode.",
-                    mode_label(previous_mode)
+                    " Wardoff restored {}.",
+                    configuration_label(previous_mode, previous_intent)
                 )),
                 Err(rollback_error) => error_message.push_str(&format!(
-                    " Wardoff could not roll the blocker state back to {} mode and is currently in {} mode: {rollback_error}",
-                    mode_label(previous_mode),
-                    mode_label(final_mode)
+                    " Wardoff could not restore {} and currently requests {}: {rollback_error}",
+                    configuration_label(previous_mode, previous_intent),
+                    configuration_label(final_mode, final_intent)
                 )),
             }
 
@@ -901,16 +954,18 @@ impl Application {
             return Err(error_message);
         }
 
-        logger::log_event(
-            "state_changed",
-            source,
-            format!(
-                "Wardoff switched from {} mode to {} mode.",
-                mode_label(previous_mode),
-                mode_label(mode)
-            ),
-            true,
-        );
+        if changed {
+            logger::log_event(
+                "state_changed",
+                source,
+                format!(
+                    "Wardoff applied {} (previous choice: {}).",
+                    configuration_label(mode, intent),
+                    configuration_label(previous_mode, previous_intent)
+                ),
+                true,
+            );
+        }
 
         Ok(())
     }
@@ -970,7 +1025,9 @@ impl Application {
 
     fn sync_tray(&mut self, mode: BlockerMode) -> Result<(), String> {
         match self.tray_service.as_ref() {
-            Some(tray_service) => tray_service.set_mode(mode),
+            Some(tray_service) => {
+                tray_service.set_mode(mode, self.blocker_coordinator.power_intent())
+            }
             None => Ok(()),
         }
     }
@@ -1116,7 +1173,7 @@ impl Application {
     }
 
     fn restore_block_after_wake_if_needed(&mut self) {
-        let Some(action) =
+        let Some((action, power_intent)) =
             pending_wake_restore_ready_for_resume(self.pending_block_restore_after_wake)
         else {
             return;
@@ -1124,7 +1181,10 @@ impl Application {
         self.clear_pending_block_restore_after_wake();
         let previous_mode = self.blocker_coordinator.mode();
 
-        if let Err(error) = self.blocker_coordinator.set_mode(BlockerMode::Block) {
+        if let Err(error) = self
+            .blocker_coordinator
+            .set_configuration(BlockerMode::Block, power_intent)
+        {
             let message = format!(
                 "Wardoff could not restore Block mode after the tray-initiated {} request woke the system: {error}",
                 power_action_label(action)
@@ -1238,6 +1298,16 @@ fn mode_label(mode: BlockerMode) -> &'static str {
     }
 }
 
+fn configuration_label(mode: BlockerMode, intent: PowerIntent) -> &'static str {
+    match (mode, intent) {
+        (BlockerMode::Allow, _) => "Allow",
+        (BlockerMode::Block, PowerIntent::SystemOnly) => "Block with display timeout allowed",
+        (BlockerMode::Block, PowerIntent::SystemAndDisplay) => {
+            "Block with display timeout prevented"
+        }
+    }
+}
+
 fn power_action_label(action: PowerAction) -> &'static str {
     match action {
         PowerAction::Shutdown => "shutdown",
@@ -1259,6 +1329,7 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
     match action {
         RequestedAction::Default => "default",
         RequestedAction::Block => "block",
+        RequestedAction::BlockWithPowerIntent { .. } => "block with a display-timeout choice",
         RequestedAction::Allow => "allow",
         RequestedAction::Hide => "hidden block",
         RequestedAction::Autostart { .. } => "autostart",

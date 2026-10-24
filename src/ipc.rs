@@ -7,6 +7,7 @@
 use crate::blocker::BlockerMode;
 use crate::cli::StatusOutput;
 use crate::logger::{self, EventSource};
+use crate::power_intent::PowerIntent;
 use crate::session_scope::{current_control_pipe_path, current_status_pipe_path};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -170,6 +171,8 @@ pub(crate) enum PipeMode {
 pub(crate) enum IpcRequest {
     /// Switches the runtime into the requested blocker mode.
     SetMode { mode: PipeMode },
+    /// Requests Block with an explicit idle-power intent; old servers reject it.
+    SetPowerIntent { intent: PowerIntent },
     /// Creates, updates, or removes the current-user autostart task.
     SetAutostart { enabled: bool },
     /// Returns the current runtime status snapshot.
@@ -723,7 +726,7 @@ fn run_server_loop(
                         message: error.clone(),
                     },
                 );
-                warn!("Wardoff stopped its named-pipe server after an IPC error: {error}");
+                warn!("Wardoff rejected an invalid named-pipe request: {error}");
                 logger::log_event(
                     "ipc_request_rejected",
                     EventSource::Ipc,
@@ -1485,6 +1488,40 @@ impl Drop for LocalAllocatedWideString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_power_intent_has_a_distinct_wire_command_and_validated_intent() {
+        for (intent, expected) in [
+            (
+                PowerIntent::SystemOnly,
+                r#"{"command":"set_power_intent","intent":"system_only"}"#,
+            ),
+            (
+                PowerIntent::SystemAndDisplay,
+                r#"{"command":"set_power_intent","intent":"system_and_display"}"#,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&IpcRequest::SetPowerIntent { intent }).unwrap(),
+                expected
+            );
+            assert!(matches!(
+                serde_json::from_str::<IpcRequest>(expected).unwrap(),
+                IpcRequest::SetPowerIntent { intent: actual } if actual == intent
+            ));
+        }
+        assert_eq!(
+            serde_json::to_string(&IpcRequest::SetMode {
+                mode: PipeMode::Block
+            })
+            .unwrap(),
+            r#"{"command":"set_mode","mode":"block"}"#,
+        );
+        assert!(serde_json::from_str::<IpcRequest>(
+            r#"{"command":"set_power_intent","intent":"display_only"}"#,
+        )
+        .is_err());
+    }
 
     #[test]
     fn connection_retries_keep_the_original_limit_without_a_deadline() {

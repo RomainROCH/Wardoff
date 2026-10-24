@@ -54,7 +54,7 @@ Keep validation language conservative:
 | Inactive status | `wardoff --status` exits `1` and returns `{"state":"inactive"}` when no instance is running | No |
 | Hidden block startup | `Start-Process ... --block --hide` keeps the runtime alive | No |
 | Active status JSON | `wardoff --status` exits `0`, returns `state=block`, and includes `layers.local_shutdown` as a boolean | No |
-| Sleep/display request visibility | `powercfg /requests` contains the Wardoff reason for both requests in Block; it does not prove a physical transition was prevented | Query may require elevation |
+| Sleep/display request visibility | `powercfg /requests` contains `Wardoff Block mode: manual idle-power protection.` for the selected requests in Block; `allow` omits Wardoff's display request while `prevent` includes it. This does not prove a physical transition was prevented | Query may require elevation |
 | Block/Allow/Block lifecycle | `layers.sleep` is true/false/true; requests disappear in Allow while the same runtime remains alive, then acquisition is reported again in Block | Query may require elevation |
 | Abrupt termination | The owned test runtime is killed directly from Block, without Allow; its requests disappear | Query may require elevation |
 | Structured logging | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` exists, appends new lines, and contains valid JSON | No |
@@ -64,6 +64,15 @@ Keep validation language conservative:
 | Autostart task lifecycle | The smoke test first reads the current process token's native `TokenElevationType`. With `TokenElevationTypeFull (2)`, it runs the trusted-path lifecycle and untrusted-path refusal assertions. With `TokenElevationTypeDefault (1)`, Windows reports no linked token, so the lifecycle is explicitly deferred to an interactive UAC session; a failed or unexpected query is a failure. | Yes |
 | Cleanup path | Direct termination from Block stops the owned background instance; a final cleanup helper handles test failures | No |
 | Sleep/display cleanup | `powercfg /requests` no longer mentions Wardoff after cleanup, when the session allows that query | No |
+
+The explicit Block forms are `wardoff --block --display-timeout allow` and
+`wardoff --block --display-timeout prevent`. The option requires `--block` and
+conflicts with `--hide` and every other action. Bare Block/default/Hide/tray
+Block retain the indefinite system-and-display pair. Allow releases Wardoff's
+requests; `allow` does not immediately turn the display off, and other
+applications or Windows policy may keep it on. The choice is not persisted and
+does not create a tray control or physical guarantee. These are planned focused
+cases; no new power-intent case is marked PASS until the VM run is complete.
 
 The smoke test checks status visibility for local shutdown handling, but that is **not** the same as promising reliable interception of all local shutdown paths.
 
@@ -80,6 +89,7 @@ Use a normal desktop session for these checks. They should not require actually 
 | Tray presence | Launch `wardoff` and confirm exactly one tray icon appears | Runtime is visible and does not create duplicate tray icons |
 | Tray state | Toggle Block and Allow from the tray menu | State changes cleanly without crashing or leaving stale UI |
 | Tray and CLI sync | With Wardoff running, alternate `wardoff --allow`, `wardoff --block`, and tray Block/Allow toggles while checking `wardoff --status` after each change | Tray state, status JSON, and the active mode stay aligned with the latest request without leaving stale Block-mode behavior behind |
+| Tray display choice | In a visible runtime, select `--block --display-timeout allow`, open the menu, then choose `Block (keep display on)` | Red Block tooltip explains allowed display timeout; the existing Block action is enabled and restores the full pair. Full-pair Block/Allow retain their usual labels and enabled states; Explorer recreation preserves the selected presentation |
 | CLI to primary runtime | With Wardoff already running, run `wardoff --status`, `wardoff --allow`, and `wardoff --block` from a second console | Secondary commands control the existing runtime instead of creating a second one |
 | Single-instance behavior | Start Wardoff more than once from the repo build | Only one primary runtime remains active |
 | IPC | Change state from CLI while the tray instance is running | The running instance reflects the requested state change |
@@ -101,6 +111,7 @@ does not replace this acceptance.
 | Block/Allow runtime, normal/elevated caller | Read-only live report; requested, API-active and physical effectiveness remain distinct; legacy status bytes unchanged |
 | Missing Update reboot task | Explicit unavailable/task-absent cause, not an invented historical failure |
 | Legacy runtime | Observed mode/old booleans, unknown detailed intent/reasons; no control-pipe fallback |
+| Explicit power intent against legacy runtime | Clear restart-with-this-executable guidance; no legacy fallback; subsequent legacy IPC remains usable and legacy status bytes remain unchanged |
 | Occupied mutex, absent/invalid/silent/trickling status endpoint | Unreachable/exit 1, bounded application waits and frame size; no new runtime |
 | Slow/failed local inspection | Unknown facts or timed-out context; retain independently observed runtime state |
 | Helper failure/timeout/oversized output | Only the exact owned child/job is terminated/reaped; unrelated processes continue |
@@ -207,19 +218,22 @@ power plan merely to make a row pass; use an already suitable test setup.
 2. In Allow, confirm Wardoff remains alive with `layers.sleep=false` and no
    Wardoff requests. Establish the existing idle/display behavior without
    keyboard, mouse or remote-session activity that would reset the timers.
-3. Enter Block. Confirm `layers.sleep=true` and the reason
-   `Wardoff Block mode: prevent idle sleep and automatic display timeout.`
-   in both requests. Wait past the configured idle/display timeouts; record
-   actual behavior, not just request listing. Repeat Block/Allow/Block.
-4. Request Sleep from Windows, then wake the machine. Check mode, request pair
+3. Enter Block with each intent. Confirm `layers.sleep=true` and the reason
+   `Wardoff Block mode: manual idle-power protection.`. `prevent` must appear in
+   both requests; `allow` must retain only the system request. Wait past the
+   configured idle/display timeouts; record actual behavior, not just request
+   listing. Repeat Block/Allow/Block and confirm bare Block reverts to the full
+   pair without changing power settings.
+4. Request Sleep from Windows, then wake the machine. Check mode, selected request set
    and logs; repeat for an already configured Sleep button, lid, and Hibernate.
    Explicit sleep proceeding is expected, not a failed veto test. Record whether
    the first observed resume renews the pair and whether subsequent notifications
    leave exactly one pair. No real transition is proven by synthetic messages.
-5. Test the existing tray Sleep/Hibernate flow from Block and from Allow. Block
-   should temporarily become Allow, then restore on wake; Allow should remain
-   Allow. Check `block_restored_after_wake` and request presence. Test an explicit
-   Allow command cancelling a pending restore where the timing permits it.
+5. Test the existing tray Sleep/Hibernate flow from both intents and from Allow.
+   Block should temporarily become Allow, then restore the selected intent on
+   wake; Allow should remain Allow. Check `block_restored_after_wake` and request
+   presence. Test an explicit Allow command cancelling a pending restore where
+   the timing permits it.
 6. Include unattended/maintenance wake separately. This change retains the
    existing resume notification semantics; it does not promise a new
    presence-aware or display-aware policy. Record unexpected display behavior

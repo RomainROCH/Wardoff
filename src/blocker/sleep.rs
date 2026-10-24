@@ -1,5 +1,6 @@
 use crate::diagnostics::Observation;
 use crate::logger::{self, EventSource};
+use crate::power_intent::PowerIntent;
 use log::{info, warn};
 use windows::core::{w, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -22,17 +23,26 @@ pub struct SleepBlocker {
 }
 
 impl SleepBlocker {
-    /// Acquires both requests synchronously, rolling back any partial acquisition.
-    pub fn activate(&mut self) -> Result<(), String> {
-        if self.is_active() {
-            return Ok(());
-        }
-        if let Err(error) = self.requests.activate() {
+    /// Acquires the selected requests, preserving the system request during flips.
+    pub fn activate(&mut self, intent: PowerIntent) -> Result<(), String> {
+        let was_active = self.is_active();
+        let previous_mask = self.requests.acquired;
+        if let Err(error) = self.requests.activate(intent) {
             warn!("Could not acquire idle-power requests: {error}");
             logger::log_event("sleep_blocked", EventSource::Sleep, &error, false);
             return Err(error);
         }
-        let message = "Wardoff acquired system/display Power Requests for idle-sleep and automatic display-timeout prevention. Windows policy and explicit Sleep/Hibernate can override this protection.";
+        if was_active && previous_mask == intent.request_mask() {
+            return Ok(());
+        }
+        let message = match intent {
+            PowerIntent::SystemOnly => {
+                "Wardoff acquired its system Power Request for idle-sleep protection while allowing the display's normal inactivity timeout. Windows policy and explicit Sleep/Hibernate can override this protection."
+            }
+            PowerIntent::SystemAndDisplay => {
+                "Wardoff acquired system/display Power Requests for idle-sleep and automatic display-timeout prevention. Windows policy and explicit Sleep/Hibernate can override this protection."
+            }
+        };
         info!("{message}");
         // Keep the existing event name for log consumers; success means request
         // acquisition, not that an actual sleep transition was observed or vetoed.
@@ -66,20 +76,20 @@ impl SleepBlocker {
     }
 
     /// Renews requests after the existing runtime resume notification.
-    pub(crate) fn renew_after_resume(&mut self) -> Result<(), String> {
+    pub(crate) fn renew_after_resume(&mut self, intent: PowerIntent) -> Result<(), String> {
         // PowerSetRequest documents termination at user-initiated sleep entry:
         // https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-powersetrequest
         // The handle need not be invalid. Close the old object instead of
         // incrementing possibly surviving counts or clearing already-ended ones.
         // Tray power actions already reacquire via their Allow -> Block transition.
-        if let Err(error) = self.requests.close().and_then(|_| self.activate()) {
+        if let Err(error) = self.requests.close().and_then(|_| self.activate(intent)) {
             self.requests.observation = Observation::MonitoringFailed;
             return Err(error);
         }
         Ok(())
     }
 
-    /// Reports acquisition of the pair; Windows policy may still ignore it.
+    /// Reports acquisition of the chosen request set; policy may still ignore it.
     pub fn is_active(&self) -> bool {
         self.requests.is_active()
     }
@@ -108,6 +118,7 @@ trait PowerApi {
 struct PowerRequests<A: PowerApi> {
     api: A,
     handle: Option<A::Handle>,
+    // SYSTEM then DISPLAY, independently of the Win32 enum's numeric values.
     acquired: [bool; 2],
     observation: Observation,
 }
@@ -128,8 +139,22 @@ impl<A: PowerApi> PowerRequests<A> {
         self.observation == Observation::Active
     }
 
-    fn activate(&mut self) -> Result<(), String> {
+    fn activate(&mut self, intent: PowerIntent) -> Result<(), String> {
+        let desired = intent.request_mask();
+        if self.is_active() && self.acquired == desired {
+            return Ok(());
+        }
         if self.is_active() {
+            let display_kind = PowerRequestDisplayRequired;
+            let Some(handle) = self.handle else {
+                return Err("Idle-power requests were active without an owned handle.".to_string());
+            };
+            if desired[1] && !self.acquired[1] {
+                self.api.set(handle, display_kind)?;
+            } else if !desired[1] && self.acquired[1] {
+                self.api.clear(handle, display_kind)?;
+            }
+            self.acquired = desired;
             return Ok(());
         }
         self.observation = Observation::Starting;
@@ -142,6 +167,9 @@ impl<A: PowerApi> PowerRequests<A> {
         };
         self.handle = Some(handle);
         for (index, kind) in REQUEST_TYPES.into_iter().enumerate() {
+            if !desired[index] {
+                continue;
+            }
             if let Err(error) = self.api.set(handle, kind) {
                 let result = match self.release() {
                     Ok(()) => Err(error),
@@ -204,7 +232,7 @@ impl PowerApi for WindowsPowerApi {
     type Handle = HANDLE;
 
     fn create(&self) -> Result<HANDLE, String> {
-        let reason = w!("Wardoff Block mode: prevent idle sleep and automatic display timeout.");
+        let reason = w!("Wardoff Block mode: manual idle-power protection.");
         let context = REASON_CONTEXT {
             Version: POWER_REQUEST_CONTEXT_VERSION,
             Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,
@@ -253,6 +281,7 @@ mod tests {
         calls: Vec<Call>,
         failures: Vec<Call>,
         next_handle: u32,
+        // Native enum indices are DISPLAY=0, SYSTEM=1; acquired uses the reverse order.
         live: BTreeMap<u32, [u32; 2]>,
     }
 
@@ -311,26 +340,39 @@ mod tests {
     fn activation_reports_an_acquired_request_before_returning() {
         // Non-disruptive Win32 integration: no sleep, policy writes or elevation.
         let mut blocker = SleepBlocker::default();
-        for _ in 0..10 {
+        for intent in [PowerIntent::SystemOnly, PowerIntent::SystemAndDisplay] {
             blocker
-                .activate()
+                .activate(intent)
                 .expect("power requests should be available");
             assert!(blocker.is_active());
+            assert_eq!(blocker.diagnostic_state().1, intent.request_mask());
             blocker
-                .renew_after_resume()
+                .renew_after_resume(intent)
                 .expect("renew the owned requests");
             assert!(blocker.is_active());
+            assert_eq!(blocker.diagnostic_state().1, intent.request_mask());
             blocker.deactivate();
             assert!(!blocker.is_active());
         }
+        blocker
+            .activate(PowerIntent::SystemAndDisplay)
+            .expect("pair activation should succeed");
+        blocker
+            .activate(PowerIntent::SystemOnly)
+            .expect("active intent flip should be accepted");
+        assert_eq!(
+            blocker.diagnostic_state().1,
+            PowerIntent::SystemOnly.request_mask()
+        );
+        blocker.deactivate();
     }
 
     #[test]
     fn repeated_block_allow_cycles_balance_counts_and_close_objects() {
         let (mut requests, api) = requests();
         for _ in 0..100 {
-            requests.activate().unwrap();
-            requests.activate().unwrap();
+            requests.activate(PowerIntent::default()).unwrap();
+            requests.activate(PowerIntent::default()).unwrap();
             assert!(requests.is_active());
             assert_eq!(
                 api.0.borrow().live.values().copied().collect::<Vec<_>>(),
@@ -347,7 +389,7 @@ mod tests {
     fn failed_creation_does_not_claim_protection_or_close_an_invalid_handle() {
         let (mut requests, api) = requests();
         api.0.borrow_mut().failures = vec![Call::Create];
-        assert!(requests.activate().is_err());
+        assert!(requests.activate(PowerIntent::default()).is_err());
         assert!(!requests.is_active());
         drop(requests);
         assert_eq!(api.0.borrow().calls, vec![Call::Create]);
@@ -358,12 +400,12 @@ mod tests {
         for kind in REQUEST_TYPES {
             let (mut requests, api) = requests();
             api.0.borrow_mut().failures = vec![Call::Set(kind.0)];
-            assert!(requests.activate().is_err());
+            assert!(requests.activate(PowerIntent::default()).is_err());
             assert!(!requests.is_active());
             assert!(api.0.borrow().live.is_empty());
             assert!(!api.0.borrow().calls.contains(&Call::Clear(kind.0)));
             api.0.borrow_mut().failures.clear();
-            requests.activate().unwrap();
+            requests.activate(PowerIntent::default()).unwrap();
             assert!(requests.is_active());
             drop(requests);
             assert!(api.0.borrow().live.is_empty());
@@ -373,7 +415,7 @@ mod tests {
     #[test]
     fn cleanup_continues_after_clear_errors_and_reports_each_error() {
         let (mut requests, api) = requests();
-        requests.activate().unwrap();
+        requests.activate(PowerIntent::default()).unwrap();
         api.0.borrow_mut().failures = vec![Call::Clear(1), Call::Clear(0)];
         let error = requests.release().unwrap_err();
         assert!(error.contains("Clear(1)"));
@@ -386,7 +428,7 @@ mod tests {
     fn partial_acquisition_preserves_original_and_cleanup_errors() {
         let (mut requests, api) = requests();
         api.0.borrow_mut().failures = vec![Call::Set(0), Call::Clear(1)];
-        let error = requests.activate().unwrap_err();
+        let error = requests.activate(PowerIntent::default()).unwrap_err();
         assert!(error.contains("Set(0)"));
         assert!(error.contains("Clear(1)"));
         assert!(api.0.borrow().live.is_empty());
@@ -395,7 +437,7 @@ mod tests {
     #[test]
     fn drop_releases_both_requests_without_explicit_deactivation() {
         let (mut requests, api) = requests();
-        requests.activate().unwrap();
+        requests.activate(PowerIntent::default()).unwrap();
         drop(requests);
         assert!(api.0.borrow().live.is_empty());
         assert!(api
@@ -409,17 +451,109 @@ mod tests {
     fn resume_replacement_handles_ended_or_surviving_counts_without_accumulation() {
         for counts in [[0, 0], [1, 1]] {
             let (mut requests, api) = requests();
-            requests.activate().unwrap();
+            requests.activate(PowerIntent::default()).unwrap();
             *api.0.borrow_mut().live.values_mut().next().unwrap() = counts;
             // This validates ownership, not real Windows suspend behavior.
             for _ in 0..2 {
                 requests.close().unwrap();
-                requests.activate().unwrap();
+                requests.activate(PowerIntent::default()).unwrap();
                 assert_eq!(
                     api.0.borrow().live.values().copied().collect::<Vec<_>>(),
                     vec![[1, 1]]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn system_only_acquires_no_display_request() {
+        let (mut requests, api) = requests();
+        requests.activate(PowerIntent::SystemOnly).unwrap();
+
+        assert_eq!(requests.acquired, [true, false]);
+        assert_eq!(
+            api.0.borrow().live.values().copied().collect::<Vec<_>>(),
+            vec![[0, 1]]
+        );
+        assert!(requests.is_active());
+    }
+
+    #[test]
+    fn active_intent_flip_keeps_one_system_request_without_duplication() {
+        let (mut requests, api) = requests();
+        requests.activate(PowerIntent::SystemAndDisplay).unwrap();
+        let initial_calls = api.0.borrow().calls.len();
+        requests.activate(PowerIntent::SystemOnly).unwrap();
+        assert_eq!(requests.acquired, [true, false]);
+        requests.activate(PowerIntent::SystemAndDisplay).unwrap();
+
+        assert_eq!(requests.acquired, [true, true]);
+        assert_eq!(
+            api.0.borrow().live.values().copied().collect::<Vec<_>>(),
+            vec![[1, 1]]
+        );
+        let calls = &api.0.borrow().calls;
+        assert_eq!(
+            calls.iter().filter(|call| **call == Call::Set(1)).count(),
+            1
+        );
+        assert!(!calls[initial_calls..].contains(&Call::Set(1)));
+        assert!(!calls[initial_calls..].contains(&Call::Clear(1)));
+        assert!(!calls[initial_calls..].contains(&Call::Close));
+        assert!(!calls[initial_calls..].contains(&Call::Create));
+    }
+
+    #[test]
+    fn repeated_same_intent_is_a_noop() {
+        let (mut requests, api) = requests();
+        requests.activate(PowerIntent::SystemOnly).unwrap();
+        let calls = api.0.borrow().calls.clone();
+        requests.activate(PowerIntent::SystemOnly).unwrap();
+        assert_eq!(api.0.borrow().calls, calls);
+    }
+
+    #[test]
+    fn failed_display_add_preserves_system_only_and_active_state() {
+        let (mut requests, api) = requests();
+        requests.activate(PowerIntent::SystemOnly).unwrap();
+        api.0.borrow_mut().failures = vec![Call::Set(0)];
+        assert!(requests.activate(PowerIntent::SystemAndDisplay).is_err());
+        assert_eq!(requests.acquired, [true, false]);
+        assert_eq!(
+            api.0.borrow().live.values().copied().collect::<Vec<_>>(),
+            vec![[0, 1]]
+        );
+        assert!(requests.is_active());
+    }
+
+    #[test]
+    fn failed_display_clear_preserves_pair_and_active_state() {
+        let (mut requests, api) = requests();
+        requests.activate(PowerIntent::SystemAndDisplay).unwrap();
+        api.0.borrow_mut().failures = vec![Call::Clear(0)];
+        assert!(requests.activate(PowerIntent::SystemOnly).is_err());
+        assert_eq!(requests.acquired, [true, true]);
+        assert_eq!(
+            api.0.borrow().live.values().copied().collect::<Vec<_>>(),
+            vec![[1, 1]]
+        );
+        assert!(requests.is_active());
+    }
+
+    #[test]
+    fn resume_and_cleanup_balance_each_intent() {
+        for intent in [PowerIntent::SystemOnly, PowerIntent::SystemAndDisplay] {
+            let (mut requests, api) = requests();
+            requests.activate(intent).unwrap();
+            requests.close().unwrap();
+            requests.activate(intent).unwrap();
+            assert_eq!(requests.acquired, intent.request_mask());
+            assert_eq!(
+                api.0.borrow().live.values().copied().collect::<Vec<_>>(),
+                vec![[u32::from(intent == PowerIntent::SystemAndDisplay), 1]]
+            );
+            requests.release().unwrap();
+            assert!(api.0.borrow().live.is_empty());
         }
     }
 }

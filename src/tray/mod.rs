@@ -1,5 +1,7 @@
 use crate::blocker::BlockerMode;
 use crate::logger::{self, EventSource};
+use crate::power_intent::PowerIntent;
+use crate::runtime_policy::tray_mode_presentation;
 use log::info;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -77,6 +79,7 @@ pub(crate) struct TrayServiceHandle {
 enum TrayCommand {
     SetMode {
         mode: BlockerMode,
+        power_intent: PowerIntent,
         result_tx: Sender<Result<(), String>>,
     },
     SetAutostart(bool),
@@ -107,6 +110,7 @@ pub fn create_tray_controller(visibility: TrayVisibility) -> Result<TrayControll
 pub(crate) fn spawn_tray_service(
     visibility: TrayVisibility,
     initial_mode: BlockerMode,
+    initial_power_intent: PowerIntent,
     main_thread_id: u32,
 ) -> Result<TrayServiceHandle, String> {
     let (action_tx, action_rx) = mpsc::channel();
@@ -118,6 +122,7 @@ pub(crate) fn spawn_tray_service(
             run_tray_thread(
                 visibility,
                 initial_mode,
+                initial_power_intent,
                 main_thread_id,
                 command_rx,
                 action_tx,
@@ -167,7 +172,9 @@ impl TrayController {
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
             .with_menu_on_left_click(false)
-            .with_tooltip(tooltip_for_mode(BlockerMode::Block))
+            .with_tooltip(
+                tray_mode_presentation(BlockerMode::Block, PowerIntent::SystemAndDisplay).tooltip,
+            )
             .with_icon(icon::blocked_icon().map_err(|error| {
                 format!("Wardoff could not build the blocked tray icon: {error}")
             })?)
@@ -187,7 +194,7 @@ impl TrayController {
             quit_item,
             autostart_enabled: Cell::new(false),
         };
-        controller.set_mode(BlockerMode::Block)?;
+        controller.set_mode(BlockerMode::Block, PowerIntent::SystemAndDisplay)?;
 
         if visibility == TrayVisibility::Hidden {
             controller.hide_tray_icon()?;
@@ -207,8 +214,9 @@ impl TrayController {
     }
 
     /// Applies the current blocker mode to the tray icon, tooltip, and menu state.
-    pub fn set_mode(&mut self, mode: BlockerMode) -> Result<(), String> {
-        self.sync_menu_state(mode);
+    pub fn set_mode(&mut self, mode: BlockerMode, power_intent: PowerIntent) -> Result<(), String> {
+        let presentation = tray_mode_presentation(mode, power_intent);
+        self.sync_menu_state(presentation);
 
         if self.visibility == TrayVisibility::Hidden {
             // Windows can return E_FAIL when mutating icon metadata after the tray icon is hidden.
@@ -229,7 +237,7 @@ impl TrayController {
                 .set_icon(Some(icon))
                 .map_err(|error| format!("Wardoff could not update the tray icon: {error}"))?;
             tray_icon
-                .set_tooltip(Some(tooltip_for_mode(mode)))
+                .set_tooltip(Some(presentation.tooltip))
                 .map_err(|error| format!("Wardoff could not update the tray tooltip: {error}"))?;
         }
 
@@ -271,9 +279,10 @@ impl TrayController {
         Ok(())
     }
 
-    fn sync_menu_state(&self, mode: BlockerMode) {
-        self.block_item.set_enabled(mode != BlockerMode::Block);
-        self.allow_item.set_enabled(mode != BlockerMode::Allow);
+    fn sync_menu_state(&self, presentation: crate::runtime_policy::TrayModePresentation) {
+        self.block_item.set_text(presentation.block_text);
+        self.block_item.set_enabled(presentation.block_enabled);
+        self.allow_item.set_enabled(presentation.allow_enabled);
     }
 
     fn action_for_menu_id(&self, id: &MenuId) -> Option<TrayAction> {
@@ -300,10 +309,18 @@ impl TrayController {
 }
 
 impl TrayServiceHandle {
-    pub(crate) fn set_mode(&self, mode: BlockerMode) -> Result<(), String> {
+    pub(crate) fn set_mode(
+        &self,
+        mode: BlockerMode,
+        power_intent: PowerIntent,
+    ) -> Result<(), String> {
         let (result_tx, result_rx) = mpsc::channel();
         self.command_tx
-            .send(TrayCommand::SetMode { mode, result_tx })
+            .send(TrayCommand::SetMode {
+                mode,
+                power_intent,
+                result_tx,
+            })
             .map_err(|_| "Wardoff lost contact with its tray thread.".to_string())?;
 
         match result_rx.recv_timeout(TRAY_COMMAND_RESULT_TIMEOUT) {
@@ -346,6 +363,7 @@ impl TrayServiceHandle {
 struct TrayThreadState {
     visibility: TrayVisibility,
     mode: BlockerMode,
+    power_intent: PowerIntent,
     autostart_enabled: bool,
     controller: Option<TrayController>,
     creation_failure_reported: bool,
@@ -357,6 +375,7 @@ struct TrayThreadState {
 fn run_tray_thread(
     visibility: TrayVisibility,
     initial_mode: BlockerMode,
+    initial_power_intent: PowerIntent,
     main_thread_id: u32,
     command_rx: Receiver<TrayCommand>,
     action_tx: Sender<TrayAction>,
@@ -379,6 +398,7 @@ fn run_tray_thread(
     let mut state = TrayThreadState {
         visibility,
         mode: initial_mode,
+        power_intent: initial_power_intent,
         autostart_enabled: false,
         controller: None,
         creation_failure_reported: false,
@@ -509,8 +529,13 @@ fn wake_main_thread_for_tray_action(main_thread_id: u32) -> Result<(), String> {
 
 fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> bool {
     match command {
-        TrayCommand::SetMode { mode, result_tx } => {
+        TrayCommand::SetMode {
+            mode,
+            power_intent,
+            result_tx,
+        } => {
             state.mode = mode;
+            state.power_intent = power_intent;
             let result = apply_current_tray_state(state);
             if let Err(error) = result.as_ref() {
                 log_tray_update_failure_and_reset(
@@ -576,7 +601,7 @@ fn try_create_tray_controller(state: &mut TrayThreadState) {
     match create_tray_controller(state.visibility) {
         Ok(mut controller) => {
             controller.set_autostart_enabled(state.autostart_enabled);
-            match controller.set_mode(state.mode) {
+            match controller.set_mode(state.mode, state.power_intent) {
                 Ok(()) => {
                     if let Some(waiting_since) = state.waiting_since.take() {
                         if waiting_since.elapsed() >= TRAY_RETRY_INTERVAL {
@@ -609,7 +634,7 @@ fn apply_current_tray_state(state: &mut TrayThreadState) -> Result<(), String> {
     };
 
     controller.set_autostart_enabled(state.autostart_enabled);
-    controller.set_mode(state.mode)
+    controller.set_mode(state.mode, state.power_intent)
 }
 
 fn reset_tray_controller(state: &mut TrayThreadState) {
@@ -735,13 +760,6 @@ unsafe extern "system" fn taskbar_created_window_proc(
     match message {
         WM_DESTROY => LRESULT(0),
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
-    }
-}
-
-fn tooltip_for_mode(mode: BlockerMode) -> &'static str {
-    match mode {
-        BlockerMode::Block => "Wardoff - Block mode",
-        BlockerMode::Allow => "Wardoff - Allow mode",
     }
 }
 

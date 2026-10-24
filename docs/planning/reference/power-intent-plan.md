@@ -56,6 +56,14 @@ to this runtime session; add no persisted preference or new tray control here.
 System-only removes Wardoff's display request; other applications and Windows
 policy can still keep the display on.
 
+Keep the existing tray controls, colors and default labels. When a visible
+runtime is in system-only Block, its tooltip says that display timeout is
+allowed and the existing Block item is enabled as `Block (keep display on)`.
+It restores the full pair. In default full-pair Block, keep the old disabled
+`Block` item and tooltip; Allow keeps its old presentation. This is necessary
+because the existing menu disables Block for every Block-mode runtime, which
+would make the planned same-mode tray reversion inaccessible to a person.
+
 Bare Block, default launch, Hide and tray Block explicitly select the existing
 pair. All remain indefinite and preserve their current tray/console/elevation
 behavior. Allow cancels pending wake restoration. A new explicit intent request
@@ -140,14 +148,19 @@ was missed. A failed tray Sleep/Hibernate request restores the exact previous
 configuration. Ordinary resume of a runtime still in Block renews its current
 intent. Explicit mode/intent commands cancel the pending restore as before.
 Do not introduce new presence-aware or display-on-wake policy in this slice.
+Pass intent with mode through the existing tray command and cached thread state
+so Explorer recreation retains the correct tooltip/action. A small pure
+`TrayModePresentation` in runtime_policy owns tooltip, Block text and enabled
+states; Windows effects stay in `src/tray/mod.rs`. Cover the new enabled action
+with an observed RED before wiring it, and retain the old full-pair/Allow UI.
 
 ## Execution and review checkpoints
 
-- [ ] **1. Obtain CLI RED.** Add parsing/conflict regressions in `src/cli.rs`
+- [x] **1. Obtain CLI RED.** Add parsing/conflict regressions in `src/cli.rs`
   using the existing parser. The valid system-only command must fail against
   the old parser. Runner: `cargo test --locked cli::tests`; retain the assertion
   and executed-test count, not a compilation error or zero-test result.
-- [ ] **2. Introduce the pure value and backend RED/GREEN.** Root owns
+- [x] **2. Introduce the pure value and backend RED/GREEN.** Root owns
   `src/power_intent.rs` and its module declaration. Delegate only
   `src/blocker/sleep.rs` with the interface above. First expose the parameter
   with old pair behavior and add meaningful fault/count regressions, then have
@@ -155,10 +168,15 @@ Do not introduce new presence-aware or display-on-wake policy in this slice.
   pair, no-op, repeated flips with one uninterrupted system count, each startup
   failure/rollback, failed display add/clear preserving the old state, Allow,
   Drop and resume in both intents. Runner: `cargo test --locked blocker::sleep::tests`.
-- [ ] **3. Wire pure command/wake decisions.** Delegate only `src/cli.rs` and
+- [x] **3. Wire pure command/wake decisions.** Delegate only `src/cli.rs` and
   `src/runtime_policy.rs`. Add the explicit intent action, RuntimeOptions field,
   dedicated IPC mapping and intent-preserving pending restore tests. Cover all
   default launch modes and both actions/intents, missed suspend and cancellation.
+- [x] **3b. Preserve the usable tray reversion.** Delegate the pure presentation
+  and its RED/GREEN test in `src/runtime_policy.rs`, plus intent propagation,
+  existing Block-item enablement/text and tooltip in `src/tray/mod.rs`. Root
+  updates main's bootstrap/synchronization arguments. Preserve both fields on
+  recreation; add no control. Verify the actual menu action in the VM.
 - [ ] **4. Integrate effects and compatibility.** Root owns `src/blocker/mod.rs`,
   `src/ipc.rs` and `src/main.rs`. Include the real pure type in standalone IPC
   tests (`tests/ipc_request_limits.rs`, `tests/status_connection_budget.rs` and
@@ -192,3 +210,19 @@ All Cargo commands use the established stable x64 MSVC/static-CRT target and
 locked dependencies. Focused checks precede Full; reuse unchanged valid checks.
 Stop for a material unresolved decision, actual privacy/permission boundary or
 required paid resource. Reevaluate a contradicted design before continuing.
+
+## Implementation checkpoint, 2026-10-24
+
+The CLI RED executed two tests with the valid option rejected by the old parser.
+Backend RED executed 14 tests with six expected mask/flip/resume failures. The
+new tray presentation also failed its exact pure regression before correction.
+After implementation, 28 focused tests passed: 14 sleep, two CLI, ten command/
+wake policy, one wire contract and one tray presentation. Production compilation
+and the documentation check passed; static implementation review found no blocker.
+Win32 enum values (`DISPLAY=0`, `SYSTEM=1`) differ from the acquired mask's
+system/display order; tests explicitly forbid touching the system count on a flip.
+
+Full checks, source-bound release qualification and Windows acceptance are still
+pending. No physical, Explorer or new tray-interaction result is implied by these
+unit and static checks. The owned offline VM may be reused with fresh fixtures
+after the previous phase's verified runtime/task cleanup.

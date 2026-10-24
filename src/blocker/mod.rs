@@ -1,6 +1,7 @@
 use crate::diagnostics::{
     LayerId, LayerSnapshot, Observation, PowerRequests, RequestObservation, RuntimeSnapshot,
 };
+use crate::power_intent::PowerIntent;
 use chrono::{DateTime, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,7 @@ pub enum PowerAction {
 /// Coordinates the blocker sub-systems used by the MVP runtime.
 pub struct BlockerCoordinator {
     mode: BlockerMode,
+    power_intent: PowerIntent,
     shutdown_blocker: shutdown::ShutdownBlocker,
     local_shutdown_blocker: local::LocalShutdownBlocker,
     update_reboot_blocker: update::UpdateRebootBlocker,
@@ -95,8 +97,11 @@ pub struct BlockerCoordinator {
 }
 
 /// Creates the blocker coordinator that owns the layered shutdown guards.
-pub fn create_blocker_coordinator(initial_mode: BlockerMode) -> Result<BlockerCoordinator, String> {
-    BlockerCoordinator::new(DEFAULT_SHUTDOWN_BLOCK_REASON, initial_mode)
+pub fn create_blocker_coordinator(
+    initial_mode: BlockerMode,
+    power_intent: PowerIntent,
+) -> Result<BlockerCoordinator, String> {
+    BlockerCoordinator::new(DEFAULT_SHUTDOWN_BLOCK_REASON, initial_mode, power_intent)
 }
 
 /// Returns the timestamp associated with the next blocker state transition.
@@ -124,12 +129,17 @@ pub fn execute_power_action(action: PowerAction) -> Result<(), String> {
 
 impl BlockerCoordinator {
     /// Creates the blocker coordinator and starts Wardoff in Block mode.
-    pub fn new(reason: &str, initial_mode: BlockerMode) -> Result<Self, String> {
+    pub fn new(
+        reason: &str,
+        initial_mode: BlockerMode,
+        power_intent: PowerIntent,
+    ) -> Result<Self, String> {
         let shutdown_blocker = shutdown::ShutdownBlocker::new(reason)
             .map_err(|error| format!("Layer 1 could not create its shutdown windows: {error}"))?;
 
         let mut coordinator = Self {
             mode: BlockerMode::Allow,
+            power_intent: PowerIntent::default(),
             shutdown_blocker,
             local_shutdown_blocker: local::LocalShutdownBlocker::default(),
             update_reboot_blocker: update::UpdateRebootBlocker::default(),
@@ -138,13 +148,18 @@ impl BlockerCoordinator {
             last_transition_failure: None,
         };
 
-        coordinator.set_mode(initial_mode)?;
+        coordinator.set_configuration(initial_mode, power_intent)?;
         Ok(coordinator)
     }
 
     /// Returns the current application-wide blocker mode.
     pub fn mode(&self) -> BlockerMode {
         self.mode
+    }
+
+    /// Returns the selected request set, independently of current API activity.
+    pub fn power_intent(&self) -> PowerIntent {
+        self.power_intent
     }
 
     /// Returns whether each MVP blocker layer is currently active.
@@ -174,6 +189,8 @@ impl BlockerCoordinator {
             sleep: active[4],
         };
         let requested = Some(self.mode == BlockerMode::Block);
+        let display_requested =
+            Some(self.mode == BlockerMode::Block && self.power_intent.request_mask()[1]);
         let snapshot = RuntimeSnapshot {
             schema_version: 1,
             elevated,
@@ -191,7 +208,7 @@ impl BlockerCoordinator {
                     api_active: Some(requests[0]),
                 },
                 display: RequestObservation {
-                    requested,
+                    requested: display_requested,
                     api_active: Some(requests[1]),
                 },
             },
@@ -207,7 +224,7 @@ impl BlockerCoordinator {
     /// Renews idle-power requests only when Block remains the requested mode.
     pub(crate) fn renew_sleep_requests_after_resume(&mut self) -> Result<(), String> {
         if self.mode == BlockerMode::Block {
-            self.sleep_blocker.renew_after_resume()?;
+            self.sleep_blocker.renew_after_resume(self.power_intent)?;
         }
         Ok(())
     }
@@ -217,20 +234,47 @@ impl BlockerCoordinator {
         self.set_mode(BlockerMode::Allow).map(|_| ())
     }
 
-    /// Applies a new global blocker mode and starts or stops all MVP layers.
+    /// Applies a mode command; explicit Block always restores the default pair.
     pub fn set_mode(&mut self, mode: BlockerMode) -> Result<bool, String> {
-        if self.mode == mode {
-            return Ok(false);
-        }
+        let intent = if mode == BlockerMode::Block {
+            PowerIntent::default()
+        } else {
+            self.power_intent
+        };
+        self.set_configuration(mode, intent)
+    }
 
+    /// Applies mode and intent together, preserving an active system request on flips.
+    pub fn set_configuration(
+        &mut self,
+        mode: BlockerMode,
+        intent: PowerIntent,
+    ) -> Result<bool, String> {
+        let configuration_changed = self.mode != mode || self.power_intent != intent;
         match mode {
-            BlockerMode::Block => self.activate_block_mode()?,
+            BlockerMode::Block if self.mode == BlockerMode::Block => {
+                let was_active = self.sleep_blocker.is_active();
+                if let Err(error) = self.sleep_blocker.activate(intent) {
+                    self.last_transition_failure = Some(LayerId::IdlePower);
+                    return Err(error);
+                }
+                if !configuration_changed && was_active {
+                    return Ok(false);
+                }
+                self.last_transition_failure = None;
+            }
+            BlockerMode::Block => self.activate_block_mode(intent)?,
+            BlockerMode::Allow if self.mode == BlockerMode::Allow => {
+                self.power_intent = intent;
+                return Ok(configuration_changed);
+            }
             BlockerMode::Allow => self.activate_allow_mode()?,
         }
 
         self.mode = mode;
+        self.power_intent = intent;
         info!(
-            "Wardoff switched to {} mode at {}.",
+            "Wardoff applied {} mode with {intent:?} idle-power intent at {}.",
             mode_label(self.mode),
             next_state_change_timestamp().to_rfc3339()
         );
@@ -250,7 +294,7 @@ impl BlockerCoordinator {
         self.mode = BlockerMode::Allow;
     }
 
-    fn activate_block_mode(&mut self) -> Result<(), String> {
+    fn activate_block_mode(&mut self, intent: PowerIntent) -> Result<(), String> {
         let mut layer = LayerId::LocalShutdown;
         let activation_result = (|| {
             self.local_shutdown_blocker.activate()?;
@@ -259,7 +303,7 @@ impl BlockerCoordinator {
             layer = LayerId::Remote;
             self.remote_shutdown_blocker.activate()?;
             layer = LayerId::IdlePower;
-            self.sleep_blocker.activate()?;
+            self.sleep_blocker.activate(intent)?;
             layer = LayerId::Shutdown;
             self.shutdown_blocker
                 .activate()

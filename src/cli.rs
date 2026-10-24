@@ -1,6 +1,7 @@
 use crate::blocker::{BlockerMode, LayerStatus};
 use crate::diagnostics::{RuntimeMode, RuntimeSnapshot};
 use crate::logger;
+use crate::power_intent::PowerIntent;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,8 @@ pub enum RequestedAction {
     Default,
     /// Starts the primary runtime in Block mode without any tray icon.
     Block,
+    /// Starts Block mode with an explicit idle-power request intent.
+    BlockWithPowerIntent { intent: PowerIntent },
     /// Switches an existing instance to Allow mode or starts a new one in Allow mode.
     Allow,
     /// Emits machine-readable status output for scripting scenarios.
@@ -43,6 +46,21 @@ enum CliAutostartState {
     Off,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliDisplayTimeout {
+    Allow,
+    Prevent,
+}
+
+impl CliDisplayTimeout {
+    fn power_intent(self) -> PowerIntent {
+        match self {
+            Self::Allow => PowerIntent::SystemOnly,
+            Self::Prevent => PowerIntent::SystemAndDisplay,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum ReadOnlyCommand {
     /// Explains protection intent, observed activity and Windows limits.
@@ -70,6 +88,14 @@ pub struct WardoffCli {
     /// Enables blocking mode for the current session without showing a tray icon.
     #[arg(long, conflicts_with_all = ["allow", "status", "autostart", "log"])]
     block: bool,
+    /// Selects whether Block mode also prevents the display inactivity timeout.
+    #[arg(
+        long = "display-timeout",
+        value_enum,
+        requires = "block",
+        conflicts_with_all = ["allow", "status", "hide", "autostart", "log"]
+    )]
+    display_timeout: Option<CliDisplayTimeout>,
     /// Disables blocking mode for the current session.
     #[arg(
         long,
@@ -167,7 +193,12 @@ impl WardoffCli {
         } else if self.hide {
             RequestedAction::Hide
         } else if self.block {
-            RequestedAction::Block
+            self.display_timeout
+                .map_or(RequestedAction::Block, |value| {
+                    RequestedAction::BlockWithPowerIntent {
+                        intent: value.power_intent(),
+                    }
+                })
         } else if let Some(autostart) = self.autostart {
             RequestedAction::Autostart {
                 enabled: matches!(autostart, CliAutostartState::On),
@@ -260,6 +291,7 @@ impl From<BlockerMode> for StatusState {
 #[cfg(test)]
 mod tests {
     use super::{RequestedAction, WardoffCli};
+    use crate::power_intent::PowerIntent;
     use clap::{error::ErrorKind, Parser};
 
     #[test]
@@ -438,5 +470,57 @@ mod tests {
         let result = WardoffCli::try_parse_from(["wardoff", "--json"]);
 
         assert!(result.is_err(), "--json without doctor should be rejected");
+    }
+
+    #[test]
+    fn display_timeout_intent_values_are_valid_block_actions() {
+        for value in ["allow", "prevent"] {
+            let cli =
+                WardoffCli::try_parse_from(["wardoff", "--block", "--display-timeout", value])
+                    .unwrap_or_else(|error| {
+                        panic!("Block display-timeout {value} should parse: {error}")
+                    });
+            assert_eq!(
+                cli.requested_action(),
+                RequestedAction::BlockWithPowerIntent {
+                    intent: if value == "allow" {
+                        PowerIntent::SystemOnly
+                    } else {
+                        PowerIntent::SystemAndDisplay
+                    }
+                }
+            );
+            assert!(!cli.requested_action().is_read_only());
+        }
+    }
+
+    #[test]
+    fn display_timeout_intent_rejects_missing_values_and_other_actions() {
+        for arguments in [
+            vec!["wardoff", "--display-timeout", "allow"],
+            vec!["wardoff", "--block", "--display-timeout"],
+            vec!["wardoff", "--block", "--display-timeout", "unknown"],
+            vec!["wardoff", "--block", "--hide", "--display-timeout", "allow"],
+            vec!["wardoff", "--allow", "--display-timeout", "allow"],
+            vec!["wardoff", "--status", "--display-timeout", "allow"],
+            vec!["wardoff", "--hide", "--display-timeout", "allow"],
+            vec!["wardoff", "--autostart", "on", "--display-timeout", "allow"],
+            vec!["wardoff", "--log", "--display-timeout", "allow"],
+            vec!["wardoff", "doctor", "--display-timeout", "allow"],
+            vec!["wardoff", "--display-timeout", "allow", "doctor"],
+            vec!["wardoff", "doctor", "--json", "--display-timeout", "allow"],
+            vec!["wardoff", "--display-timeout", "allow", "doctor", "--json"],
+            vec![
+                "wardoff",
+                "wardoff-diagnostics-probe",
+                "--display-timeout",
+                "allow",
+            ],
+        ] {
+            assert!(
+                WardoffCli::try_parse_from(arguments.iter().copied()).is_err(),
+                "display-timeout should reject {arguments:?}"
+            );
+        }
     }
 }

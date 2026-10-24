@@ -64,6 +64,9 @@ mod session_scope {
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[path = "../src/power_intent.rs"]
+mod power_intent;
+
 struct TestRuntime {
     server: ipc::IpcServer,
     ui_thread: Option<JoinHandle<()>>,
@@ -206,6 +209,10 @@ fn isolated_runtime_rejects_bad_clients_and_recovers() {
     let mut runtime = TestRuntime::start();
     assert_normal_command();
     assert!(matches!(
+        exchange(b"{\"command\":\"set_power_intent\",\"intent\":\"system_only\"}\n"),
+        Ok(ipc::IpcResponse::Ok)
+    ));
+    assert!(matches!(
         exchange(b"{\"command\":\"set_mode\",\"mode\":\"block\"}\r\n"),
         Ok(ipc::IpcResponse::Ok)
     ));
@@ -224,6 +231,10 @@ fn isolated_runtime_rejects_bad_clients_and_recovers() {
         (&b"not JSON\n"[..], "malformed"),
         (&b"\n"[..], "empty"),
         (&b"{\"command\":\"unknown\"}\n"[..], "malformed"),
+        (
+            &b"{\"command\":\"set_power_intent\",\"intent\":\"display_only\"}\n"[..],
+            "malformed",
+        ),
         (&b"\xff\n"[..], "malformed"),
     ] {
         assert_error(payload, expected);

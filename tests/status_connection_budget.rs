@@ -136,6 +136,9 @@ mod session_scope {
 #[path = "../src/ipc.rs"]
 mod ipc;
 
+#[path = "../src/power_intent.rs"]
+mod power_intent;
+
 struct TestRuntime {
     server: ipc::IpcServer,
     ui_thread: Option<JoinHandle<()>>,

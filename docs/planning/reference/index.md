@@ -110,8 +110,8 @@ cost. No adoption or revenue estimate is assumed.
   `7997d84f2c95087ed3c45fa8a29425fc800cc61d` on 2026-10-24; the Git durability
   check passed. This branch push triggered neither CI nor release automation.
 - Active: `RM-reference-003`, started 2026-10-24. Its
-  [implementation plan](power-intent-plan.md) is reviewed; behavior is not
-  implemented yet.
+  [implementation plan](power-intent-plan.md) is reviewed; implementation and
+  acceptance are in progress.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.

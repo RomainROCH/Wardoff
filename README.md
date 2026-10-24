@@ -74,7 +74,7 @@ For why IFEO stays out of the current MVP, see [`docs/IFEO_WARNING.md`](docs/IFE
 
 - **Sleep protection means idle-sleep prevention.** Explicit Sleep or Hibernate, power-button actions and lid closure can still suspend the PC. Wardoff does not block the screen saver or promise to prevent session locking.
 - Windows power policy and request overrides can ignore keep-awake requests. On Modern Standby running on battery, system-required requests expire five minutes after the system sleep timeout expires. See the [power behavior matrix and Microsoft sources](docs/MVP_VALIDATION_MATRIX.md#idle-power-behavior-and-windows-limits).
-- `layers.sleep=true` means Wardoff acquired its system/display request pair; it is not a guarantee that Windows will refuse every power transition.
+- `layers.sleep=true` means Wardoff acquired its selected system/display request set; it is not a guarantee that Windows will refuse every power transition.
 - **Wardoff does not promise to stop `shutdown /t 0 /f`.** A forced zero-second local shutdown is outside what a normal user-space app can reliably block.
 - Windows Update reboot-task protection requires administrator rights.
 - Remote shutdown abort logic only helps when Windows still exposes a timeout window and the process has the rights required for `AbortSystemShutdownW(None)`.
@@ -147,6 +147,8 @@ wardoff --allow
 ```powershell
 wardoff
 wardoff --block
+wardoff --block --display-timeout allow
+wardoff --block --display-timeout prevent
 wardoff --block --hide
 wardoff --hide
 wardoff --allow
@@ -162,6 +164,7 @@ wardoff --version
 
 - `wardoff` starts a new primary runtime in **Block** mode with the tray visible when no primary instance is already running
 - `wardoff --block` switches an existing runtime into Block mode, or starts a new headless Block-mode primary if none is running
+- `wardoff --block --display-timeout allow|prevent` selects the idle-power intent when entering Block; `allow` requests only system idle prevention, while `prevent` requests both system idle and display-timeout prevention
 - `wardoff --block --hide` is accepted and behaves like hidden Block-mode startup when it launches a new primary runtime
 - `wardoff --hide` switches an existing runtime into Block mode, or starts a new Block-mode primary with the tray icon hidden
 - `wardoff --allow` switches the running instance to Allow mode, or starts a visible Allow-mode runtime if needed
@@ -172,6 +175,9 @@ wardoff --version
 - `--tail` accepts 0 through 100000 lines; larger values return a readable error without allocating the requested capacity
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
 - `wardoff --version` prints the package version as `wardoff <version>`
+- Bare `wardoff`, `--block`, `--hide`, and tray Block select the default indefinite system-and-display request pair. With `--display-timeout allow`, Wardoff withdraws its request to keep the display on; it does not switch the display off or override other applications. `--allow` releases Wardoff's requests.
+- `--display-timeout` requires `--block` and cannot be combined with `--hide` or another action. The choice lasts until another mode/intent command or runtime exit; it is not saved for the next launch. Wake restoration retains the selected request set.
+- If the tray is visible while display timeout is allowed, its Block tooltip explains the choice and `Block (keep display on)` restores the full pair. The icon remains red. This uses the existing Block action and adds no persistent setting or physical guarantee.
 - direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
 Read-only commands stay non-elevated:
@@ -216,6 +222,10 @@ that Windows will block a real power transition.
 
 `wardoff doctor --json` returns schema version 1. It separates `runtime`, `context`,
 five `layers`, system/display `power_requests`, `recent_failures` and fixed `limits`.
+The legacy sleep boolean means that the selected power-request set was acquired;
+Doctor reports system and display requests separately. An older runtime that does
+not understand an explicit power intent is rejected with a restart-this-executable
+instruction; Wardoff does not silently fall back to the legacy pair.
 Unknown facts are `null` or explicitly unknown. A legacy runtime keeps its observed
 mode and old layer booleans, with detailed intent and causes left unknown.
 Consumers should tolerate added fields and new reason codes.
