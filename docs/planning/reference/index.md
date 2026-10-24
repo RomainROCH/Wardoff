@@ -43,11 +43,12 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 
 The local baseline has tray/CLI, layered shutdown protection, Power Requests,
 JSONL logs, IPC and autostart. It also has bounded log tails and local validation
-scripts. It does not have the future sessions, timers, doctor, panel or wrapper.
-Fresh remote inspection found `origin/main` at `8c45977`, containing both the
+scripts, read-only Doctor and explicit system-only/full-pair idle-power choices.
+Owned sessions, timers, a session panel and a command wrapper remain planned.
+The 2026-10-23 remote inspection found `origin/main` at `8c45977`, containing both the
 developer tooling (`39aadd2`) and IPC request-bound fix (`6039955`) by exact
 ancestry. PR 6 remains a draft against the older `dev` even though its commits
-are already in main. Slice 001 consolidates that main with this local roadmap;
+are already in main. Slice 001 consolidated that main with this local roadmap;
 it must not recreate those fixes or treat old PR metadata as the integration truth.
 
 The [idle-power record](../../IDLE_POWER_VALIDATION.md) documents eight VM cases
@@ -90,8 +91,8 @@ cost. No adoption or revenue estimate is assumed.
 
 ## Current slice and progress
 
-- Completed: `RM-reference-001` and `RM-reference-002`, accepted locally on
-  2026-10-23 and 2026-10-24 respectively.
+- Completed locally: `RM-reference-001`, `RM-reference-002` and
+  `RM-reference-003`, accepted on 2026-10-23 and 2026-10-24.
 - Tested integration: merge `a44c89a`, portable-linkage fix `5249c17` and smoke
   path-ownership correction `d04df86`.
 - Local Full, clean-Windows CLI startup and desktop smoke passed. Elevated smoke
@@ -109,16 +110,19 @@ cost. No adoption or revenue estimate is assumed.
 - Diagnostic backup: `origin/codex/reference-baseline` was verified at
   `7997d84f2c95087ed3c45fa8a29425fc800cc61d` on 2026-10-24; the Git durability
   check passed. This branch push triggered neither CI nor release automation.
-- Active: `RM-reference-003`, started 2026-10-24. Its
-  [implementation plan](power-intent-plan.md) is reviewed; implementation and
-  acceptance are in progress.
+- Power-intent acceptance: source `fd7691e`, Full checks (140 tests),
+  standard/admin smoke, legacy interoperability, actual tray reversion, Explorer
+  recreation, both real S3 restores and normal Quit passed. Its
+  [acceptance record](power-intent-plan.md#acceptance-2026-10-24) retains exact
+  hashes, failed attempts, cleanup and hardware limits.
+- Next: verify the slice-003 phase backup, then select `RM-reference-004`.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | in-progress | 2/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24) |
+| [Foundations](foundations.md) | complete locally | 3/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24), [003: power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24) |
 | [Work sessions](work-sessions.md) | pending | 0/4 | none |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 

@@ -2,6 +2,25 @@
 
 ## Out-of-scope and unforeseen findings
 
+### 2026-10-24 - M1 acceptance preserves the manual contract
+
+- Status: accepted locally; linked IDs: RM-reference-001, RM-reference-002,
+  RM-reference-003, RM-reference-004 and RM-reference-007.
+- Evidence: [power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24)
+  binds Full checks and desktop/real-S3/tray observations to one source/artifact.
+  Doctor and explicit system-only Block add useful visibility and choice while
+  default indefinite Block retains its system/display pair.
+- Decision: keep the selected sequence. After the verified phase backup, design
+  owned sessions in 004 around independent ownership and expiration; none may
+  cancel or expire manual Block. Keep real-device and Modern Standby gaps for
+  007/009, using existing environments and no purchase.
+- Limits: a first uninstrumented Doctor failure remains retained and unlocalized;
+  subsequent instrumented checks passed after lab recovery. Native startup races
+  and input reliability also required fixture corrections. Reuse ownership checks
+  and explicit readiness before interaction, and distinguish application budgets
+  from synchronous Windows latency. No universal protection or performance
+  leadership claim follows from M1.
+
 ### 2026-10-23 - Desktop validation resolves the startup failure
 
 - Status: baseline accepted locally; linked IDs: RM-reference-001,

@@ -129,6 +129,14 @@ same-binary smoke passed. Cleanup left no Wardoff process, probe, owned harness
 task or autostart task. These inspection checks establish no new physical-power,
 forced-shutdown or hardware coverage.
 
+The [2026-10-24 power-intent acceptance](planning/reference/power-intent-plan.md#acceptance-2026-10-24)
+records source `fd7691e` with Full 140-test checks, standard/admin smoke,
+startup/live intent changes, two legacy runtimes, real tray actions and Explorer
+recreation. Both choices were restored after observed VM S3 suspension before
+user input, with their native request categories checked. Normal tray Quit left
+no Wardoff request; final runtime/task inventory was clear. This adds VM evidence,
+while physical-device idle/display, Hibernate and Modern Standby remain untested.
+
 ## Admin-only checks
 
 Run these in an elevated session when you want manual confidence beyond the automated smoke coverage.

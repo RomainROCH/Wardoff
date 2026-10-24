@@ -29,8 +29,9 @@ The [baseline evidence](docs/planning/reference/baseline-2026-10-23.md) records
 successful local checks, portable startup, elevated and non-elevated desktop
 smoke, and tray checks. Slice 001 is accepted and backed up on the working branch.
 Slice 002 has passed its [diagnostic acceptance](docs/planning/reference/diagnostics-plan.md#acceptance-2026-10-24)
-and verified phase backup. Slice 003 is active with its
-[reviewed power-intent plan](docs/planning/reference/power-intent-plan.md).
+and verified phase backup. Slice 003 passed its
+[power-intent acceptance](docs/planning/reference/power-intent-plan.md#acceptance-2026-10-24).
+Verify its phase backup before selecting owned sessions in slice 004.
 Later features remain planned until their acceptance passes.
 
 ## Current repository status
@@ -46,6 +47,8 @@ The branch already contains a working runtime plus CLI centered on one main prom
 - Layer 3 protection for `\Microsoft\Windows\UpdateOrchestrator\Reboot` when that task exists on the machine
 - Layer 4 best-effort remote shutdown abort polling
 - idle-sleep and automatic display-timeout prevention through Power Requests (no explicit Sleep/Hibernate veto)
+- optional system-only Block allowing the display's normal inactivity timeout;
+  ordinary Block keeps the existing system/display pair
 - tray UI with Block/Allow state and power actions
 - CLI control surface
 - read-only `doctor` explanations and versioned JSON diagnostics

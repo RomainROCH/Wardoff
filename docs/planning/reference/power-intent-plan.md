@@ -1,7 +1,7 @@
 # System and display intent implementation plan
 
-Slice: `RM-reference-003`. Started: 2026-10-24. Status: implementation in progress.
-This is planned behavior until implementation and acceptance are recorded.
+Slice: `RM-reference-003`. Started: 2026-10-24. Status: accepted locally;
+the phase backup is the remaining save checkpoint.
 Plan review accepted the design after clarifying same-mode intent changes and
 legacy rejection checks. The legacy parser's error branch continues its server
 loop despite misleading log wording; verify this with a subsequent valid command.
@@ -188,7 +188,7 @@ with an observed RED before wiring it, and retain the old full-pair/Allow UI.
   `scripts/check.ps1 -Mode Full`, `tests/developer_checks.ps1` and
   `tests/smoke_safety.ps1` for the changed PowerShell suite. Review the exact diff
   before qualifying the source-bound release candidate. Keep logs outside docs.
-- [ ] **6. Accept in the isolated desktop.** Reuse the owned offline VM only
+- [x] **6. Accept in the isolated desktop.** Reuse the owned offline VM only
   after verified absence of Wardoff runtime/tasks; use fresh protected/user
   fixture paths, exact source/binary hashes and owned process/task collectors.
   Test startup and live changes in both intents, repeated flips, bare Block
@@ -235,8 +235,8 @@ smoke (14/14, seven expected skips). The first administrator run passed both
 startup choices and three live flips, then failed a Doctor invocation before a
 bare-Block reversion. Its raw evidence is retained; an instrumented same-binary
 repeat records process durations, exits and bounded-output status. This phase
-is not accepted while that failure remains unexplained. Actual tray, Explorer
-and resume checks remain pending; no physical-device result is implied.
+was not accepted at that checkpoint. The completed follow-up and retained
+uncertainty are recorded below.
 
 A separate repeat reached the harness deadline without entering its interactive
 driver. The lab desktop was locked with an accessibility dialog opened by the
@@ -244,3 +244,58 @@ controller's repeated modifier-key input. That attempt provides no product
 acceptance. The controller now releases keys explicitly and uses pointer input
 only for non-idle diagnostic runs; actual sleep/resume observations use the
 separate passive controller with no input. The original failures remain retained.
+
+## Acceptance, 2026-10-24
+
+Accepted implementation source: `fd7691e2268572716e9731ab4c66b3ec71c9b21c`.
+The exact 0.2.1 artifact and Full-check totals are recorded above. No Rust change
+was made during desktop qualification. Implementation and fixture reviews found
+no remaining blocker in the accepted paths.
+
+The offline Windows 11 IoT Enterprise LTSC evaluation VM ran build 26100 with
+English system output. Runtime checks used signed-in session 1: limited UAC
+token type 3 for the standard run and full UAC token type 2 for the administrator
+run. The VM baseline stayed read-only and its network adapter was disabled.
+
+| Check | Observed result |
+| --- | --- |
+| Standard startup, live choices, default reversions and legacy compatibility | Passed; same-binary smoke 14/14, seven expected skips |
+| Administrator equivalent and native request categories | Passed; same-binary smoke 18/18, three expected skips |
+| Repeated active changes and bare Block, Hide and default-launch reversion | Passed; system-only and full-pair reports matched the selected choice |
+| Two older artifacts reject the new command | Readable restart guidance, unchanged Allow state and subsequent valid legacy Block/Allow passed |
+| Actual tray reversion | Red icon, display-timeout tooltip and enabled `Block (keep display on)` observed; clicking it restored both requests |
+| Explorer recreation | Shell PID changed while Wardoff's PID/path/session/creation identity stayed unchanged; the recreated menu retained its system-only action and worked |
+| Real tray Sleep/resume, system-only | VM suspension observed; before user input, live Block and native SYSTEM=1/DISPLAY=0 entries restored |
+| Real tray Sleep/resume, full pair | VM suspension observed; before user input, live Block and native SYSTEM=1/DISPLAY=1 entries restored |
+| Real tray Quit from system-only | Normal exit 0, owned handle reaped, native SYSTEM=0/DISPLAY=0 entries afterwards |
+| Settings and cleanup | GUI suite passed unchanged power/task snapshots and binary hashes; final inventory found zero fixture runtimes, zero current-run harness tasks and no Wardoff autostart task |
+
+The category counts are visible reason entries, not a measurement of Windows'
+internal reference counts. Fault/count regressions cover the latter at the
+backend boundary. These are VM S3 and API observations; physical display/idle
+effectiveness, real-device S3, Hibernate and Modern Standby remain untested.
+The recorded environment skips and existing forced-shutdown limits remain.
+
+Failed attempts are retained. The original empty Doctor capture lacks a native
+exit/timeout record, so its exact failing phase remains unresolved. The runtime
+remained controllable; later Windows scheduler/process-inspection stalls required
+a lab reboot. The instrumented administrator run then passed the full path.
+The supported timing contract remains an application-wait budget, with no hard
+wall-clock guarantee over synchronous Windows calls.
+
+A separate native failure identified a fixture startup race: status returned
+the documented inactive/exit-1 response just before the owned runtime finished
+starting. Only initial startup now waits for that exact response while the same
+process stays alive. Strict live checks remain; nine inert cases verify startup
+acceptance and immediate rejection of errors, timeouts and exited owners. The
+first GUI run has no completed suite receipt; its individually recorded S3
+observation is retained separately. The later GUI suite completed with native,
+driver and task exits 0, normal Quit and verified task deletion.
+
+Raw successful and failed guest evidence is retained privately as 505 files in
+a verified 276,323-byte archive, SHA-256
+`fc0600bde7ed3268c2b2a70bfdbcf338be358891a9c258258b9fc94c506f139f`.
+Final owned-task/runtime inventory and native request cleanup passed, then guest
+powerdown was observed with both control ports closed. This archive is local
+evidence, not a public support-data export. Save the phase on the authorized
+working branch and verify its remote SHA before starting 004.
