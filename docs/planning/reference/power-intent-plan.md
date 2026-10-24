@@ -177,13 +177,13 @@ with an observed RED before wiring it, and retain the old full-pair/Allow UI.
   existing Block-item enablement/text and tooltip in `src/tray/mod.rs`. Root
   updates main's bootstrap/synchronization arguments. Preserve both fields on
   recreation; add no control. Verify the actual menu action in the VM.
-- [ ] **4. Integrate effects and compatibility.** Root owns `src/blocker/mod.rs`,
+- [x] **4. Integrate effects and compatibility.** Root owns `src/blocker/mod.rs`,
   `src/ipc.rs` and `src/main.rs`. Include the real pure type in standalone IPC
   tests (`tests/ipc_request_limits.rs`, `tests/status_connection_budget.rs` and
   `tests/instance_lifecycle.rs`) where required. Test new request round trips,
   invalid intent rejection and unchanged legacy status bytes. Inspect every
   runtime dispatch, console relaunch and configuration rollback callsite.
-- [ ] **5. Update owners and validate.** Root owns README, architecture, task map,
+- [x] **5. Update owners and validate.** Root owns README, architecture, task map,
   validation matrix and the single smoke reason expectation. Run focused tests,
   `scripts/check.ps1 -Mode Full`, `tests/developer_checks.ps1` and
   `tests/smoke_safety.ps1` for the changed PowerShell suite. Review the exact diff
@@ -222,7 +222,25 @@ and the documentation check passed; static implementation review found no blocke
 Win32 enum values (`DISPLAY=0`, `SYSTEM=1`) differ from the acquired mask's
 system/display order; tests explicitly forbid touching the system count on a flip.
 
-Full checks, source-bound release qualification and Windows acceptance are still
-pending. No physical, Explorer or new tray-interaction result is implied by these
-unit and static checks. The owned offline VM may be reused with fresh fixtures
-after the previous phase's verified runtime/task cleanup.
+Full checks passed on the clean source `fd7691e`: 140 top-level tests, strict
+Clippy, formatting, documentation links, locked compilation and release build.
+Developer checks and the seven inert smoke-safety fixtures also passed. The
+0.2.1 candidate is 2,081,792 bytes with SHA-256
+`5503c9a891d8bbf62c082e3a32de2ad634cb768f5a073c77bdba6dd42e32a39a`.
+
+Windows acceptance is in progress in the owned offline Windows 11 build 26100
+VM. The standard-token interactive run passed startup choices, live changes,
+default reversions, rejection against two legacy artifacts and same-binary
+smoke (14/14, seven expected skips). The first administrator run passed both
+startup choices and three live flips, then failed a Doctor invocation before a
+bare-Block reversion. Its raw evidence is retained; an instrumented same-binary
+repeat records process durations, exits and bounded-output status. This phase
+is not accepted while that failure remains unexplained. Actual tray, Explorer
+and resume checks remain pending; no physical-device result is implied.
+
+A separate repeat reached the harness deadline without entering its interactive
+driver. The lab desktop was locked with an accessibility dialog opened by the
+controller's repeated modifier-key input. That attempt provides no product
+acceptance. The controller now releases keys explicitly and uses pointer input
+only for non-idle diagnostic runs; actual sleep/resume observations use the
+separate passive controller with no input. The original failures remain retained.
