@@ -81,7 +81,7 @@ a remote support service or Windows Event Log dependency.
 
 ### RM-reference-003 System and display intent
 
-Status: done locally. Depends on: RM-reference-002. Priority: P1. Size: M.
+Status: done. Depends on: RM-reference-002. Priority: P1. Size: M.
 
 Goal: protect a background task while letting its display turn off normally.
 
@@ -101,7 +101,7 @@ only on available test environments; never mark missing hardware as a pass.
 Evidence: [source-bound acceptance](power-intent-plan.md#acceptance-2026-10-24):
 Full 140-test checks, standard/admin desktop suites, two legacy artifacts, real
 tray actions, Explorer recreation and S3 restoration of both choices passed.
-The phase backup follows this acceptance. Physical-device gaps remain explicit;
+The phase backup was verified at `88e6345`. Physical-device gaps remain explicit;
 sleep/resume observations used no synthetic input or power-plan rewrite.
 
 ## Session log
@@ -125,3 +125,5 @@ sleep/resume observations used no synthetic input or power-plan rewrite.
 - 2026-10-24: accepted slice 003 from `fd7691e` after Full checks and isolated
   standard/admin, tray, Explorer and both S3-restore checks. Preserved failed
   attempts and hardware limits; select 004 after the verified phase backup.
+- 2026-10-24: verified the slice-003 phase backup at `88e6345` and the Git
+  durability gate, then selected slice 004 for ownership and expiration design.

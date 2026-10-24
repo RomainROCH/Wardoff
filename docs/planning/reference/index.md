@@ -115,15 +115,20 @@ cost. No adoption or revenue estimate is assumed.
   recreation, both real S3 restores and normal Quit passed. Its
   [acceptance record](power-intent-plan.md#acceptance-2026-10-24) retains exact
   hashes, failed attempts, cleanup and hardware limits.
-- Next: verify the slice-003 phase backup, then select `RM-reference-004`.
+- Power-intent backup: `origin/codex/reference-baseline` was verified at
+  `88e63453c6c02d8150b86d9e29aaf842e1fe985d`; the Git durability gate passed.
+  The feature-branch push triggered neither CI nor release. The offline guest
+  was shut down gracefully after archiving and verifying the evidence.
+- Current: `RM-reference-004`, ownership and expiration design in the
+  [session implementation plan](sessions-plan.md).
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
 
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
-| [Foundations](foundations.md) | complete locally | 3/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24), [003: power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24) |
-| [Work sessions](work-sessions.md) | pending | 0/4 | none |
+| [Foundations](foundations.md) | complete and backed up | 3/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24), [003: power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24) |
+| [Work sessions](work-sessions.md) | 004 in progress | 0/4 | [004: implementation plan](sessions-plan.md) |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 
 ## Deferred choices

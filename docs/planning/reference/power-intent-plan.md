@@ -1,7 +1,8 @@
 # System and display intent implementation plan
 
-Slice: `RM-reference-003`. Started: 2026-10-24. Status: accepted locally;
-the phase backup is the remaining save checkpoint.
+Slice: `RM-reference-003`. Started: 2026-10-24. Status: accepted and backed up.
+The branch backup was verified at `88e63453c6c02d8150b86d9e29aaf842e1fe985d`;
+the Git durability gate passed. The push triggered neither CI nor release.
 Plan review accepted the design after clarifying same-mode intent changes and
 legacy rejection checks. The legacy parser's error branch continues its server
 loop despite misleading log wording; verify this with a subsequent valid command.
@@ -201,7 +202,7 @@ with an observed RED before wiring it, and retain the old full-pair/Allow UI.
   distinguish pure/synthetic coverage from an actual transition. Observe actual
   display/idle behavior only where the environment supports it, without input
   that resets the timer. Record unavailable hardware as not tested.
-- [ ] **7. Save the accepted slice.** Record failures, skips, source/artifact
+- [x] **7. Save the accepted slice.** Record failures, skips, source/artifact
   hashes, cleanup and review. Apply existing private-content/metadata gates,
   commit only owned paths, push the existing branch and verify its remote SHA.
   Then select slice 004; do not publish a release or mutate other worktrees.
