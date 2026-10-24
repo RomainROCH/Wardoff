@@ -140,7 +140,8 @@ impl BlockerCoordinator {
         }
     }
 
-    /// Returns the number of shutdown attempts this runtime has actively blocked.
+    /// Returns observed aborts plus session cancellations following a Layer 1 refusal.
+    /// This is not a count of unique attempts or proof that Wardoff alone caused cancellation.
     pub fn blocked_count(&self) -> u64 {
         BLOCKED_EVENT_COUNT.load(Ordering::Relaxed)
     }

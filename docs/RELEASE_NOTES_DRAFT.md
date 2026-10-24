@@ -1,10 +1,63 @@
 # Wardoff v0.2.1
 
-The tag workflow prepares a draft only after validation; a maintainer reviews
-the exact candidate and publishes it separately.
+> Integration preparation, not a qualified download. No new tag or public release
+> is created by this checkpoint. Cargo and the manifest retain the existing
+> development versions `0.2.1` / `0.2.1.0`.
+
+The tag workflow can prepare a draft only after its required validation. These
+notes do not establish that such a draft or a matching qualified binary exists.
+
+## Integration checkpoint: 23 October 2026
+
+The source base is `main` at `8c459778b4fc726ef6b62d03e150adfcbbac3eda`,
+plus the reviewed session-end diagnostic correction
+`82a78cd3062061f78cf822d628e5becd15679061`. This preparation adds the MSVC
+static-CRT target configuration already reviewed in `180cdfa`, without rebuilding
+or changing the Rust sources. It preserves the newer main-line status connection
+budget, shutdown wake-up fix, runtime policy and release/developer checks.
+
+The separate branch ending at `8e55940` descends from the older `dev` base
+`465c24e`. Replacing main with that snapshot would discard later main-line work.
+Its connected status-reply bounds and isolated smoke harness remain separate
+integration inputs; they are not implicitly included or validated here. Existing
+main control-request bounds do not need to be implemented again. PR #6 remains
+a distinct draft, as does PR #10's diagnostic tracing. PR #14's developer fixture
+correction remains separate from this source checkpoint.
+
+| Existing evidence | Exact scope | What it does not qualify |
+| --- | --- | --- |
+| 13 synthetic Layer 1 tests, formatting and docs passed on 21 October | `82a78cd`; refusal versus reported session outcome, parameters and unchanged cleanup guards | Windows Update reboot prevention, native session-end delivery, or a binary built with this new target configuration |
+| Offline MSVC build and import inspection | `183d798`, version `0.2.0`; 1,925,632 bytes; SHA256 `534db29520b902e602cd80d9b39c4fd768f464e329e33b9365aaa901c85feb60` | This main-based `0.2.1` candidate or its session diagnostic correction |
+| Native disposable-VM run followed by a targeted autostart run | Same `183d798` bytes: 16/19 counted smoke checks passed, three failed and three additional skips; separate autostart creation/identity/removal/cleanup passed with comparator `da4ab5d` | One wholly passing full smoke, actual logon execution, the skipped non-elevated paths, a present Layer 3 Reboot task, or physical power transitions |
+
+The targeted autostart driver also retained two logging errors from its missing
+isolated local-appdata directory. Its successful task lifecycle does not qualify
+that logging path. The VM evidence is retained separately and is not rerun or
+promoted to hardware acceptance by this reconciliation.
+
+Before integration/release, the exact assembled source/tree still needs its
+applicable safe checks and matching CI, then an exact MSVC binary with verified
+version, manifest, imports, SHA256 and package. Native/manual acceptance must be
+bound to those bytes and the chosen release scope; the existing VM results do
+not transfer automatically. The `82a78cd` branch had no check runs when inspected
+on 23 October. PR #14's successful historical run tested a synthetic merge checkout
+`0838ac14`, not this source or the portable candidate.
+
+The `ci/explicit-validation-gates` proposal is also separate from main. Its
+`assert-qualification.ps1` always fails closed and declares the authenticated
+run/artifact importer `NOT_IMPLEMENTED`; completing tests alone cannot clear it.
+This checkpoint neither merges that proposal nor bypasses the existing main
+release provenance checks. No candidate binary or package is qualified here.
 
 ## Changes since v0.2.0
 
+- Distinguish a Layer 1 refusal from a reported cancellation. Count only a
+  same-window `WM_ENDSESSION(FALSE)` following a refusal; a session ending despite
+  refusal is not counted. Preserve both messages' parameters and stop attributing
+  cleanup to an unproven human action. This corrects diagnostics, not demonstrated
+  Windows Update reboot prevention.
+- Request static MSVC CRT linkage. The new main-based binary still needs build,
+  dependency and clean-environment startup verification.
 - Bound each newline-terminated control request to 4096 wire bytes and one total
   second. Malformed, oversized, incomplete and disconnected clients cannot hold
   the control reader indefinitely; status remains independently available.
@@ -36,7 +89,7 @@ the exact candidate and publishes it separately.
 
 ## Validation and limits
 
-The draft includes `build-info.json` and `SHA256SUMS.txt` for its exact unsigned
+An eventual qualified draft must include `build-info.json` and `SHA256SUMS.txt` for its exact unsigned
 MSVC binary and the Windows workflow run. Review the run and its explicit smoke
 skips before publishing. A green run on another commit is not release evidence.
 
