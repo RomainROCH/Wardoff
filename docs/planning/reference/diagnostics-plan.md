@@ -278,6 +278,18 @@ Cross-token and autostart-identity acceptance are also still pending. Private
 drivers, raw outputs, source/binary hashes and failed attempts are retained in the
 phase's isolated lab evidence; fixture parsing alone is not runtime acceptance.
 
+The subsequent release from `0413065` passed the Full checks (122 tests), all
+Doctor desktop cases in both token contexts, and normal-token smoke (14/14,
+seven skips). Autostart acceptance then exposed a separate identity-comparison
+defect: registration's existing current-user helper returns an account name,
+while inspection compared it directly with a resolved SID. The new native
+regression failed on that comparison. Normalize both identities to SIDs before
+comparison; do not change registration, task permissions or elevation. The final
+candidate must repeat desktop, autostart and cross-token acceptance after this
+fix. The interrupted control connection was traced to the VM's automatic sleep;
+the controller now keeps only the test desktop active during diagnostics,
+without modifying its power plan. These are not physical idle-power tests.
+
 An abandoned COM thread is insufficient for a reliable timeout: Windows documents
 a possible DLL-detach deadlock when process exit encounters locks held by another
 thread. This motivates the owned temporary process rather than changing the

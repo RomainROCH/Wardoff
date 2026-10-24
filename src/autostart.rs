@@ -114,7 +114,7 @@ fn task_matches_current_executable(
     task: &IRegisteredTask,
     executable: &str,
     directory: &str,
-    user_sid: &str,
+    user_id: &str,
 ) -> WindowsResult<bool> {
     unsafe {
         let definition = task.Definition()?;
@@ -157,8 +157,16 @@ fn task_matches_current_executable(
         let principal_sid = principal_sid(&principal_user.to_string());
         Ok(logon == TASK_LOGON_INTERACTIVE_TOKEN
             && run_level == TASK_RUNLEVEL_HIGHEST
-            && principal_sid.is_some_and(|sid| sid.eq_ignore_ascii_case(user_sid)))
+            && principal_sid_matches_user(principal_sid.as_deref(), user_id))
     }
+}
+
+fn principal_sid_matches_user(principal_sid_value: Option<&str>, user_id: &str) -> bool {
+    let Some(principal_sid_value) = principal_sid_value else {
+        return false;
+    };
+    let expected_sid = principal_sid(user_id);
+    expected_sid.is_some_and(|sid| principal_sid_value.eq_ignore_ascii_case(&sid))
 }
 
 fn principal_sid(principal: &str) -> Option<String> {
@@ -1011,5 +1019,31 @@ mod tests {
             "read the test executable",
         )
         .expect("evaluate file access with the identification-level token"));
+    }
+
+    #[test]
+    fn principal_sid_and_account_name_resolve_to_the_same_current_user() {
+        let account = current_user_id().expect("resolve current token account identity");
+        let sid = principal_sid(&account).expect("resolve current token account SID");
+
+        assert!(principal_sid_matches_user(Some(&sid), &account));
+        assert!(principal_sid_matches_user(Some(&sid), &sid));
+        assert!(principal_sid_matches_user(
+            principal_sid(&account).as_deref(),
+            &account
+        ));
+        assert!(!principal_sid_matches_user(None, &account));
+        assert!(!principal_sid_matches_user(
+            Some(&sid),
+            "Wardoff-Definitely-No-Such-Account"
+        ));
+        assert!(!principal_sid_matches_user(
+            Some("S-1-5-21-111-222-333-9999"),
+            &account
+        ));
+        assert!(!principal_sid_matches_user(
+            principal_sid("Wardoff-Definitely-No-Such-Account").as_deref(),
+            &account
+        ));
     }
 }
