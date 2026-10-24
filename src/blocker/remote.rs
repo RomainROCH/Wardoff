@@ -1,31 +1,32 @@
 use crate::blocker::abort::{abort_pending_shutdown, ShutdownAbortOutcome};
+use crate::blocker::observation::SharedObservation;
+use crate::diagnostics::Observation;
 use crate::logger::{self, EventSource};
 use log::{error, info, warn};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    Arc,
-};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 const LAYER4_THREAD_NAME: &str = "wardoff-layer4-remote-shutdown";
 
 /// Coordinates Layer 4 remote shutdown abort polling.
+#[derive(Default)]
 pub struct RemoteShutdownBlocker {
     worker: Option<RemoteShutdownWorker>,
-    active_state: Arc<AtomicBool>,
+    active_state: SharedObservation,
 }
 
 impl RemoteShutdownBlocker {
     /// Starts Layer 4 remote-shutdown polling if it is not already active.
     pub fn activate(&mut self) -> Result<(), String> {
+        self.cleanup_finished_worker();
         if self.worker.is_some() {
             return Ok(());
         }
+        self.active_state.set(Observation::Starting);
 
         let (stop_tx, stop_rx) = mpsc::channel();
-        let active_state = Arc::clone(&self.active_state);
+        let active_state = self.active_state.clone();
 
         match thread::Builder::new()
             .name(LAYER4_THREAD_NAME.to_string())
@@ -38,9 +39,12 @@ impl RemoteShutdownBlocker {
                 });
                 Ok(())
             }
-            Err(error) => Err(format!(
-                "Layer 4 could not start its polling thread: {error}"
-            )),
+            Err(error) => {
+                self.active_state.set(Observation::ActivationFailed);
+                Err(format!(
+                    "Layer 4 could not start its polling thread: {error}"
+                ))
+            }
         }
     }
 
@@ -63,37 +67,45 @@ impl RemoteShutdownBlocker {
                 );
             }
         }
+        self.active_state.set(Observation::Inactive);
     }
 
     /// Requests Layer 4 shutdown polling to stop without blocking on thread join.
     pub(crate) fn begin_forced_shutdown_cleanup(&mut self) {
         let Some(worker) = self.worker.take() else {
+            self.active_state.set(Observation::Inactive);
             return;
         };
-
-        self.active_state.store(false, Ordering::Release);
+        self.active_state.set(Observation::Inactive);
         let _ = worker.stop_tx.send(());
         self.worker = Some(worker);
     }
 
     /// Returns whether Layer 4 is currently polling for remote shutdowns.
-    pub fn is_active(&self) -> bool {
-        self.active_state.load(Ordering::Acquire)
+    pub(crate) fn observation(&self) -> Observation {
+        self.active_state.get()
+    }
+
+    fn cleanup_finished_worker(&mut self) {
+        let should_join = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.join_handle.as_ref())
+            .is_some_and(JoinHandle::is_finished);
+        if !should_join {
+            return;
+        }
+        if let Some(mut worker) = self.worker.take() {
+            if let Some(join_handle) = worker.join_handle.take() {
+                let _ = join_handle.join();
+            }
+        }
     }
 }
 
 impl Drop for RemoteShutdownBlocker {
     fn drop(&mut self) {
         self.deactivate();
-    }
-}
-
-impl Default for RemoteShutdownBlocker {
-    fn default() -> Self {
-        Self {
-            worker: None,
-            active_state: Arc::new(AtomicBool::new(false)),
-        }
     }
 }
 
@@ -107,27 +119,31 @@ struct RemoteShutdownWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
-struct ActiveStateGuard(Arc<AtomicBool>);
+struct ActiveStateGuard(SharedObservation);
 
 impl ActiveStateGuard {
-    fn activate(active_state: Arc<AtomicBool>) -> Self {
-        active_state.store(true, Ordering::Release);
+    fn new(active_state: SharedObservation) -> Self {
         Self(active_state)
     }
 }
 
 impl Drop for ActiveStateGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.finish_worker(Observation::MonitoringFailed);
     }
 }
 
-fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
-    if !poll_remote_shutdown() {
+fn run_worker(active_state: SharedObservation, stop_rx: Receiver<()>) {
+    let _active_guard = ActiveStateGuard::new(active_state.clone());
+    if let Err(observation) = poll_remote_shutdown_observation() {
+        active_state.set(match observation {
+            Observation::MonitoringFailed => Observation::ActivationFailed,
+            other => other,
+        });
         return;
     }
 
-    let _active_guard = ActiveStateGuard::activate(active_state);
+    active_state.set(Observation::Active);
     info!(
         "Layer 4 remote shutdown polling is active and will call AbortSystemShutdownW(None) every {} ms while Block mode is active.",
         remote_abort_interval().as_millis()
@@ -147,7 +163,8 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
         match stop_rx.recv_timeout(remote_abort_interval()) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {
-                if !poll_remote_shutdown() {
+                if let Err(observation) = poll_remote_shutdown_observation() {
+                    active_state.set(observation);
                     stopped_cleanly = false;
                     break;
                 }
@@ -156,6 +173,7 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     }
 
     if stopped_cleanly {
+        active_state.set(Observation::Inactive);
         logger::log_event(
             "remote_layer_disabled",
             EventSource::Remote,
@@ -165,7 +183,7 @@ fn run_worker(active_state: Arc<AtomicBool>, stop_rx: Receiver<()>) {
     }
 }
 
-fn poll_remote_shutdown() -> bool {
+fn poll_remote_shutdown_observation() -> Result<(), Observation> {
     match abort_pending_shutdown() {
         ShutdownAbortOutcome::Aborted => {
             super::record_blocked_event();
@@ -176,9 +194,9 @@ fn poll_remote_shutdown() -> bool {
                 "Layer 4 called AbortSystemShutdownW(None) and aborted a pending remote shutdown.",
                 true,
             );
-            true
+            Ok(())
         }
-        ShutdownAbortOutcome::NoShutdownPending => true,
+        ShutdownAbortOutcome::NoShutdownPending => Ok(()),
         ShutdownAbortOutcome::AccessDenied { details } => {
             warn!(
                 "Layer 4 could not call AbortSystemShutdownW(None) because this process lacks the required shutdown privilege; skipping Layer 4 remote shutdown protection: {details}"
@@ -191,7 +209,7 @@ fn poll_remote_shutdown() -> bool {
                 ),
                 false,
             );
-            false
+            Err(Observation::ElevationRequired)
         }
         ShutdownAbortOutcome::Failed { details } => {
             warn!(
@@ -205,7 +223,7 @@ fn poll_remote_shutdown() -> bool {
                 ),
                 false,
             );
-            false
+            Err(Observation::MonitoringFailed)
         }
     }
 }

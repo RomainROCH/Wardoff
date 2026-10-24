@@ -1,8 +1,9 @@
+use crate::blocker::observation::SharedObservation;
+use crate::diagnostics::{Observation, TaskPresence};
 use crate::logger::{self, EventSource};
 use crate::windows_util::is_process_elevated;
 use log::{error, info, warn};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, RecvTimeoutError, Sender},
     Arc, Mutex,
 };
@@ -30,16 +31,18 @@ const LAYER3_THREAD_NAME: &str = "wardoff-layer3-update-reboot";
 /// Coordinates Layer 3 protection for the UpdateOrchestrator reboot task.
 pub struct UpdateRebootBlocker {
     worker: Option<UpdateRebootWorker>,
-    active_state: Arc<AtomicBool>,
+    active_state: SharedObservation,
     restore_state: Arc<Mutex<RestoreState>>,
 }
 
 impl UpdateRebootBlocker {
     /// Starts Layer 3 protection if it is not already active.
     pub fn activate(&mut self) -> Result<(), String> {
+        self.cleanup_finished_worker();
         if self.worker.is_some() {
             return Ok(());
         }
+        self.active_state.set(Observation::Starting);
 
         if let Ok(mut restore_state) = self.restore_state.lock() {
             *restore_state = RestoreState::default();
@@ -48,6 +51,7 @@ impl UpdateRebootBlocker {
         match is_process_elevated() {
             Ok(true) => {}
             Ok(false) => {
+                self.active_state.set(Observation::ElevationRequired);
                 warn!(
                     "Layer 3 requires administrator rights; skipping UpdateOrchestrator reboot-task protection."
                 );
@@ -62,6 +66,7 @@ impl UpdateRebootBlocker {
                 return Ok(());
             }
             Err(error) => {
+                self.active_state.set(Observation::ElevationUnknown);
                 warn!(
                     "Layer 3 could not determine whether the process is elevated: {error}. Skipping UpdateOrchestrator reboot-task protection."
                 );
@@ -78,7 +83,7 @@ impl UpdateRebootBlocker {
         }
 
         let (stop_tx, stop_rx) = mpsc::channel();
-        let active_state = Arc::clone(&self.active_state);
+        let active_state = self.active_state.clone();
         let restore_state = Arc::clone(&self.restore_state);
 
         match thread::Builder::new()
@@ -92,9 +97,12 @@ impl UpdateRebootBlocker {
                 });
                 Ok(())
             }
-            Err(error) => Err(format!(
-                "Layer 3 could not start its polling thread: {error}"
-            )),
+            Err(error) => {
+                self.active_state.set(Observation::ActivationFailed);
+                Err(format!(
+                    "Layer 3 could not start its polling thread: {error}"
+                ))
+            }
         }
     }
 
@@ -117,22 +125,39 @@ impl UpdateRebootBlocker {
                 );
             }
         }
+        self.active_state.set(Observation::Inactive);
     }
 
     /// Requests Layer 3 cleanup immediately without waiting for its polling thread to join.
     pub(crate) fn begin_forced_shutdown_cleanup(&mut self) {
         let Some(worker) = self.worker.take() else {
+            self.active_state.set(Observation::Inactive);
             return;
         };
-
-        self.active_state.store(false, Ordering::Release);
+        self.active_state.set(Observation::Inactive);
         let _ = worker.stop_tx.send(());
         self.worker = Some(worker);
     }
 
     /// Returns whether Layer 3 is currently monitoring UpdateOrchestrator.
-    pub fn is_active(&self) -> bool {
-        self.active_state.load(Ordering::Acquire)
+    pub(crate) fn observation(&self) -> Observation {
+        self.active_state.get()
+    }
+
+    fn cleanup_finished_worker(&mut self) {
+        let should_join = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.join_handle.as_ref())
+            .is_some_and(JoinHandle::is_finished);
+        if !should_join {
+            return;
+        }
+        if let Some(mut worker) = self.worker.take() {
+            if let Some(join_handle) = worker.join_handle.take() {
+                let _ = join_handle.join();
+            }
+        }
     }
 }
 
@@ -146,7 +171,7 @@ impl Default for UpdateRebootBlocker {
     fn default() -> Self {
         Self {
             worker: None,
-            active_state: Arc::new(AtomicBool::new(false)),
+            active_state: SharedObservation::default(),
             restore_state: Arc::new(Mutex::new(RestoreState::default())),
         }
     }
@@ -175,6 +200,21 @@ pub fn open_update_orchestrator_folder() -> WindowsResult<ITaskFolder> {
     unsafe { task_service.GetFolder(&folder_path) }
 }
 
+/// Performs a read-only reboot-task lookup in a temporary COM apartment.
+///
+/// The caller need not initialize COM; this function owns the apartment for
+/// the duration of the lookup and reports access/COM failures as `Unknown`.
+pub(crate) fn reboot_task_presence() -> TaskPresence {
+    let Ok(_com_apartment) = ComApartmentGuard::initialize() else {
+        return TaskPresence::Unknown;
+    };
+    match lookup_reboot_task() {
+        Ok(RebootTaskLookup::Task(_)) => TaskPresence::Present,
+        Ok(RebootTaskLookup::MissingFolder | RebootTaskLookup::MissingTask) => TaskPresence::Absent,
+        Err(_) => TaskPresence::Unknown,
+    }
+}
+
 /// Returns the interval used to re-check the reboot task state while blocking is active.
 pub fn recheck_interval() -> Duration {
     Duration::from_secs(5 * 60)
@@ -185,18 +225,17 @@ struct UpdateRebootWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
-struct ActiveStateGuard(Arc<AtomicBool>);
+struct ActiveStateGuard(SharedObservation);
 
 impl ActiveStateGuard {
-    fn activate(active_state: Arc<AtomicBool>) -> Self {
-        active_state.store(true, Ordering::Release);
+    fn new(active_state: SharedObservation) -> Self {
         Self(active_state)
     }
 }
 
 impl Drop for ActiveStateGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.finish_worker(Observation::MonitoringFailed);
     }
 }
 
@@ -230,13 +269,15 @@ impl Drop for ComApartmentGuard {
 }
 
 fn run_worker(
-    active_state: Arc<AtomicBool>,
+    active_state: SharedObservation,
     restore_state: Arc<Mutex<RestoreState>>,
     stop_rx: Receiver<()>,
 ) {
+    let _active_guard = ActiveStateGuard::new(active_state.clone());
     let _com_apartment = match ComApartmentGuard::initialize() {
         Ok(guard) => guard,
         Err(error) => {
+            active_state.set(Observation::ActivationFailed);
             warn!(
                 "Layer 3 could not initialize the COM apartment for Task Scheduler access: {error}. Skipping UpdateOrchestrator reboot-task protection."
             );
@@ -266,8 +307,12 @@ fn run_worker(
                 true,
             );
         }
-        Ok(false) => return,
+        Ok(false) => {
+            active_state.set(Observation::TaskAbsent);
+            return;
+        }
         Err(error) if is_access_denied_error(&error) => {
+            active_state.set(Observation::ElevationRequired);
             warn!(
                 "Layer 3 could not access scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Skipping UpdateOrchestrator reboot-task protection."
             );
@@ -282,6 +327,7 @@ fn run_worker(
             return;
         }
         Err(error) => {
+            active_state.set(Observation::ActivationFailed);
             warn!(
                 "Layer 3 could not query scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Skipping UpdateOrchestrator reboot-task protection."
             );
@@ -297,7 +343,7 @@ fn run_worker(
         }
     }
 
-    let active_guard = ActiveStateGuard::activate(active_state);
+    active_state.set(Observation::Active);
     let mut stopped_cleanly = true;
     loop {
         match stop_rx.recv_timeout(recheck_interval()) {
@@ -305,8 +351,13 @@ fn run_worker(
             Err(RecvTimeoutError::Timeout) => {
                 match with_restore_state(&restore_state, ensure_reboot_task_disabled) {
                     Ok(true) => {}
-                    Ok(false) => break,
+                    Ok(false) => {
+                        active_state.set(Observation::TaskAbsent);
+                        stopped_cleanly = false;
+                        break;
+                    }
                     Err(error) if is_access_denied_error(&error) => {
+                        active_state.set(Observation::MonitoringFailed);
                         warn!(
                             "Layer 3 lost access to scheduled task {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}. Stopping Layer 3 polling."
                         );
@@ -322,6 +373,7 @@ fn run_worker(
                         break;
                     }
                     Err(error) => {
+                        active_state.set(Observation::MonitoringFailed);
                         warn!(
                             "Layer 3 polling stopped after a Task Scheduler error for {UPDATE_ORCHESTRATOR_REBOOT_TASK_PATH}: {error}"
                         );
@@ -341,7 +393,10 @@ fn run_worker(
         }
     }
 
-    drop(active_guard);
+    if stopped_cleanly {
+        active_state.set(Observation::Inactive);
+    }
+    drop(_active_guard);
     restore_task_if_needed(&restore_state_snapshot(&restore_state));
 
     if stopped_cleanly {

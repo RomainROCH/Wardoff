@@ -73,7 +73,10 @@ pub(crate) fn runtime_options_for(action: RequestedAction) -> RuntimeOptions {
         RequestedAction::Autostart { .. } => {
             unreachable!("autostart changes do not start the primary runtime")
         }
-        RequestedAction::Status | RequestedAction::Log { .. } => {
+        RequestedAction::Status
+        | RequestedAction::Log { .. }
+        | RequestedAction::Doctor { .. }
+        | RequestedAction::DiagnosticsProbe => {
             unreachable!("read-only CLI actions never start the runtime")
         }
     }
@@ -91,7 +94,10 @@ pub(crate) fn ipc_request_for(action: RequestedAction) -> IpcRequest {
             mode: PipeMode::Allow,
         },
         RequestedAction::Autostart { enabled } => IpcRequest::SetAutostart { enabled },
-        RequestedAction::Status | RequestedAction::Log { .. } => {
+        RequestedAction::Status
+        | RequestedAction::Log { .. }
+        | RequestedAction::Doctor { .. }
+        | RequestedAction::DiagnosticsProbe => {
             unreachable!("read-only CLI actions do not use the control IPC request helper")
         }
     }

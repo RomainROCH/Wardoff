@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE,
-    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_PATH_NOT_FOUND,
-    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WPARAM,
+    ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_NO_DATA,
+    ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LPARAM, WPARAM,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -39,8 +39,9 @@ use windows::Win32::Storage::FileSystem::{
     PIPE_ACCESS_OUTBOUND,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, SetNamedPipeHandleState, PIPE_NOWAIT, PIPE_READMODE_BYTE,
-    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, PeekNamedPipe, SetNamedPipeHandleState, PIPE_NOWAIT,
+    PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE,
+    PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
@@ -442,6 +443,61 @@ pub(crate) fn read_status(connect_deadline: Option<Instant>) -> Result<StatusOut
             "Wardoff received malformed status JSON from {status_pipe_path}: {error}"
         ))
     })
+}
+
+/// Doctor alone bounds the complete reply read, without a legacy control fallback.
+pub(crate) fn read_diagnostic_status(deadline: Instant) -> Result<StatusOutput, ClientError> {
+    if Instant::now() >= deadline {
+        return Err(ClientError::Transport(
+            "Diagnostic inspection timed out.".into(),
+        ));
+    }
+    let path = current_status_pipe_path().map_err(ClientError::Transport)?;
+    let pipe = connect_status_pipe(&path, Some(deadline))?;
+    read_bounded_status(&pipe, deadline).map_err(ClientError::Transport)
+}
+
+fn read_bounded_status(pipe: &File, deadline: Instant) -> Result<StatusOutput, String> {
+    const MAX_REPLY_BYTES: usize = 64 * 1024;
+    let handle = HANDLE(pipe.as_raw_handle());
+    let mut reply = Vec::new();
+    loop {
+        if Instant::now() >= deadline {
+            return Err("Diagnostic inspection timed out.".into());
+        }
+        let mut available = 0;
+        unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut available), None) }
+            .map_err(|_| "The diagnostic status reply ended before its newline.".to_string())?;
+        if available == 0 {
+            thread::sleep(
+                Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+            );
+            continue;
+        }
+        let mut buffer = [0u8; 1024];
+        let count = buffer
+            .len()
+            .min(available as usize)
+            .min(MAX_REPLY_BYTES - reply.len());
+        let mut read = 0;
+        let result = unsafe { ReadFile(handle, Some(&mut buffer[..count]), Some(&mut read), None) };
+        if result.is_err() && unsafe { GetLastError() } != ERROR_MORE_DATA {
+            return Err("The diagnostic status reply could not be read.".into());
+        }
+        if read == 0 {
+            return Err("The diagnostic status reply is incomplete.".into());
+        }
+        let chunk = &buffer[..read as usize];
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        reply.extend_from_slice(&chunk[..newline.map_or(chunk.len(), |offset| offset + 1)]);
+        if newline.is_some() {
+            return serde_json::from_slice(&reply)
+                .map_err(|_| "The diagnostic status reply contains invalid JSON or UTF-8.".into());
+        }
+        if reply.len() == MAX_REPLY_BYTES {
+            return Err("The diagnostic status reply exceeds 64 KiB.".into());
+        }
+    }
 }
 
 impl From<PipeMode> for BlockerMode {
@@ -1127,8 +1183,8 @@ fn write_response(pipe: &mut File, response: &IpcResponse) -> Result<(), String>
 }
 
 fn write_status_output(pipe: &mut File, status: &StatusOutput) -> Result<(), String> {
-    let payload = status
-        .to_json()
+    // The pipe may carry the optional snapshot; legacy CLI output omits it.
+    let payload = serde_json::to_string(status)
         .map_err(|error| format!("Wardoff could not serialize a status reply: {error}"))?;
 
     pipe.write_all(payload.as_bytes())

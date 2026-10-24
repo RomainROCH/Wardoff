@@ -1,6 +1,7 @@
 use crate::blocker::{BlockerMode, LayerStatus};
+use crate::diagnostics::{RuntimeMode, RuntimeSnapshot};
 use crate::logger;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 /// Describes the high-level action requested through the Wardoff CLI.
@@ -20,12 +21,19 @@ pub enum RequestedAction {
     Autostart { enabled: bool },
     /// Prints the newest structured log lines without starting the runtime.
     Log { tail: usize },
+    /// Explains observed protection without starting or elevating the runtime.
+    Doctor { json: bool },
+    /// Runs only the bounded, read-only local inspection child.
+    DiagnosticsProbe,
 }
 
 impl RequestedAction {
     /// Returns whether this action is a read-only CLI path that must stay non-elevating.
     pub fn is_read_only(self) -> bool {
-        matches!(self, Self::Status | Self::Log { .. })
+        matches!(
+            self,
+            Self::Status | Self::Log { .. } | Self::Doctor { .. } | Self::DiagnosticsProbe
+        )
     }
 }
 
@@ -35,15 +43,30 @@ enum CliAutostartState {
     Off,
 }
 
+#[derive(Debug, Subcommand)]
+enum ReadOnlyCommand {
+    /// Explains protection intent, observed activity and Windows limits.
+    Doctor {
+        /// Prints the versioned diagnostic report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(name = "wardoff-diagnostics-probe", hide = true)]
+    DiagnosticsProbe,
+}
+
 /// Defines the MVP command-line switches supported by Wardoff.
 #[derive(Debug, Parser)]
 #[command(
     name = "wardoff",
     author = "Romain ROCH",
     version = env!("CARGO_PKG_VERSION"),
+    args_conflicts_with_subcommands = true,
     about = "Open-source Windows shutdown/reboot protection and idle-sleep prevention"
 )]
 pub struct WardoffCli {
+    #[command(subcommand)]
+    command: Option<ReadOnlyCommand>,
     /// Enables blocking mode for the current session without showing a tray icon.
     #[arg(long, conflicts_with_all = ["allow", "status", "autostart", "log"])]
     block: bool,
@@ -106,6 +129,21 @@ pub struct StatusOutput {
     uptime_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     blocked_count: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_snapshot"
+    )]
+    diagnostics: Option<RuntimeSnapshot>,
+}
+
+// Future or malformed extensions must not hide an otherwise readable legacy reply.
+fn deserialize_snapshot<'de, D>(deserializer: D) -> Result<Option<RuntimeSnapshot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// Parses the current process arguments into the Wardoff CLI model.
@@ -116,6 +154,12 @@ pub fn parse_cli() -> WardoffCli {
 impl WardoffCli {
     /// Resolves the requested action from the parsed MVP CLI flags.
     pub fn requested_action(&self) -> RequestedAction {
+        if let Some(command) = &self.command {
+            return match command {
+                ReadOnlyCommand::Doctor { json } => RequestedAction::Doctor { json: *json },
+                ReadOnlyCommand::DiagnosticsProbe => RequestedAction::DiagnosticsProbe,
+            };
+        }
         if self.allow {
             RequestedAction::Allow
         } else if self.status {
@@ -161,6 +205,7 @@ impl StatusOutput {
             layers: Some(layers),
             uptime_seconds: Some(uptime_seconds),
             blocked_count: Some(blocked_count),
+            diagnostics: None,
         }
     }
 
@@ -171,12 +216,35 @@ impl StatusOutput {
             layers: None,
             uptime_seconds: None,
             blocked_count: None,
+            diagnostics: None,
         }
     }
 
     /// Serializes the status payload into compact JSON for scripting scenarios.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
+        let mut legacy = self.clone();
+        legacy.diagnostics = None;
+        serde_json::to_string(&legacy)
+    }
+
+    pub(crate) fn with_diagnostics(mut self, snapshot: RuntimeSnapshot) -> Self {
+        self.diagnostics = Some(snapshot);
+        self
+    }
+
+    pub(crate) fn diagnostic_input(
+        self,
+    ) -> (RuntimeMode, Option<[bool; 5]>, Option<RuntimeSnapshot>) {
+        let mode = match self.state {
+            StatusState::Inactive => RuntimeMode::Inactive,
+            StatusState::Block => RuntimeMode::Block,
+            StatusState::Allow => RuntimeMode::Allow,
+        };
+        (
+            mode,
+            self.layers.map(LayerStatus::api_values),
+            self.diagnostics,
+        )
     }
 }
 
@@ -193,6 +261,80 @@ impl From<BlockerMode> for StatusState {
 mod tests {
     use super::{RequestedAction, WardoffCli};
     use clap::{error::ErrorKind, Parser};
+
+    #[test]
+    fn legacy_status_bytes_are_unchanged_with_an_internal_snapshot() {
+        use crate::blocker::{BlockerMode, LayerStatus};
+        use crate::diagnostics::{
+            LayerSnapshot, Observation, PowerRequests, RequestObservation, RuntimeSnapshot,
+            LAYER_IDS,
+        };
+        let expected = r#"{"state":"block","layers":{"shutdown":false,"local_shutdown":false,"update":false,"remote":false,"sleep":false},"uptime_seconds":42,"blocked_count":3}"#;
+        let status = super::StatusOutput::active(BlockerMode::Block, LayerStatus::default(), 42, 3);
+        assert_eq!(status.to_json().unwrap(), expected);
+        let request = RequestObservation {
+            requested: Some(true),
+            api_active: Some(false),
+        };
+        let status = status.with_diagnostics(RuntimeSnapshot {
+            schema_version: 1,
+            elevated: Some(false),
+            manual_indefinite: true,
+            pending_wake_restore: false,
+            last_transition_failure: None,
+            layers: LAYER_IDS
+                .into_iter()
+                .map(|id| LayerSnapshot {
+                    id,
+                    observation: Observation::Starting,
+                })
+                .collect(),
+            power_requests: PowerRequests {
+                system: request.clone(),
+                display: request,
+            },
+        });
+        assert_eq!(status.to_json().unwrap(), expected);
+        assert!(serde_json::to_value(&status)
+            .unwrap()
+            .get("diagnostics")
+            .is_some());
+        assert_eq!(
+            super::StatusOutput::inactive().to_json().unwrap(),
+            r#"{"state":"inactive"}"#
+        );
+        let parsed: super::StatusOutput =
+            serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+        assert!(parsed.diagnostic_input().2.is_some());
+    }
+
+    #[test]
+    fn unknown_or_malformed_snapshot_keeps_legacy_status_readable() {
+        for extension in [
+            r#"{"schema_version":99,"new_field":true}"#,
+            r#"{"layers":null}"#,
+            "null",
+            "123",
+        ] {
+            let input = format!(r#"{{"state":"allow","diagnostics":{extension}}}"#);
+            let status: super::StatusOutput = serde_json::from_str(&input).unwrap();
+            assert_eq!(status.to_json().unwrap(), r#"{"state":"allow"}"#);
+            assert!(status.diagnostic_input().2.is_none());
+        }
+    }
+
+    #[test]
+    fn doctor_and_probe_never_mix_with_runtime_flags() {
+        for flag in ["--block", "--allow", "--hide", "--status", "--log"] {
+            for command in ["doctor", "wardoff-diagnostics-probe"] {
+                assert!(WardoffCli::try_parse_from(["wardoff", flag, command]).is_err());
+                assert!(WardoffCli::try_parse_from(["wardoff", command, flag]).is_err());
+            }
+        }
+        let probe = WardoffCli::try_parse_from(["wardoff", "wardoff-diagnostics-probe"]).unwrap();
+        assert_eq!(probe.requested_action(), RequestedAction::DiagnosticsProbe);
+        assert!(probe.requested_action().is_read_only());
+    }
 
     #[test]
     fn default_launch_remains_default_when_relaunched_internally() {
@@ -253,5 +395,48 @@ mod tests {
         assert!(log.requested_action().is_read_only());
         assert!(!default_launch.requested_action().is_read_only());
         assert!(!autostart.requested_action().is_read_only());
+    }
+
+    #[test]
+    fn doctor_subcommand_parses_as_read_only() {
+        let result = WardoffCli::try_parse_from(["wardoff", "doctor"]);
+        assert!(result.is_ok(), "doctor should be accepted: {result:?}");
+        let cli = result.unwrap();
+
+        assert!(cli.requested_action().is_read_only());
+    }
+
+    #[test]
+    fn doctor_json_subcommand_parses_as_read_only() {
+        let result = WardoffCli::try_parse_from(["wardoff", "doctor", "--json"]);
+        assert!(
+            result.is_ok(),
+            "doctor --json should be accepted: {result:?}"
+        );
+        let cli = result.unwrap();
+
+        assert!(cli.requested_action().is_read_only());
+    }
+
+    #[test]
+    fn doctor_conflicts_with_existing_runtime_flags() {
+        for arguments in [
+            &["wardoff", "doctor", "--block"][..],
+            &["wardoff", "doctor", "--allow"][..],
+            &["wardoff", "doctor", "--hide"][..],
+            &["wardoff", "doctor", "--status"][..],
+            &["wardoff", "doctor", "--log"][..],
+            &["wardoff", "doctor", "--autostart", "on"][..],
+        ] {
+            let result = WardoffCli::try_parse_from(arguments);
+            assert!(result.is_err(), "doctor should conflict with {arguments:?}");
+        }
+    }
+
+    #[test]
+    fn doctor_json_flag_requires_doctor_subcommand() {
+        let result = WardoffCli::try_parse_from(["wardoff", "--json"]);
+
+        assert!(result.is_err(), "--json without doctor should be rejected");
     }
 }

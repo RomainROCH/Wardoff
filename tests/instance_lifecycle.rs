@@ -193,6 +193,22 @@ fn native_claim_lifecycle_releases_primary_and_temporary_secondary_handles() {
 }
 
 #[test]
+fn doctor_observation_never_reserves_or_retains_a_primary_slot() {
+    let scope = session_scope::MutexScope::new("doctor-observation");
+    for _ in 0..20 {
+        assert!(!instance::primary_instance_exists().unwrap());
+        assert_mutex_removed(&scope);
+    }
+    let owner = primary(instance::claim_primary_instance());
+    assert!(instance::primary_instance_exists().unwrap());
+    drop(owner);
+    assert!(!instance::primary_instance_exists().unwrap());
+    let replacement = primary(instance::claim_primary_instance());
+    drop(replacement);
+    assert_mutex_removed(&scope);
+}
+
+#[test]
 fn native_retry_exhaustion_returns_secondary_and_does_not_retain_handles() {
     let scope = session_scope::MutexScope::new("exhaustion");
     let owner = primary(instance::claim_primary_instance());

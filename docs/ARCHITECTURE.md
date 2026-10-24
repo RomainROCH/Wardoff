@@ -284,6 +284,36 @@ The control pipe is now created with explicit local-only security instead of the
 
 The local status-latency change gives those connection retries one absolute two-second deadline, preserving the status pipe's initial startup grace while leaving only the remaining budget for the fallback. This avoids starting a second full connection wait. The intended unavailable-endpoint wait is about two seconds plus scheduling overhead; connected response reads remain outside that deadline, so it is not an end-to-end command timeout. Normal control commands retain their existing 20-attempt connection policy, and error classification and access checks are unchanged.
 
+### Read-only diagnostic snapshot
+
+`doctor` uses `OpenMutexW` to observe an existing runtime without creating the
+singleton. It reads only the status pipe, with a 64 KiB newline frame limit and
+one shared retry/read budget; it never enters the legacy control fallback.
+
+Main captures each layer's retained observation once, then derives both the old
+booleans and the optional schema-1 `diagnostics` snapshot from those values.
+Asynchronous owners replace their former active Boolean with one atomic enum;
+failure survives worker exit until explicit stop/retry. Worker join precedes
+retry, so an old generation cannot overwrite the next one. Sleep owns its
+synchronous acquisition/resume state. This is not a cross-API atomic transaction.
+Main also records manual intent, the existing pending tray wake restore and the
+layer of a failed Block transition.
+
+The status pipe serializes the extension. `StatusOutput::to_json` deliberately
+omits it, keeping legacy `--status` output unchanged. Missing, incomplete or
+unsupported snapshots preserve readable legacy mode/activity and unknown details.
+[diagnostics.rs](../src/diagnostics.rs) owns pure projection, fixed reason codes
+and privacy-filtered history; no free-form failure text enters the report.
+
+[diagnostics_probe.rs](../src/diagnostics_probe.rs) owns one temporary child for
+COM/filesystem queries. It inherits only explicit standard handles and a minimal
+environment. Elevated callers use a non-elevated restricted medium-integrity
+token, with no high-token fallback. The child is created suspended, assigned to
+an owned kill-on-close job, then resumed. Output is limited to 16 KiB and only
+that process/job is cleaned up on failure or timeout. Explicit waits share the
+remaining budget; synchronous Windows launch/driver latency is not a real-time
+guarantee. Service/unsupported token contexts remain unknown.
+
 ### Why the UI thread handles requests
 
 Mode transitions, tray updates, and application state changes all need one central owner. Routing IPC requests back to the main application loop avoids cross-thread state mutations in the blocker and tray subsystems.

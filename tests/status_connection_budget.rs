@@ -5,7 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
@@ -35,9 +35,20 @@ mod blocker {
 }
 
 mod cli {
-    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    #[derive(Clone, Debug, serde::Deserialize)]
     pub(crate) struct StatusOutput {
         pub(crate) state: String,
+    }
+
+    impl serde::Serialize for StatusOutput {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let value = if super::MALFORMED_STATUS_REPLY.load(std::sync::atomic::Ordering::SeqCst) {
+                serde_json::json!({"state": 123})
+            } else {
+                serde_json::json!({"state": self.state})
+            };
+            serde::Serialize::serialize(&value, serializer)
+        }
     }
 
     impl StatusOutput {
@@ -386,6 +397,105 @@ fn isolated_status_connections_share_a_budget_and_preserve_fallback_rules() {
             OpenOptions::new().read(true).open(path).is_err(),
             "owned endpoint survived shutdown"
         );
+    }
+}
+
+#[test]
+fn doctor_status_reads_have_a_frame_limit_and_one_absolute_deadline() {
+    // All endpoints are test-only, unique to this process and case. No singleton
+    // or protection worker is used; the real production client reads each peer.
+    type ReplyCase = (&'static str, Vec<Vec<u8>>, Duration, bool);
+    let cases: Vec<ReplyCase> = vec![
+        (
+            "Fragmented",
+            vec![b"{\"sta".to_vec(), b"te\":\"allow\"}\n".to_vec()],
+            Duration::from_millis(5),
+            true,
+        ),
+        (
+            "Oversized",
+            vec![vec![b'x'; 64 * 1024 + 1]],
+            Duration::ZERO,
+            false,
+        ),
+        (
+            "InvalidJson",
+            vec![b"not json\n".to_vec()],
+            Duration::ZERO,
+            false,
+        ),
+        (
+            "InvalidUtf8",
+            vec![vec![0xff, b'\n']],
+            Duration::ZERO,
+            false,
+        ),
+        (
+            "Truncated",
+            vec![b"{\"state\":\"allow\"}".to_vec()],
+            Duration::ZERO,
+            false,
+        ),
+        ("Silent", vec![], Duration::from_millis(180), false),
+        (
+            "Trickle",
+            (0..30).map(|_| vec![b' ']).collect(),
+            Duration::from_millis(25),
+            false,
+        ),
+    ];
+    for (label, chunks, delay, success) in cases {
+        let path = session_scope::path(&format!("Doctor{label}"));
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(wide.as_ptr()),
+                PIPE_ACCESS_OUTBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        };
+        assert!(!handle.is_invalid(), "create inert {label} peer");
+        let server = unsafe { File::from_raw_handle(handle.0 as RawHandle) };
+        let writer = thread::spawn(move || {
+            let mut server = server;
+            let connected = unsafe {
+                ConnectNamedPipe(
+                    windows::Win32::Foundation::HANDLE(server.as_raw_handle()),
+                    None,
+                )
+            };
+            if connected.is_err() && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
+                return;
+            }
+            if chunks.is_empty() {
+                thread::sleep(delay);
+            }
+            for chunk in chunks {
+                thread::sleep(delay);
+                if server.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        let _alias = session_scope::ClientAliases::new(None, Some(path));
+        let started = Instant::now();
+        let result = ipc::read_diagnostic_status(started + Duration::from_millis(120));
+        let elapsed = started.elapsed();
+        if success {
+            assert_allow(result);
+        } else {
+            assert!(result.is_err(), "{label} was accepted");
+        }
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "{label} renewed the read budget: {elapsed:?}"
+        );
+        writer.join().expect("inert writer joined");
     }
 }
 

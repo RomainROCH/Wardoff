@@ -151,6 +151,8 @@ wardoff --block --hide
 wardoff --hide
 wardoff --allow
 wardoff --status
+wardoff doctor
+wardoff doctor --json
 wardoff --log
 wardoff --log --tail 10
 wardoff --autostart on
@@ -164,6 +166,7 @@ wardoff --version
 - `wardoff --hide` switches an existing runtime into Block mode, or starts a new Block-mode primary with the tray icon hidden
 - `wardoff --allow` switches the running instance to Allow mode, or starts a visible Allow-mode runtime if needed
 - `wardoff --status` prints compact JSON for scripts
+- `wardoff doctor` explains requested protection, observed activity and current limits; add `--json` for scripts
 - `wardoff --log` prints recent structured log entries
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
 - `--tail` accepts 0 through 100000 lines; larger values return a readable error without allocating the requested capacity
@@ -176,6 +179,7 @@ Read-only commands stay non-elevated:
 - `--help` and `--version` short-circuit locally in clap
 - `--status` reads status through the dedicated session-scoped `WardoffStatus` named pipe when a primary runtime is active
 - `--log` and `--log --tail N` read the rotating JSONL log files directly
+- `doctor` observes the existing session runtime and performs bounded local inspection without starting protection or requesting elevation
 - those read-only commands stay attached to the calling shell so direct PowerShell CLI invocations can capture their output inline
 - when no primary runtime owns the session mutex, `--status` returns `{"state":"inactive"}` without retrying the pipes
 - when the mutex is occupied, the local implementation shares one absolute two-second connection-retry deadline between `WardoffStatus` and the legacy `WardoffControl` status fallback. It preserves the initial status retry grace, and an early status failure leaves the remaining connection budget for fallback. The target when both endpoints are unavailable is about two seconds plus scheduling overhead
@@ -202,11 +206,38 @@ If no primary runtime is running:
 {"state":"inactive"}
 ```
 
+### Understanding protection
+
+Run `wardoff doctor` when a layer seems unavailable or you want to check the
+current choice. It distinguishes indefinite manual Block, API activity, startup,
+failures, missing Windows tasks and facts that could not be inspected. An active
+API is evidence that Wardoff acquired that capability; inspection does not prove
+that Windows will block a real power transition.
+
+`wardoff doctor --json` returns schema version 1. It separates `runtime`, `context`,
+five `layers`, system/display `power_requests`, `recent_failures` and fixed `limits`.
+Unknown facts are `null` or explicitly unknown. A legacy runtime keeps its observed
+mode and old layer booleans, with detailed intent and causes left unknown.
+Consumers should tolerate added fields and new reason codes.
+
+The report omits personal paths, usernames and command arguments. Recent failures
+contain only recognized codes and validated timestamps. Autostart is reported as
+enabled/disabled only when its action and principal match this executable/user;
+an unverified task is left untouched. Path-access inspection is not a security
+certification of the installation.
+
+Doctor shares a two-second retry/read budget, with at most one second of local
+inspection inside it. It bounds response sizes and waits for only its owned
+inspection child. Windows process creation, scheduling or driver delays can add
+latency; this is not a hard real-time deadline. No protection runtime, task or
+power setting is changed. Runtime flags cannot be combined with `doctor`.
+
 ### Exit codes
 
 - `wardoff --help` exits `0`
 - `wardoff --version` exits `0`
 - `wardoff --status` exits `0` when Wardoff is active, exits `1` when no primary runtime is active, and exits `1` on errors
+- `wardoff doctor` and `doctor --json` exit `0` when a report is produced, including inactive/degraded states, `1` when an existing runtime cannot be inspected, and `2` for invalid arguments
 - `wardoff --log` and `wardoff --log --tail N` exit `0` on success and `1` on errors
 - `wardoff --block` and `wardoff --allow` exit `0` on success, including when they start a runtime or switch the running runtime, and exit `1` when they fail
 - `wardoff --autostart on|off` exits `0` on success and `1` on failure

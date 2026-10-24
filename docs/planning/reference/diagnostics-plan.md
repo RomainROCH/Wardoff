@@ -68,6 +68,8 @@ receive at most one second from the same remaining budget, reserving cleanup
 time. If no time remains, skip probes and return unknown facts. Accept at most
 64 KiB of one newline-terminated UTF-8 response; do not enter an unbounded legacy
 control read. Keep the old `--status` transport intact.
+Observe presence with `OpenMutexW`; never create/claim the runtime singleton for
+Doctor. This avoids reserving a primary slot during a concurrent launch.
 
 Blocking COM/filesystem probes run in one temporary read-only instance of the
 same executable, using a hidden internal probe action that dispatches before
@@ -83,6 +85,10 @@ this owned helper is terminated/reaped on timeout, malformed/oversized output or
 failure. Accept at most 16 KiB of its fixed JSON result. Never terminate a PID
 looked up by name. Account for helper startup and cleanup in the remaining
 deadline. This bounds application waits, not arbitrary Windows driver latency.
+Check the budget between launch stages and refuse further work when exhausted.
+Synchronous process creation/token/kernel calls cannot be preempted by this
+application budget; publish no hard wall-clock guarantee. Retain actual timings
+for normal and failing Windows cases instead of hiding this platform limitation.
 
 ## Diagnostic model
 

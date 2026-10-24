@@ -1,3 +1,4 @@
+use crate::diagnostics::Observation;
 use crate::logger::{self, EventSource};
 use log::{info, warn};
 use windows::core::{w, PWSTR};
@@ -42,6 +43,7 @@ impl SleepBlocker {
     /// Releases the requests and closes their private process-owned handle.
     pub fn deactivate(&mut self) {
         if self.requests.handle.is_none() {
+            self.requests.observation = Observation::Inactive;
             return;
         }
         match self.requests.release() {
@@ -70,13 +72,20 @@ impl SleepBlocker {
         // The handle need not be invalid. Close the old object instead of
         // incrementing possibly surviving counts or clearing already-ended ones.
         // Tray power actions already reacquire via their Allow -> Block transition.
-        self.requests.close()?;
-        self.activate()
+        if let Err(error) = self.requests.close().and_then(|_| self.activate()) {
+            self.requests.observation = Observation::MonitoringFailed;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Reports acquisition of the pair; Windows policy may still ignore it.
     pub fn is_active(&self) -> bool {
         self.requests.is_active()
+    }
+
+    pub(crate) fn diagnostic_state(&self) -> (Observation, [bool; 2]) {
+        (self.requests.observation, self.requests.acquired)
     }
 }
 
@@ -100,6 +109,7 @@ struct PowerRequests<A: PowerApi> {
     api: A,
     handle: Option<A::Handle>,
     acquired: [bool; 2],
+    observation: Observation,
 }
 
 impl<A: PowerApi + Default> Default for PowerRequests<A> {
@@ -108,30 +118,41 @@ impl<A: PowerApi + Default> Default for PowerRequests<A> {
             api: A::default(),
             handle: None,
             acquired: [false; 2],
+            observation: Observation::Inactive,
         }
     }
 }
 
 impl<A: PowerApi> PowerRequests<A> {
     fn is_active(&self) -> bool {
-        self.handle.is_some() && self.acquired.iter().all(|acquired| *acquired)
+        self.observation == Observation::Active
     }
 
     fn activate(&mut self) -> Result<(), String> {
         if self.is_active() {
             return Ok(());
         }
-        let handle = self.api.create()?;
+        self.observation = Observation::Starting;
+        let handle = match self.api.create() {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.observation = Observation::ActivationFailed;
+                return Err(error);
+            }
+        };
         self.handle = Some(handle);
         for (index, kind) in REQUEST_TYPES.into_iter().enumerate() {
             if let Err(error) = self.api.set(handle, kind) {
-                return match self.release() {
+                let result = match self.release() {
                     Ok(()) => Err(error),
                     Err(cleanup_error) => Err(format!("{error}; cleanup: {cleanup_error}")),
                 };
+                self.observation = Observation::ActivationFailed;
+                return result;
             }
             self.acquired[index] = true;
         }
+        self.observation = Observation::Active;
         Ok(())
     }
 
@@ -159,6 +180,7 @@ impl<A: PowerApi> PowerRequests<A> {
     }
 
     fn close(&mut self) -> Result<(), String> {
+        self.observation = Observation::Inactive;
         self.acquired = [false; 2];
         match self.handle.take() {
             Some(handle) => self.api.close(handle),

@@ -89,6 +89,28 @@ Use a normal desktop session for these checks. They should not require actually 
 | Explorer restart / tray recreation | Restart Explorer while Wardoff keeps running, then wait for the shell to return | The tray icon is recreated once Explorer returns, matches the current state, and still opens the expected menu |
 | Exit behavior | Quit from the tray after testing | Tray icon disappears and the runtime exits cleanly |
 
+## Read-only diagnosis acceptance
+
+Use the same binary in an isolated signed-in Windows desktop. Preserve task
+definitions and protection state before/after inspection; build/unit success
+does not replace this acceptance.
+
+| Case | Expected result |
+| --- | --- |
+| No runtime, normal/elevated caller | Doctor reports inactive, exit 0; no runtime, UAC, task or power-policy change |
+| Block/Allow runtime, normal/elevated caller | Read-only live report; requested, API-active and physical effectiveness remain distinct; legacy status bytes unchanged |
+| Missing Update reboot task | Explicit unavailable/task-absent cause, not an invented historical failure |
+| Legacy runtime | Observed mode/old booleans, unknown detailed intent/reasons; no control-pipe fallback |
+| Occupied mutex, absent/invalid/silent/trickling status endpoint | Unreachable/exit 1, bounded application waits and frame size; no new runtime |
+| Slow/failed local inspection | Unknown facts or timed-out context; retain independently observed runtime state |
+| Helper failure/timeout/oversized output | Only the exact owned child/job is terminated/reaped; unrelated processes continue |
+| Autostart task identity mismatch | Unverified/null enabled state; task left untouched |
+| Path with one mutating ACL grant | Classified user-writable; elevated autostart refusal remains enforced |
+
+Record actual timings with Windows scheduling/launch latency; do not claim a hard
+wall-clock deadline. Retain hashes, source revision, stdout/exit codes and cleanup
+evidence with the [diagnostic contract](planning/reference/diagnostics-plan.md).
+
 ## Admin-only checks
 
 Run these in an elevated session when you want manual confidence beyond the automated smoke coverage.

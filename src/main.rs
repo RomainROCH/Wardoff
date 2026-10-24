@@ -7,6 +7,8 @@
 mod autostart;
 mod blocker;
 mod cli;
+mod diagnostics;
+mod diagnostics_probe;
 mod instance;
 mod ipc;
 mod logger;
@@ -273,7 +275,10 @@ fn run_main() -> Result<i32, Box<dyn Error>> {
             cli.is_internal_elevated_relaunch(),
             cli.is_internal_detached_runtime(),
         ),
-        RequestedAction::Status | RequestedAction::Log { .. } => {
+        RequestedAction::Status
+        | RequestedAction::Log { .. }
+        | RequestedAction::Doctor { .. }
+        | RequestedAction::DiagnosticsProbe => {
             unreachable!("read-only CLI actions are handled before runtime and elevation dispatch")
         }
     }
@@ -283,10 +288,41 @@ fn handle_read_only_request(action: RequestedAction) -> Result<i32, Box<dyn Erro
     match action {
         RequestedAction::Status => handle_status_request(),
         RequestedAction::Log { tail } => handle_log_request(tail),
+        RequestedAction::Doctor { json } => handle_doctor_request(json),
+        RequestedAction::DiagnosticsProbe => {
+            diagnostics_probe::emit().map_err(|error| other_error(error).into())
+        }
         _ => {
             unreachable!("only read-only CLI actions should reach the non-elevating dispatch path")
         }
     }
+}
+
+fn handle_doctor_request(json: bool) -> Result<i32, Box<dyn Error>> {
+    use diagnostics::{build_report, ReportInput, RuntimeMode};
+    let deadline = Instant::now() + STATUS_PIPE_DISCOVERY_TIMEOUT;
+    let (mode, legacy_api, snapshot) = match instance::primary_instance_exists() {
+        Ok(false) => (RuntimeMode::Inactive, None, None),
+        Ok(true) => match ipc::read_diagnostic_status(deadline) {
+            Ok(status) => status.diagnostic_input(),
+            Err(_) => (RuntimeMode::Unreachable, None, None),
+        },
+        Err(_) => (RuntimeMode::Unreachable, None, None),
+    };
+    let local = diagnostics_probe::inspect(deadline);
+    let report = build_report(ReportInput {
+        mode,
+        legacy_api,
+        snapshot,
+        context: local.context,
+        recent_failures: local.recent_failures,
+    });
+    if json {
+        println!("{}", report.to_json()?);
+    } else {
+        println!("{}", report.human_text());
+    }
+    Ok(report.exit_code())
 }
 
 fn handle_runtime_request(
@@ -640,12 +676,17 @@ impl Application {
     }
 
     fn status_output(&self) -> StatusOutput {
+        let (layers, snapshot) = self.blocker_coordinator.capture_status(
+            windows_util::is_process_elevated().ok(),
+            self.pending_block_restore_after_wake.is_some(),
+        );
         StatusOutput::active(
             self.blocker_coordinator.mode(),
-            self.blocker_coordinator.layer_status(),
+            layers,
             self.started_at.elapsed().as_secs(),
             self.blocker_coordinator.blocked_count(),
         )
+        .with_diagnostics(snapshot)
     }
 
     fn process_tray_actions(&mut self) -> bool {
@@ -1221,7 +1262,10 @@ fn runtime_request_label(action: RequestedAction) -> &'static str {
         RequestedAction::Allow => "allow",
         RequestedAction::Hide => "hidden block",
         RequestedAction::Autostart { .. } => "autostart",
-        RequestedAction::Status | RequestedAction::Log { .. } => "read-only",
+        RequestedAction::Status
+        | RequestedAction::Log { .. }
+        | RequestedAction::Doctor { .. }
+        | RequestedAction::DiagnosticsProbe => "read-only",
     }
 }
 

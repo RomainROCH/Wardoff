@@ -2,7 +2,8 @@ use std::thread;
 use std::time::Duration;
 use windows::core::{Error as WindowsError, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, E_ACCESSDENIED, HANDLE,
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
+    E_ACCESSDENIED, HANDLE,
 };
 use windows::Win32::System::Threading::{CreateMutexExW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 
@@ -23,6 +24,19 @@ pub(crate) enum InstanceClaim {
 enum ClaimDisposition {
     Primary,
     Secondary,
+}
+
+/// Observes the existing singleton without ever reserving a primary slot.
+pub(crate) fn primary_instance_exists() -> Result<bool, String> {
+    let name = wide_null(&current_mutex_name()?);
+    match unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) } {
+        Ok(handle) => {
+            drop(InstanceGuard(handle));
+            Ok(true)
+        }
+        Err(error) if error.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => Ok(false),
+        Err(_) => Err("Wardoff could not inspect the runtime mutex.".into()),
+    }
 }
 
 /// Attempts to claim the named Wardoff mutex for the current process.

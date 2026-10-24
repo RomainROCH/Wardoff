@@ -1,3 +1,6 @@
+use crate::diagnostics::{
+    LayerId, LayerSnapshot, Observation, PowerRequests, RequestObservation, RuntimeSnapshot,
+};
 use chrono::{DateTime, Utc};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -19,6 +22,7 @@ use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 pub mod abort;
 /// Scaffolding for Layer 2 local shutdown.exe handling.
 pub mod local;
+pub(crate) mod observation;
 /// Scaffolding for Layer 4 remote shutdown abort handling.
 pub mod remote;
 /// Scaffolding for Layer 1 interactive shutdown blocking.
@@ -54,6 +58,18 @@ pub struct LayerStatus {
     sleep: bool,
 }
 
+impl LayerStatus {
+    pub(crate) fn api_values(self) -> [bool; 5] {
+        [
+            self.shutdown,
+            self.local_shutdown,
+            self.update,
+            self.remote,
+            self.sleep,
+        ]
+    }
+}
+
 /// Represents the system power actions exposed by the MVP tray menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PowerAction {
@@ -75,6 +91,7 @@ pub struct BlockerCoordinator {
     update_reboot_blocker: update::UpdateRebootBlocker,
     remote_shutdown_blocker: remote::RemoteShutdownBlocker,
     sleep_blocker: sleep::SleepBlocker,
+    last_transition_failure: Option<LayerId>,
 }
 
 /// Creates the blocker coordinator that owns the layered shutdown guards.
@@ -118,6 +135,7 @@ impl BlockerCoordinator {
             update_reboot_blocker: update::UpdateRebootBlocker::default(),
             remote_shutdown_blocker: remote::RemoteShutdownBlocker::default(),
             sleep_blocker: sleep::SleepBlocker::default(),
+            last_transition_failure: None,
         };
 
         coordinator.set_mode(initial_mode)?;
@@ -130,14 +148,55 @@ impl BlockerCoordinator {
     }
 
     /// Returns whether each MVP blocker layer is currently active.
-    pub fn layer_status(&self) -> LayerStatus {
-        LayerStatus {
-            shutdown: self.shutdown_blocker.is_active(),
-            local_shutdown: self.local_shutdown_blocker.is_active(),
-            update: self.update_reboot_blocker.is_active(),
-            remote: self.remote_shutdown_blocker.is_active(),
-            sleep: self.sleep_blocker.is_active(),
-        }
+    pub(crate) fn capture_status(
+        &self,
+        elevated: Option<bool>,
+        pending_wake_restore: bool,
+    ) -> (LayerStatus, RuntimeSnapshot) {
+        let (sleep, requests) = self.sleep_blocker.diagnostic_state();
+        let observations = [
+            if self.shutdown_blocker.is_active() {
+                Observation::Active
+            } else {
+                Observation::Inactive
+            },
+            self.local_shutdown_blocker.observation(),
+            self.update_reboot_blocker.observation(),
+            self.remote_shutdown_blocker.observation(),
+            sleep,
+        ];
+        let active = observations.map(|value| value.api_active() == Some(true));
+        let legacy = LayerStatus {
+            shutdown: active[0],
+            local_shutdown: active[1],
+            update: active[2],
+            remote: active[3],
+            sleep: active[4],
+        };
+        let requested = Some(self.mode == BlockerMode::Block);
+        let snapshot = RuntimeSnapshot {
+            schema_version: 1,
+            elevated,
+            manual_indefinite: self.mode == BlockerMode::Block || pending_wake_restore,
+            pending_wake_restore,
+            last_transition_failure: self.last_transition_failure,
+            layers: crate::diagnostics::LAYER_IDS
+                .into_iter()
+                .zip(observations)
+                .map(|(id, observation)| LayerSnapshot { id, observation })
+                .collect(),
+            power_requests: PowerRequests {
+                system: RequestObservation {
+                    requested,
+                    api_active: Some(requests[0]),
+                },
+                display: RequestObservation {
+                    requested,
+                    api_active: Some(requests[1]),
+                },
+            },
+        };
+        (legacy, snapshot)
     }
 
     /// Returns the number of shutdown attempts this runtime has actively blocked.
@@ -192,11 +251,16 @@ impl BlockerCoordinator {
     }
 
     fn activate_block_mode(&mut self) -> Result<(), String> {
+        let mut layer = LayerId::LocalShutdown;
         let activation_result = (|| {
             self.local_shutdown_blocker.activate()?;
+            layer = LayerId::Update;
             self.update_reboot_blocker.activate()?;
+            layer = LayerId::Remote;
             self.remote_shutdown_blocker.activate()?;
+            layer = LayerId::IdlePower;
             self.sleep_blocker.activate()?;
+            layer = LayerId::Shutdown;
             self.shutdown_blocker
                 .activate()
                 .map_err(|error| format!("Layer 1 could not enter Block mode: {error}"))?;
@@ -204,9 +268,10 @@ impl BlockerCoordinator {
         })();
 
         if let Err(error) = activation_result {
+            self.last_transition_failure = Some(layer);
             return Err(self.rollback_failed_block_activation(error));
         }
-
+        self.last_transition_failure = None;
         Ok(())
     }
 

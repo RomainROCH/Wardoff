@@ -2,15 +2,14 @@ use crate::blocker::abort::{
     abort_pending_shutdown, preflight_shutdown_abort_capability, ShutdownAbortCapability,
     ShutdownAbortOutcome,
 };
+use crate::blocker::observation::SharedObservation;
+use crate::diagnostics::Observation;
 use crate::logger::{self, EventSource};
 use log::{error, info, warn};
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 use windows::core::{Error as WindowsError, GUID, HRESULT, PCWSTR, PWSTR};
@@ -35,9 +34,10 @@ const SHUTDOWN_IMAGE_NAME: &str = "shutdown.exe";
 const KERNEL_PROCESS_PROVIDER_GUID: GUID = GUID::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
 
 /// Coordinates Layer 2 local `shutdown.exe` ETW monitoring.
+#[derive(Default)]
 pub struct LocalShutdownBlocker {
     worker: Option<LocalShutdownWorker>,
-    active_state: Arc<AtomicBool>,
+    active_state: SharedObservation,
 }
 
 impl LocalShutdownBlocker {
@@ -47,10 +47,12 @@ impl LocalShutdownBlocker {
         if self.worker.is_some() {
             return Ok(());
         }
+        self.active_state.set(Observation::Starting);
 
         match preflight_shutdown_abort_capability() {
             ShutdownAbortCapability::Available => {}
             ShutdownAbortCapability::AccessDenied { details } => {
+                self.active_state.set(Observation::ElevationRequired);
                 let message = format!(
                     "Layer 2 local shutdown protection will stay inactive because this process lacks the shutdown-abort privilege required to cancel shutdown.exe launches: {details}"
                 );
@@ -64,6 +66,7 @@ impl LocalShutdownBlocker {
                 return Ok(());
             }
             ShutdownAbortCapability::Failed { details } => {
+                self.active_state.set(Observation::ActivationFailed);
                 let message = format!(
                     "Layer 2 local shutdown protection will stay inactive because Wardoff could not verify the shutdown-abort capability required before starting ETW monitoring: {details}"
                 );
@@ -82,6 +85,7 @@ impl LocalShutdownBlocker {
         let subscription = match LocalTraceSubscription::start(session_name.clone()) {
             Ok(subscription) => subscription,
             Err(message) => {
+                self.active_state.set(Observation::ActivationFailed);
                 warn!("{message}");
                 logger::log_event(
                     "local_layer_unavailable",
@@ -93,20 +97,23 @@ impl LocalShutdownBlocker {
             }
         };
 
-        let active_state = Arc::clone(&self.active_state);
+        let active_state = self.active_state.clone();
         let controller_process_handle = subscription.process_handle.clone();
         let subscription = Arc::new(Mutex::new(Some(subscription)));
         let worker_subscription = Arc::clone(&subscription);
         match thread::Builder::new()
             .name(LAYER2_THREAD_NAME.to_string())
             .spawn(move || {
+                let active_guard = ActiveStateGuard::new(active_state.clone());
                 let subscription = worker_subscription
                     .lock()
                     .ok()
                     .and_then(|mut guard| guard.take());
 
                 if let Some(subscription) = subscription {
-                    run_worker(subscription, active_state);
+                    run_worker(subscription, active_state, active_guard);
+                } else {
+                    active_state.set(Observation::ActivationFailed);
                 }
             }) {
             Ok(join_handle) => {
@@ -118,6 +125,7 @@ impl LocalShutdownBlocker {
                 Ok(())
             }
             Err(error) => {
+                self.active_state.set(Observation::ActivationFailed);
                 if let Ok(mut guard) = subscription.lock() {
                     if let Some(subscription) = guard.take() {
                         if let Err(cleanup_error) = subscription.shutdown() {
@@ -139,10 +147,10 @@ impl LocalShutdownBlocker {
         self.cleanup_finished_worker();
 
         let Some(mut worker) = self.worker.take() else {
+            self.active_state.set(Observation::Inactive);
             return;
         };
 
-        self.active_state.store(false, Ordering::Release);
         if let Err(error) = stop_trace_session(&worker.session_name) {
             warn!("Layer 2 could not stop its ETW session cleanly: {error}");
             logger::log_event(
@@ -162,6 +170,8 @@ impl LocalShutdownBlocker {
             );
         }
 
+        self.active_state.set(Observation::Inactive);
+
         if let Some(join_handle) = worker.join_handle.take() {
             if join_handle.join().is_err() {
                 error!("Layer 2 worker thread panicked while stopping");
@@ -173,11 +183,12 @@ impl LocalShutdownBlocker {
                 );
             }
         }
+        self.active_state.set(Observation::Inactive);
     }
 
     /// Returns whether Layer 2 is currently monitoring local process-start ETW events.
-    pub fn is_active(&self) -> bool {
-        self.active_state.load(Ordering::Acquire)
+    pub(crate) fn observation(&self) -> Observation {
+        self.active_state.get()
     }
 
     fn cleanup_finished_worker(&mut self) {
@@ -205,15 +216,6 @@ impl Drop for LocalShutdownBlocker {
     }
 }
 
-impl Default for LocalShutdownBlocker {
-    fn default() -> Self {
-        Self {
-            worker: None,
-            active_state: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
 struct LocalShutdownWorker {
     session_name: String,
     process_handle: SharedProcessTraceHandle,
@@ -227,18 +229,17 @@ impl LocalShutdownWorker {
     }
 }
 
-struct ActiveStateGuard(Arc<AtomicBool>);
+struct ActiveStateGuard(SharedObservation);
 
 impl ActiveStateGuard {
-    fn activate(active_state: Arc<AtomicBool>) -> Self {
-        active_state.store(true, Ordering::Release);
+    fn new(active_state: SharedObservation) -> Self {
         Self(active_state)
     }
 }
 
 impl Drop for ActiveStateGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.finish_worker(Observation::MonitoringFailed);
     }
 }
 
@@ -322,17 +323,23 @@ impl LocalTraceSubscription {
     }
 }
 
-fn run_worker(subscription: LocalTraceSubscription, active_state: Arc<AtomicBool>) {
+fn run_worker(
+    subscription: LocalTraceSubscription,
+    active_state: SharedObservation,
+    active_guard: ActiveStateGuard,
+) {
     let process_handle = match subscription.process_handle.raw_handle() {
         Ok(process_handle) => process_handle,
         Err(message) => {
+            active_state.set(Observation::MonitoringFailed);
             warn!("{message}");
             logger::log_event("local_layer_disabled", EventSource::Local, message, false);
             let _ = stop_trace_session(&subscription.session_name);
             return;
         }
     };
-    let _active_guard = ActiveStateGuard::activate(active_state);
+    let _active_guard = active_guard;
+    active_state.set(Observation::Active);
 
     info!(
         "Layer 2 local shutdown monitoring is active, confirmed shutdown-abort capability, and is watching Microsoft-Windows-Kernel-Process ETW events for shutdown.exe."
@@ -356,6 +363,7 @@ fn run_worker(subscription: LocalTraceSubscription, active_state: Arc<AtomicBool
             true,
         );
     } else {
+        active_state.set(Observation::MonitoringFailed);
         let message = format!(
             "Layer 2 ETW monitoring stopped unexpectedly after ProcessTrace returned {}.",
             win32_error_details(process_status)

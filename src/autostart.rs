@@ -1,4 +1,5 @@
 use crate::blocker::update::{connect_task_service, initialize_com_apartment};
+use crate::diagnostics::{AutostartFacts, PathAccess, TaskIdentity};
 use crate::logger::{self, EventSource};
 use crate::windows_util::is_process_elevated;
 use chrono::Local;
@@ -21,15 +22,16 @@ use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::{
-    AccessCheck, DuplicateTokenEx, GetTokenInformation, LookupAccountSidW, SecurityIdentification,
-    TokenImpersonation, TokenLinkedToken, TokenUser, DACL_SECURITY_INFORMATION, GENERIC_MAPPING,
-    GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, PSECURITY_DESCRIPTOR,
-    PSID, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_LINKED_TOKEN, TOKEN_QUERY, TOKEN_USER,
+    AccessCheck, DuplicateTokenEx, GetTokenInformation, LookupAccountNameW, LookupAccountSidW,
+    SecurityIdentification, TokenImpersonation, TokenLinkedToken, TokenUser,
+    DACL_SECURITY_INFORMATION, GENERIC_MAPPING, GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, PRIVILEGE_SET, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+    TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_LINKED_TOKEN, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_APPEND_DATA, FILE_DELETE_CHILD,
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES,
-    FILE_WRITE_DATA, FILE_WRITE_EA,
+    DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_APPEND_DATA,
+    FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
 };
 use windows::Win32::System::Com::CoUninitialize;
 use windows::Win32::System::TaskScheduler::{
@@ -52,6 +54,148 @@ pub(crate) fn is_enabled() -> Result<bool, String> {
         let task_service = connect_task_service().map_err(task_service_error)?;
         task_enabled(&task_service).map_err(task_service_error)
     })
+}
+
+/// Read-only facts for the bounded Doctor child; no registration or removal.
+pub(crate) fn inspect_read_only() -> AutostartFacts {
+    let mut facts = AutostartFacts {
+        enabled: None,
+        task_identity: TaskIdentity::Unverified,
+        path_access: PathAccess::Unknown,
+    };
+    let paths = current_executable_path().ok().map(|executable| {
+        let directory = current_working_directory(&executable);
+        (executable, directory)
+    });
+    if let Some((executable, directory)) = paths.as_ref() {
+        let access = (|| {
+            let source =
+                open_current_process_token(TOKEN_QUERY | TOKEN_DUPLICATE, "inspect path access")?;
+            let token = duplicate_access_check_token(source.0)?;
+            Ok::<bool, String>(
+                token_can_write_executable_path(token.0, Path::new(executable))?
+                    || token_can_write_directory(token.0, Path::new(directory))?,
+            )
+        })();
+        facts.path_access = match access {
+            Ok(true) => PathAccess::UserWritable,
+            Ok(false) => PathAccess::Restricted,
+            Err(_) => PathAccess::Unknown,
+        };
+    }
+    let Ok(_com) = ComApartmentGuard::initialize() else {
+        return facts;
+    };
+    let task = connect_task_service().and_then(|service| lookup_autostart_task(&service));
+    match task {
+        Ok(None) => {
+            facts.enabled = Some(false);
+            facts.task_identity = TaskIdentity::Absent;
+        }
+        Ok(Some(task)) => {
+            if let (Some((executable, directory)), Ok(user)) = (paths, current_user_id()) {
+                if matches!(
+                    task_matches_current_executable(&task, &executable, &directory, &user),
+                    Ok(true)
+                ) {
+                    if let Ok(enabled) = unsafe { task.Enabled() } {
+                        facts.enabled = Some(enabled != VARIANT_FALSE);
+                        facts.task_identity = TaskIdentity::Matched;
+                    }
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    facts
+}
+
+fn task_matches_current_executable(
+    task: &IRegisteredTask,
+    executable: &str,
+    directory: &str,
+    user_sid: &str,
+) -> WindowsResult<bool> {
+    unsafe {
+        let definition = task.Definition()?;
+        let actions = definition.Actions()?;
+        let mut count = 0;
+        actions.Count(&mut count)?;
+        if count != 1 {
+            return Ok(false);
+        }
+        let action = actions.get_Item(1)?;
+        let Ok(action) = action.cast::<IExecAction>() else {
+            return Ok(false);
+        };
+        let (mut path, mut working_directory, mut arguments) =
+            (BSTR::new(), BSTR::new(), BSTR::new());
+        action.Path(&mut path)?;
+        action.WorkingDirectory(&mut working_directory)?;
+        action.Arguments(&mut arguments)?;
+        let canonical_matches = |candidate: &str, expected: &str| {
+            fs::canonicalize(candidate).ok().is_some_and(|actual| {
+                actual
+                    .as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(expected)
+            })
+        };
+        if !arguments.is_empty()
+            || !canonical_matches(&path.to_string(), executable)
+            || !canonical_matches(&working_directory.to_string(), directory)
+        {
+            return Ok(false);
+        }
+        let principal = definition.Principal()?;
+        let mut principal_user = BSTR::new();
+        let mut logon = Default::default();
+        let mut run_level = Default::default();
+        principal.UserId(&mut principal_user)?;
+        principal.LogonType(&mut logon)?;
+        principal.RunLevel(&mut run_level)?;
+        let principal_sid = principal_sid(&principal_user.to_string());
+        Ok(logon == TASK_LOGON_INTERACTIVE_TOKEN
+            && run_level == TASK_RUNLEVEL_HIGHEST
+            && principal_sid.is_some_and(|sid| sid.eq_ignore_ascii_case(user_sid)))
+    }
+}
+
+fn principal_sid(principal: &str) -> Option<String> {
+    if principal.starts_with("S-1-") {
+        return Some(principal.to_owned());
+    }
+    unsafe {
+        let account = wide_null(Path::new(principal));
+        let (mut sid_bytes, mut domain_chars) = (0, 0);
+        let mut kind = SID_NAME_USE::default();
+        let _ = LookupAccountNameW(
+            PCWSTR::null(),
+            PCWSTR(account.as_ptr()),
+            None,
+            &mut sid_bytes,
+            None,
+            &mut domain_chars,
+            &mut kind,
+        );
+        if sid_bytes == 0 || sid_bytes > 64 * 1024 || domain_chars > 32 * 1024 {
+            return None;
+        }
+        let mut sid = vec![0u32; (sid_bytes as usize).div_ceil(size_of::<u32>())];
+        let mut domain = vec![0u16; domain_chars as usize];
+        let sid = PSID(sid.as_mut_ptr().cast());
+        LookupAccountNameW(
+            PCWSTR::null(),
+            PCWSTR(account.as_ptr()),
+            Some(sid),
+            &mut sid_bytes,
+            Some(PWSTR(domain.as_mut_ptr())),
+            &mut domain_chars,
+            &mut kind,
+        )
+        .ok()?;
+        sid_to_string(sid, "inspect task principal").ok()
+    }
 }
 
 /// Creates, updates, or removes the Wardoff current-user logon task.
@@ -469,28 +613,49 @@ fn duplicate_access_check_token(source_token: HANDLE) -> Result<HandleGuard, Str
 }
 
 fn token_can_write_executable_path(token: HANDLE, executable_path: &Path) -> Result<bool, String> {
-    token_has_path_access(
+    token_has_any_path_access(
         token,
         executable_path,
-        (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA).0,
+        (FILE_WRITE_DATA
+            | FILE_APPEND_DATA
+            | FILE_WRITE_ATTRIBUTES
+            | FILE_WRITE_EA
+            | DELETE
+            | WRITE_DAC
+            | WRITE_OWNER)
+            .0,
         "validate the current executable path",
     )
 }
 
 fn token_can_write_directory(token: HANDLE, directory_path: &Path) -> Result<bool, String> {
-    token_has_path_access(
+    token_has_any_path_access(
         token,
         directory_path,
         (FILE_ADD_FILE
             | FILE_ADD_SUBDIRECTORY
             | FILE_WRITE_ATTRIBUTES
             | FILE_WRITE_EA
-            | FILE_DELETE_CHILD)
+            | FILE_DELETE_CHILD
+            | DELETE
+            | WRITE_DAC
+            | WRITE_OWNER)
             .0,
         "validate the current executable directory",
     )
 }
 
+fn token_has_any_path_access(
+    token: HANDLE,
+    path: &Path,
+    rights: u32,
+    context: &str,
+) -> Result<bool, String> {
+    let descriptor = load_path_security_descriptor(path, context)?;
+    token_has_any_descriptor_access(token, descriptor.0, rights)
+}
+
+#[cfg(test)]
 fn token_has_path_access(
     token: HANDLE,
     path: &Path,
@@ -498,6 +663,30 @@ fn token_has_path_access(
     context: &str,
 ) -> Result<bool, String> {
     let security_descriptor = load_path_security_descriptor(path, context)?;
+    token_has_descriptor_access(token, security_descriptor.0, desired_access)
+}
+
+fn token_has_any_descriptor_access(
+    token: HANDLE,
+    descriptor: PSECURITY_DESCRIPTOR,
+    desired_access: u32,
+) -> Result<bool, String> {
+    // AccessCheck requires every desired bit. A single mutating grant is enough
+    // to make this path unsuitable for elevated autostart, so inspect each bit.
+    for bit in 0..u32::BITS {
+        let right = 1u32 << bit;
+        if desired_access & right != 0 && token_has_descriptor_access(token, descriptor, right)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn token_has_descriptor_access(
+    token: HANDLE,
+    descriptor: PSECURITY_DESCRIPTOR,
+    desired_access: u32,
+) -> Result<bool, String> {
     let mut privileges = vec![0u8; size_of::<PRIVILEGE_SET>() + 256];
     let mut privilege_set_length = privileges.len() as u32;
     let mut granted_access = 0u32;
@@ -511,7 +700,7 @@ fn token_has_path_access(
 
     unsafe {
         AccessCheck(
-            security_descriptor.0,
+            descriptor,
             token,
             desired_access,
             &generic_mapping,
@@ -520,12 +709,7 @@ fn token_has_path_access(
             &mut granted_access,
             &mut access_status,
         )
-        .map_err(|error| {
-            format!(
-                "Wardoff could not {context} for {} before updating {AUTOSTART_TASK_PATH}: {error}",
-                path.display()
-            )
-        })?;
+        .map_err(|error| format!("Wardoff could not inspect file permissions: {error}"))?;
     }
 
     Ok(access_status.as_bool())
@@ -750,6 +934,51 @@ impl Drop for LocalAllocatedWideString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn any_mutating_right_detects_partial_grants() {
+        use windows::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows::Win32::Storage::FileSystem::{DELETE, WRITE_DAC, WRITE_OWNER};
+        let source = open_current_process_token(
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            "prepare in-memory access tests",
+        )
+        .unwrap();
+        let token = duplicate_access_check_token(source.0).unwrap();
+        let rights = [
+            FILE_WRITE_DATA.0,
+            FILE_APPEND_DATA.0,
+            FILE_WRITE_ATTRIBUTES.0,
+            FILE_WRITE_EA.0,
+            FILE_DELETE_CHILD.0,
+            DELETE.0,
+            WRITE_DAC.0,
+            WRITE_OWNER.0,
+        ];
+        let all = rights.into_iter().fold(0, |mask, right| mask | right);
+        for granted in rights {
+            // Fictitious owner avoids implicit owner rights; no host ACL is changed.
+            let sddl = format!("O:S-1-5-21-111-222-333-9999G:SYD:(A;;0x{granted:x};;;WD)");
+            let wide = wide_null(Path::new(&sddl));
+            let mut descriptor = PSECURITY_DESCRIPTOR::default();
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    PCWSTR(wide.as_ptr()),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    None,
+                )
+            }
+            .unwrap();
+            let descriptor = LocalSecurityDescriptor(descriptor);
+            assert!(
+                token_has_any_descriptor_access(token.0, descriptor.0, all).unwrap(),
+                "partial right 0x{granted:x} must be detected"
+            );
+        }
+    }
 
     #[test]
     fn access_check_accepts_an_identification_level_source_token() {

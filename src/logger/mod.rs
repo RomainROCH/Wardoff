@@ -4,7 +4,7 @@ use log::{error, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -169,6 +169,27 @@ pub(crate) fn default_tail_line_count() -> usize {
 /// Reads the newest structured log lines across the retained rotation set.
 pub(crate) fn read_recent_lines(limit: usize) -> Result<Vec<String>, String> {
     read_recent_lines_from_path(&default_log_path(), limit)
+}
+
+/// Bounded, privacy-filtered current-file history; called only in the Doctor child.
+pub(crate) fn read_diagnostic_history() -> Vec<crate::diagnostics::HistoricalFailure> {
+    const LIMIT: u64 = 512 * 1024;
+    let result = (|| -> Result<_, String> {
+        let mut file = open_plain_log_file_for_read(&default_log_path())?;
+        let length = file
+            .metadata()
+            .map_err(|_| "History metadata unavailable".to_string())?
+            .len();
+        let start = length.saturating_sub(LIMIT);
+        file.seek(SeekFrom::Start(start))
+            .map_err(|_| "History seek failed".to_string())?;
+        let mut bytes = Vec::new();
+        file.take(LIMIT)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "History read failed".to_string())?;
+        Ok(crate::diagnostics::parse_history(&bytes, start != 0))
+    })();
+    result.unwrap_or_default()
 }
 
 fn read_recent_lines_from_path(base_path: &Path, limit: usize) -> Result<Vec<String>, String> {

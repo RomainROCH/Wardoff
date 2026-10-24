@@ -42,6 +42,9 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Task | First code | Companion / acceptance |
 | --- | --- | --- |
 | CLI arguments, conflicts, JSON status | [cli.rs](../src/cli.rs) | [main.rs](../src/main.rs) dispatch; README command contract |
+| Doctor report, reason codes, filtered history | [diagnostics.rs](../src/diagnostics.rs) | [diagnostics contract](planning/reference/diagnostics-plan.md); CLI serialization tests |
+| Read-only Windows inspection and child cleanup | [diagnostics_probe.rs](../src/diagnostics_probe.rs) | autostart identity/path checks; update presence; helper process tests |
+| Retained asynchronous layer observations | [blocker/observation.rs](../src/blocker/observation.rs) | local/update/remote worker lifecycles; coordinator single-capture status |
 | Startup mode, tray visibility, command mapping | [runtime_policy.rs](../src/runtime_policy.rs) | `run_main`, `handle_primary_runtime_request` in main |
 | Elevation, console detach, relaunch | [windows_util.rs](../src/windows_util.rs) | `prepare_default_launch`, `prepare_runtime_console_launch` in main; smoke manifest/CLI checks |
 | Mode transitions, activation rollback | [blocker/mod.rs](../src/blocker/mod.rs) | `Application::set_mode` in main; affected layer |
@@ -60,7 +63,8 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 
 ## Runtime flow and invariants
 
-`cli::parse_cli` determines intent. `main::run_main` handles read-only status/log
+`cli::parse_cli` determines intent. `main::run_main` handles read-only status/log,
+Doctor and its hidden inspection child
 before runtime bootstrap. Runtime commands claim the session mutex: a secondary
 forwards to IPC; a primary prepares elevation/console behavior and calls
 `bootstrap`, then `run`.
@@ -109,7 +113,8 @@ The check script resolves the repository from its own location, stops at the
 first failed command and returns a nonzero exit code. It does not install tools
 or run the smoke suite. Cargo tests include brief real Windows Power Request
 acquisition/release and token checks, plus read-only CLI subprocesses with
-isolated log fixtures. They do not launch the long-lived runtime, edit scheduled
+isolated log fixtures. Doctor helper tests also launch inert owned `cmd`/PowerShell
+children to check output limits, deadlines and cleanup. They do not launch the long-lived runtime, edit scheduled
 tasks or cause a physical power transition.
 
 Run runtime integration in a signed-in Windows desktop inside the isolated test
