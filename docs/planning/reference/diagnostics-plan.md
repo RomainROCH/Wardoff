@@ -240,6 +240,44 @@ slice. Timers, sessions, power-intent controls and release tags belong to later 
 
 ## Windows implementation evidence
 
+### Implementation checkpoint, 2026-10-24
+
+Implementation commit `d4781ca` passed the Full MSVC checks (119 tests, strict
+Clippy, release build and docs) and static review. Its release SHA-256 is
+`E0137A1F30B48BB191C3E6FCF6CE0F6D7B245FDC2FE4C539017398E4F4B82F62`.
+The phase is not accepted or backed up remotely yet.
+
+The isolated signed-in Windows desktop passed the normal-token Doctor cases:
+inactive human/JSON, exact legacy status, Block/Allow, a legacy runtime and an
+occupied mutex without an endpoint. Task definitions and the power plan stayed
+unchanged. Same-binary normal smoke passed 14/14 with seven explicit skips and
+an observed zero exit code. A first fixture lost the child exit code despite
+successful smoke output; its corrected process-handle collector was rerun.
+
+Elevated local inspection remains an open regression on that candidate. Token
+creation, medium integrity and suspended process creation succeed, but the full
+restricted child exits with `0xC0000142` before producing output. The same native
+cmd/self-child regressions pass on the development host and fail in the elevated
+VM task. This is not evidence that inspection completed. An empty-desktop-name
+experiment reproduced the same failure and was removed. Investigation continues
+without granting privileges or changing existing system ACLs.
+
+The subsequent isolated experiment reproduced the failure with default object
+descriptors and with explicit process/thread descriptors alone. Setting the
+**owned restricted token's default DACL** to SYSTEM and its own user SID allowed
+the child to initialize. The implementation now applies that descriptor only to
+the new token, retaining medium integrity, disabled administrative groups and
+removed privileges. It never changes a descriptor on an existing system object.
+The same three elevated VM native regressions then passed, including a child
+querying its own non-elevated token and the owned job/stdout/cleanup path. The
+Green test executable SHA-256 was
+`BFE859FF68280B0C25D44BD87C61F96BDED66EE27EEF2C61AF5D3EF4013DB11A`.
+The final release and remaining desktop acceptance still need rerunning.
+
+Cross-token and autostart-identity acceptance are also still pending. Private
+drivers, raw outputs, source/binary hashes and failed attempts are retained in the
+phase's isolated lab evidence; fixture parsing alone is not runtime acceptance.
+
 An abandoned COM thread is insufficient for a reliable timeout: Windows documents
 a possible DLL-detach deadlock when process exit encounters locks held by another
 thread. This motivates the owned temporary process rather than changing the

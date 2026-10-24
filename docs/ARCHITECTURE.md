@@ -309,7 +309,10 @@ and privacy-filtered history; no free-form failure text enters the report.
 COM/filesystem queries. It inherits only explicit standard handles and a minimal
 environment. Elevated callers use a non-elevated restricted medium-integrity
 token, with no high-token fallback. The child is created suspended, assigned to
-an owned kill-on-close job, then resumed. Output is limited to 16 KiB and only
+an owned kill-on-close job, then resumed. The new restricted token's default
+DACL grants access only to SYSTEM and that token's user, so its own newly created
+objects remain accessible after filtering. The caller's token and existing
+file, task and desktop descriptors are untouched. Output is limited to 16 KiB and only
 that process/job is cleaned up on failure or timeout. Explicit waits share the
 remaining budget; synchronous Windows launch/driver latency is not a real-time
 guarantee. Service/unsupported token contexts remain unknown.

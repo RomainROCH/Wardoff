@@ -11,16 +11,20 @@ use std::os::windows::io::AsRawHandle;
 use std::time::{Duration, Instant};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, ERROR_BROKEN_PIPE, HANDLE, HANDLE_FLAGS,
-    HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, SetHandleInformation, ERROR_BROKEN_PIPE, HANDLE, HANDLE_FLAGS,
+    HANDLE_FLAG_INHERIT, HLOCAL, WAIT_OBJECT_0,
 };
-use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+use windows::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+    ConvertStringSidToSidW, SDDL_REVISION_1,
+};
 use windows::Win32::Security::{
-    CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, GetTokenInformation,
-    SetTokenInformation, TokenElevation, TokenIntegrityLevel, WinBuiltinAdministratorsSid,
-    DISABLE_MAX_PRIVILEGE, LUA_TOKEN, PSID, SECURITY_ATTRIBUTES, SID_AND_ATTRIBUTES,
-    TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION,
-    TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, GetSecurityDescriptorDacl,
+    GetTokenInformation, SetTokenInformation, TokenDefaultDacl, TokenElevation,
+    TokenIntegrityLevel, TokenUser, WinBuiltinAdministratorsSid, DISABLE_MAX_PRIVILEGE, LUA_TOKEN,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_ELEVATION,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::ReadFile;
 use windows::Win32::System::JobObjects::{
@@ -211,7 +215,70 @@ fn restricted_primary_token() -> Result<Handle, ()> {
         if elevation.TokenIsElevated != 0 {
             return Err(());
         }
+        set_owned_token_default_dacl(restricted.0)?;
         Ok(restricted)
+    }
+}
+
+/// The high caller's default ACL can exclude its filtered identity. Give objects
+/// subsequently created by this owned token access for SYSTEM and its user.
+/// Existing process, file, desktop and task descriptors are untouched.
+fn set_owned_token_default_dacl(token: HANDLE) -> Result<(), ()> {
+    unsafe {
+        let mut bytes = 0;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut bytes);
+        if bytes < size_of::<TOKEN_USER>() as u32 || bytes as usize > MAX_OUTPUT {
+            return Err(());
+        }
+        let mut storage = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(storage.as_mut_ptr().cast()),
+            bytes,
+            &mut bytes,
+        )
+        .map_err(|_| ())?;
+        let user = &*storage.as_ptr().cast::<TOKEN_USER>();
+        let mut sid = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut sid).map_err(|_| ())?;
+        let _sid_memory = LocalMemory(HLOCAL(sid.0.cast()));
+        let sid = sid.to_string().map_err(|_| ())?;
+        let sddl = wide(format!("D:(A;;GA;;;SY)(A;;GA;;;{sid})"));
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+        .map_err(|_| ())?;
+        let _descriptor_memory = LocalMemory(HLOCAL(descriptor.0));
+        let (mut present, mut defaulted) = (Default::default(), Default::default());
+        let mut acl = std::ptr::null_mut();
+        GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted)
+            .map_err(|_| ())?;
+        if !present.as_bool() || acl.is_null() {
+            return Err(());
+        }
+        let default_dacl = TOKEN_DEFAULT_DACL { DefaultDacl: acl };
+        SetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            &default_dacl as *const _ as _,
+            size_of::<TOKEN_DEFAULT_DACL>() as u32,
+        )
+        .map_err(|_| ())?;
+        Ok(())
+    }
+}
+
+struct LocalMemory(HLOCAL);
+impl Drop for LocalMemory {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = LocalFree(Some(self.0));
+        }
     }
 }
 
@@ -496,11 +563,14 @@ fn minimal_environment() -> Vec<u16> {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, GENERIC_ALL};
     use windows::Win32::Security::{
-        GetSidSubAuthority, GetSidSubAuthorityCount, TokenIntegrityLevel, TOKEN_ELEVATION,
-        TOKEN_MANDATORY_LABEL,
+        AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
+        GetSidSubAuthority, GetSidSubAuthorityCount, TokenDefaultDacl, TokenIntegrityLevel,
+        TokenUser, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL_SIZE_INFORMATION, PSID,
+        TOKEN_DEFAULT_DACL, TOKEN_ELEVATION, TOKEN_MANDATORY_LABEL, TOKEN_USER,
     };
+    use windows::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
     use windows::Win32::System::Threading::GetCurrentProcess;
 
     fn command_interpreter() -> PathBuf {
@@ -720,6 +790,174 @@ mod tests {
             let count = *GetSidSubAuthorityCount(label.Label.Sid);
             let rid = *GetSidSubAuthority(label.Label.Sid, u32::from(count - 1));
             assert_eq!(rid, 8192);
+        }
+    }
+
+    #[test]
+    fn owned_probe_with_restricted_token_uses_the_same_owned_job_and_stdout() {
+        let token = match restricted_primary_token() {
+            Ok(token) => token,
+            Err(()) => {
+                if std::env::var("WARDOFF_REQUIRE_RESTRICTED_PROBE_TEST")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    panic!("restricted probe token is required for this test");
+                }
+                eprintln!("restricted probe token unavailable; skipping native owned-job test");
+                return;
+            }
+        };
+        let child = OwnedProbe::spawn(
+            &command_interpreter(),
+            "/D /Q /C echo {}",
+            Some(&token),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("restricted cmd child should start through the owned probe path");
+        let duplicate = duplicate_process(child.process.0);
+        let output = child
+            .read(Instant::now() + Duration::from_secs(5))
+            .expect("restricted cmd output should be read");
+        assert_eq!(output, b"{}\r\n");
+        assert_eq!(
+            unsafe { WaitForSingleObject(duplicate.0, 5000) },
+            WAIT_OBJECT_0
+        );
+    }
+
+    #[test]
+    fn restricted_self_child_can_query_its_own_elevation() {
+        let token = match restricted_primary_token() {
+            Ok(token) => token,
+            Err(()) => {
+                if std::env::var("WARDOFF_REQUIRE_RESTRICTED_PROBE_TEST")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    panic!("restricted probe token is required for this test");
+                }
+                eprintln!("restricted self-child token unavailable; skipping native regression");
+                return;
+            }
+        };
+        let executable = std::env::current_exe().expect("test executable path should resolve");
+        let child = OwnedProbe::spawn(
+            &executable,
+            "--exact diagnostics_probe::tests::probe_child_queries_own_elevation --ignored --nocapture",
+            Some(&token),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect("restricted test child should start");
+        let output = child
+            .read(Instant::now() + Duration::from_secs(5))
+            .expect("restricted test child output should be read");
+        let output = String::from_utf8_lossy(&output);
+        assert!(
+            output.contains("probe_child_elevation=false")
+                || output.contains("probe_child_query_error="),
+            "restricted child output did not contain its fixed elevation result"
+        );
+    }
+
+    #[test]
+    #[ignore = "invoked only by the restricted self-child regression"]
+    fn probe_child_queries_own_elevation() {
+        match crate::windows_util::is_process_elevated() {
+            Ok(elevated) => println!("probe_child_elevation={elevated}"),
+            Err(error) => println!("probe_child_query_error={}", error.code().0),
+        }
+    }
+
+    #[test]
+    fn restricted_token_default_dacl_allows_only_system_and_its_user() {
+        let token = match restricted_primary_token() {
+            Ok(token) => token,
+            Err(()) => {
+                if std::env::var("WARDOFF_REQUIRE_RESTRICTED_PROBE_TEST")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    panic!("restricted probe token is required for this test");
+                }
+                eprintln!("restricted token unavailable; skipping default-DACL assertion");
+                return;
+            }
+        };
+        unsafe {
+            let mut user_words = vec![0usize; 1024];
+            let mut returned = 0;
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                Some(user_words.as_mut_ptr().cast()),
+                (user_words.len() * size_of::<usize>()) as u32,
+                &mut returned,
+            )
+            .expect("restricted token user query should succeed");
+            assert!(returned as usize <= user_words.len() * size_of::<usize>());
+            let user = &*(user_words.as_ptr().cast::<TOKEN_USER>());
+            let user_sid = user.User.Sid;
+
+            let mut dacl_words = vec![0usize; 1024];
+            returned = 0;
+            GetTokenInformation(
+                token.0,
+                TokenDefaultDacl,
+                Some(dacl_words.as_mut_ptr().cast()),
+                (dacl_words.len() * size_of::<usize>()) as u32,
+                &mut returned,
+            )
+            .expect("restricted token default DACL query should succeed");
+            assert!(returned as usize <= dacl_words.len() * size_of::<usize>());
+            let default_dacl = &*(dacl_words.as_ptr().cast::<TOKEN_DEFAULT_DACL>());
+            assert!(
+                !default_dacl.DefaultDacl.is_null(),
+                "default DACL must not be null"
+            );
+
+            let mut acl_info = ACL_SIZE_INFORMATION::default();
+            GetAclInformation(
+                default_dacl.DefaultDacl,
+                &mut acl_info as *mut _ as _,
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+            .expect("default DACL information query should succeed");
+            assert_eq!(
+                acl_info.AceCount, 2,
+                "default DACL must contain exactly two ACEs"
+            );
+
+            let mut system_storage = [0u32; 32];
+            let mut system_size = size_of_val(&system_storage) as u32;
+            let system_sid = PSID(system_storage.as_mut_ptr().cast());
+            CreateWellKnownSid(WinLocalSystemSid, None, Some(system_sid), &mut system_size)
+                .expect("SYSTEM SID creation should succeed");
+
+            let mut saw_user = false;
+            let mut saw_system = false;
+            for index in 0..acl_info.AceCount {
+                let mut raw_ace = std::ptr::null_mut();
+                GetAce(default_dacl.DefaultDacl, index, &mut raw_ace)
+                    .expect("default DACL ACE query should succeed");
+                let ace = &*(raw_ace as *const ACCESS_ALLOWED_ACE);
+                assert_eq!(u32::from(ace.Header.AceType), ACCESS_ALLOWED_ACE_TYPE);
+                assert_eq!(ace.Mask, GENERIC_ALL.0);
+                let ace_sid = PSID((&ace.SidStart as *const u32).cast_mut().cast());
+                if EqualSid(ace_sid, user_sid).is_ok() {
+                    saw_user = true;
+                } else if EqualSid(ace_sid, system_sid).is_ok() {
+                    saw_system = true;
+                } else {
+                    panic!("default DACL contains an unexpected SID");
+                }
+            }
+            assert!(saw_user, "default DACL must allow the token user");
+            assert!(saw_system, "default DACL must allow SYSTEM");
         }
     }
 }
