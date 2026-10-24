@@ -2,6 +2,8 @@
 
 Created: 2026-10-23. Original planning baseline: `39aadd2`.
 The maintainer authorized starting slice 001 with the original philosophy preserved.
+On 2026-10-24, the maintainer selected all remaining slices for serial execution,
+with required tests and a verified push after each accepted phase.
 
 ## Description
 
@@ -24,6 +26,8 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 ## Operating rules
 
 - Work one selected slice at a time. Read its dependencies and acceptance first.
+- Advance through the selected order after each phase's validation and verified
+  push. This authorization preserves the demand, privacy and zero-cost gates.
 - Future slices remain `pending`; current acceptance/evidence is recorded below.
 - Evidence identifies source SHA, artifact hash where relevant, commands,
   environment and skips. Never turn a VM result into a physical-device claim.
@@ -94,7 +98,12 @@ cost. No adoption or revenue estimate is assumed.
   skips. The corrected elevated suite also passed from a protected fixture,
   exercising actual autostart creation/removal. Tray checks passed separately.
   See the [baseline record](baseline-2026-10-23.md) for exact inputs and limits.
-- No active slice. Next: `RM-reference-002`; later slices remain pending.
+- Baseline backup: `origin/codex/reference-baseline` was verified at
+  `d85a509043ec1611491eec13726d5e608bbbc665` on 2026-10-24. This feature-branch
+  push triggers neither the dev/main CI nor the tag-only release workflow.
+- Active: `RM-reference-002`, started 2026-10-24. Its
+  [implementation contract](diagnostics-plan.md) records the current design/checks.
+- Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
 

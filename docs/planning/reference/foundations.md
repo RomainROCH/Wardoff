@@ -53,7 +53,7 @@ is part of this slice.
 
 ### RM-reference-002 Read-only explanation and diagnostics
 
-Status: pending. Depends on: RM-reference-001. Priority: P0. Size: M.
+Status: in-progress. Depends on: RM-reference-001. Priority: P0. Size: M.
 
 Goal: tell a person why protection is active, unavailable or limited.
 
@@ -73,8 +73,9 @@ Test inactive, partial failure, occupied-mutex failure and elevated/non-elevated
 paths. Diagnostic output omits usernames, full personal paths and command arguments
 by default; any fuller export needs preview and explicit user selection.
 
-Evidence: none. Notes: reuse bounded JSONL logs; do not introduce a remote support
-service or Windows Event Log dependency.
+Evidence: [implementation contract](diagnostics-plan.md); implementation and
+acceptance remain in progress. Notes: reuse bounded JSONL logs; do not introduce
+a remote support service or Windows Event Log dependency.
 
 ### RM-reference-003 System and display intent
 
@@ -108,3 +109,5 @@ Evidence: none. Notes: no synthetic input, lock suppression or power-plan rewrit
   Request failure and corrected smoke path identity. Accepted slice 001 with
   elevated/non-elevated smoke, protected-path autostart and tray evidence.
   Slice 002 and later work remain pending.
+- 2026-10-24: verified the baseline push, selected slice 002 and recorded its
+  diagnostic contract under the maintainer's serial-roadmap authorization.

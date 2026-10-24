@@ -22,11 +22,13 @@ process attachment and AI integrations alone are not sufficient differentiation.
 Use [the reference roadmap](docs/planning/reference/index.md) for ordered slices,
 dependencies, acceptance and evidence. The maintainer authorized starting with
 `RM-reference-001`, a tested integration baseline, with the philosophy above
-preserved. Other slices remain pending, starting with read-only diagnostics.
+preserved. On 2026-10-24, the maintainer selected the remaining roadmap for
+sequential execution: validate each phase, push its accepted work, then continue.
+Keep the zero-budget constraint and all conditional acceptance gates.
 The [baseline evidence](docs/planning/reference/baseline-2026-10-23.md) records
 successful local checks, portable startup, elevated and non-elevated desktop
-smoke, and tray checks. Slice 001 is accepted locally; slice 002 remains pending.
-This is not a claim of shipped features or automatic execution of every slice.
+smoke, and tray checks. Slice 001 is accepted and backed up on the working branch;
+slice 002 is active. Later features remain planned until their acceptance passes.
 
 ## Current repository status
 
