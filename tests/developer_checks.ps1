@@ -95,10 +95,13 @@ try {
         Assert-Contains $docsEntry 'Documentation checks completed.'
         if (Test-Path -LiteralPath $cargoTrace) { throw 'Docs mode unexpectedly invoked Cargo.' }
         $fullEntry = Invoke-Entrypoint -Mode Full -ExpectFailure
-        Assert-Contains $fullEntry 'cargo fmt --all -- --check failed'
-        $trace = Get-Content -LiteralPath $cargoTrace -Raw
-        Assert-Contains $trace 'fmt --all -- --check'
-        if ($trace -match '(?:^|\s)(?:check|test|clippy|build)(?:\s|$)') { throw "Full mode ran steps after the first failure: $trace" }
+        # Windows PowerShell can wrap the error even within a flag on long paths.
+        $expectedCargoFailure = 'cargo fmt --all -- --check failed with exit code 7.'
+        Assert-Contains ($fullEntry -replace '\s', '') ($expectedCargoFailure -replace '\s', '')
+        $trace = @(Get-Content -LiteralPath $cargoTrace)
+        if ($trace.Count -ne 1 -or $trace[0] -cne 'fmt --all -- --check') {
+            throw "Expected only the first Cargo command, but got: $($trace -join '; ')"
+        }
     } finally {
         $env:PATH = $oldPath
     }
