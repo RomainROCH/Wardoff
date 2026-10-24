@@ -28,18 +28,105 @@ use windows::Win32::System::Threading::SetProcessShutdownParameters;
 use windows::Win32::System::WindowsProgramming::SHUTDOWN_NORETRY;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, IsWindow, RegisterClassW,
-    DEVICE_NOTIFY_WINDOW_HANDLE, ENDSESSION_LOGOFF, HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC,
-    PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, SM_SHUTTINGDOWN, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
+    DEVICE_NOTIFY_WINDOW_HANDLE, ENDSESSION_CLOSEAPP, ENDSESSION_CRITICAL, ENDSESSION_LOGOFF,
+    HWND_MESSAGE, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, SM_SHUTTINGDOWN,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST,
+    WM_QUERYENDSESSION, WNDCLASSW, WS_OVERLAPPED,
 };
 
 static BLOCKER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SESSION_DIAGNOSTICS: Mutex<SessionDiagnostics> = Mutex::new(SessionDiagnostics::new());
 static WINDOW_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 static END_SESSION_CLEANUP_CALLBACK: Mutex<Option<fn()>> = Mutex::new(None);
 static END_SESSION_CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static POWER_BROADCAST_CALLBACK: Mutex<Option<fn(PowerBroadcastEvent)>> = Mutex::new(None);
 
 const SHUTDOWN_PRIORITY: u32 = 0x3FF;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SessionQuery {
+    window: isize,
+    wparam: usize,
+    lparam: isize,
+}
+
+// Diagnostic correlation only: no transition here changes the protection decision.
+// Keep the two Layer 1 windows separate and consume a refusal at most once.
+struct SessionDiagnostics {
+    refusals: Vec<SessionQuery>,
+}
+
+impl SessionDiagnostics {
+    const fn new() -> Self {
+        Self {
+            refusals: Vec::new(),
+        }
+    }
+
+    fn forget_window(&mut self, window: isize) -> Option<SessionQuery> {
+        let index = self
+            .refusals
+            .iter()
+            .position(|query| query.window == window)?;
+        Some(self.refusals.swap_remove(index))
+    }
+
+    fn query(&mut self, query: SessionQuery, refused: bool) {
+        let _ = self.forget_window(query.window);
+        if refused {
+            self.refusals.push(query);
+        }
+    }
+
+    fn end(&mut self, window: isize, ending: bool) -> SessionOutcome {
+        SessionOutcome {
+            ending,
+            refused_query: self.forget_window(window),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SessionOutcome {
+    ending: bool,
+    refused_query: Option<SessionQuery>,
+}
+
+impl SessionOutcome {
+    fn confirmed_cancellation_after_refusal(&self) -> bool {
+        !self.ending && self.refused_query.is_some()
+    }
+
+    fn event(&self) -> &'static str {
+        if self.ending {
+            "session_end_proceeding"
+        } else {
+            "session_end_cancelled"
+        }
+    }
+
+    fn action(&self, wparam: usize, lparam: isize) -> String {
+        let query_details = self
+            .refused_query
+            .map(|query| session_message_details(query.wparam, query.lparam));
+        format!(
+            "WM_ENDSESSION: {}; prior refused query={query_details:?}. Windows reports the session {}; the initiator and cancellation cause are unknown.",
+            session_message_details(wparam, lparam),
+            if self.ending { "is ending" } else { "is not ending" },
+        )
+    }
+}
+
+fn session_message_details(wparam: usize, lparam: isize) -> String {
+    let flags = lparam as u32;
+    format!(
+        "wParam={wparam}, lParam={:#x}, logoff={}, critical={}, close_app={}",
+        lparam as usize,
+        flags & ENDSESSION_LOGOFF != 0,
+        flags & ENDSESSION_CRITICAL != 0,
+        flags & ENDSESSION_CLOSEAPP != 0,
+    )
+}
 
 /// Represents the suspend/resume notifications Wardoff listens for on its hidden window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,33 +251,41 @@ impl Drop for ShutdownBlocker {
 }
 
 /// Handles `WM_QUERYENDSESSION` for shutdown and sign-out while Wardoff is in blocking mode.
-pub fn handle_query_end_session(_wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if BLOCKER_ACTIVE.load(Ordering::Acquire) {
-        let requested_action = if is_logoff_query(lparam) {
-            "sign-out"
-        } else {
-            "shutdown"
-        };
-        super::record_blocked_event();
-        warn!(
-            "Blocking WM_QUERYENDSESSION for {requested_action} while Layer 1 protection is active"
+pub fn handle_query_end_session(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let refused = BLOCKER_ACTIVE.load(Ordering::Acquire);
+    if let Ok(mut diagnostics) = SESSION_DIAGNOSTICS.lock() {
+        diagnostics.query(
+            SessionQuery {
+                window: hwnd.0 as isize,
+                wparam: wparam.0,
+                lparam: lparam.0,
+            },
+            refused,
         );
-        logger::log_event(
-            "shutdown_blocked",
-            EventSource::Shutdown,
-            format!(
-                "Layer 1 blocked a Windows {requested_action} request through WM_QUERYENDSESSION and returned FALSE."
-            ),
-            true,
-        );
-        return LRESULT(0);
     }
-
-    LRESULT(1)
-}
-
-fn is_logoff_query(lparam: LPARAM) -> bool {
-    (lparam.0 & ENDSESSION_LOGOFF as isize) != 0
+    let decision = if refused {
+        "FALSE (refused)"
+    } else {
+        "TRUE (allowed)"
+    };
+    let action = format!(
+        "WM_QUERYENDSESSION: {}; returning {decision}. Session outcome is not yet known.",
+        session_message_details(wparam.0, lparam.0),
+    );
+    if refused {
+        warn!("{action}");
+    }
+    logger::log_event(
+        if refused {
+            "session_end_refused"
+        } else {
+            "session_end_allowed"
+        },
+        EventSource::Shutdown,
+        action,
+        true,
+    );
+    LRESULT(isize::from(!refused))
 }
 
 fn is_shutdown_or_session_end_in_progress() -> bool {
@@ -231,7 +326,24 @@ pub(crate) fn clear_power_broadcast_callback() {
     }
 }
 
-fn handle_end_session(hwnd: HWND, wparam: WPARAM) -> LRESULT {
+fn handle_end_session(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let outcome = SESSION_DIAGNOSTICS
+        .lock()
+        .ok()
+        .map(|mut diagnostics| diagnostics.end(hwnd.0 as isize, wparam.0 != 0))
+        .unwrap_or(SessionOutcome {
+            ending: wparam.0 != 0,
+            refused_query: None,
+        });
+    if outcome.confirmed_cancellation_after_refusal() {
+        super::record_blocked_event();
+    }
+    logger::log_event(
+        outcome.event(),
+        EventSource::Shutdown,
+        outcome.action(wparam.0, lparam.0),
+        !outcome.ending || outcome.refused_query.is_none(),
+    );
     if should_run_end_session_cleanup(wparam, is_shutdown_or_session_end_in_progress()) {
         BLOCKER_ACTIVE.store(false, Ordering::Release);
         let _ = unsafe { ShutdownBlockReasonDestroy(hwnd) };
@@ -354,17 +466,24 @@ unsafe extern "system" fn shutdown_window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
-        WM_QUERYENDSESSION => handle_query_end_session(wparam, lparam),
-        WM_ENDSESSION => handle_end_session(hwnd, wparam),
+        WM_QUERYENDSESSION => handle_query_end_session(hwnd, wparam, lparam),
+        WM_ENDSESSION => handle_end_session(hwnd, wparam, lparam),
         WM_POWERBROADCAST => handle_power_broadcast(hwnd, wparam, lparam),
-        WM_DESTROY => LRESULT(0),
+        WM_DESTROY => {
+            if let Ok(mut diagnostics) = SESSION_DIAGNOSTICS.lock() {
+                let _ = diagnostics.forget_window(hwnd.0 as isize);
+            }
+            LRESULT(0)
+        }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_run_end_session_cleanup;
+    use super::{
+        session_message_details, should_run_end_session_cleanup, SessionDiagnostics, SessionQuery,
+    };
     use windows::Win32::Foundation::WPARAM;
 
     #[test]
@@ -381,5 +500,137 @@ mod tests {
     #[test]
     fn end_session_cleanup_runs_only_for_real_session_end() {
         assert!(should_run_end_session_cleanup(WPARAM(1), true));
+    }
+
+    fn refusal(window: isize) -> SessionQuery {
+        SessionQuery {
+            window,
+            wparam: 17,
+            lparam: 0xc0000001,
+        }
+    }
+
+    #[test]
+    fn refusal_alone_does_not_confirm_cancellation() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        assert_eq!(diagnostics.refusals, [refusal(1)]);
+        let outcome = diagnostics.end(1, false);
+        assert!(outcome.confirmed_cancellation_after_refusal());
+        assert_eq!(outcome.event(), "session_end_cancelled");
+        assert_eq!(outcome.refused_query, Some(refusal(1)));
+        assert!(!diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn session_can_end_despite_refusal_without_counting_a_block() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        let outcome = diagnostics.end(1, true);
+        assert!(!outcome.confirmed_cancellation_after_refusal());
+        assert_eq!(outcome.event(), "session_end_proceeding");
+        assert_eq!(outcome.refused_query, Some(refusal(1)));
+        assert!(!diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn cancellation_without_a_refusal_is_not_counted() {
+        assert!(!SessionDiagnostics::new()
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn allowed_query_discards_an_older_refusal() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        diagnostics.query(refusal(1), false);
+        assert!(!diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn repeated_queries_count_only_one_confirmed_cancellation() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        diagnostics.query(refusal(1), true);
+        assert!(diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+        assert!(!diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn window_outcomes_cannot_confirm_another_windows_refusal() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        diagnostics.query(refusal(2), true);
+        assert!(!diagnostics
+            .end(3, false)
+            .confirmed_cancellation_after_refusal());
+        assert!(diagnostics
+            .end(2, false)
+            .confirmed_cancellation_after_refusal());
+        assert!(diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn destroying_a_window_discards_its_pending_diagnostic() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        let _ = diagnostics.forget_window(1);
+        assert!(!diagnostics
+            .end(1, false)
+            .confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn message_details_preserve_parameters_and_combined_unknown_flags() {
+        let details = session_message_details(17, 0xc0000003);
+        assert!(details.contains("wParam=17, lParam=0xc0000003"));
+        assert!(details.contains("logoff=true, critical=true, close_app=true"));
+        let details = session_message_details(0, 0);
+        assert!(details.contains("logoff=false, critical=false, close_app=false"));
+    }
+
+    #[test]
+    fn outcome_preserves_distinct_query_and_end_parameters() {
+        let mut diagnostics = SessionDiagnostics::new();
+        diagnostics.query(refusal(1), true);
+        let outcome = diagnostics.end(1, true);
+        let action = outcome.action(42, 0xc0000003);
+        assert!(action.contains("WM_ENDSESSION: wParam=42, lParam=0xc0000003"));
+        assert!(action.contains("wParam=17, lParam=0xc0000001"));
+        assert!(action.contains("is ending"));
+        assert!(action.contains("initiator and cancellation cause are unknown"));
+        assert!(!outcome.confirmed_cancellation_after_refusal());
+    }
+
+    #[test]
+    fn query_handler_preserves_refusal_and_allow_without_incrementing_counter() {
+        use std::sync::atomic::Ordering;
+        use windows::Win32::Foundation::{HWND, LPARAM};
+
+        let window = HWND(123_usize as *mut _);
+        let before = super::super::BLOCKED_EVENT_COUNT.load(Ordering::Relaxed);
+        let was_active = super::BLOCKER_ACTIVE.swap(true, Ordering::AcqRel);
+        let refused = super::handle_query_end_session(window, WPARAM(17), LPARAM(0xc0000001));
+        super::BLOCKER_ACTIVE.store(false, Ordering::Release);
+        let allowed = super::handle_query_end_session(window, WPARAM(0), LPARAM(0));
+        super::BLOCKER_ACTIVE.store(was_active, Ordering::Release);
+        let after = super::super::BLOCKED_EVENT_COUNT.load(Ordering::Relaxed);
+
+        assert_eq!(refused.0, 0);
+        assert_eq!(allowed.0, 1);
+        assert_eq!(before, after);
     }
 }
