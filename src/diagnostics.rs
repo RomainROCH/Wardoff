@@ -1,3 +1,6 @@
+use crate::runtime_policy::sessions::{
+    validate_reason, SessionView, MAX_DURATION_MS, MAX_SESSIONS,
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -78,6 +81,10 @@ pub(crate) struct RuntimeSnapshot {
     pub(crate) last_transition_failure: Option<LayerId>,
     pub(crate) layers: Vec<LayerSnapshot>,
     pub(crate) power_requests: PowerRequests,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sessions: Option<Vec<SessionView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_cleanup_pending: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -222,6 +229,8 @@ pub(crate) struct RuntimeReport {
     pending_wake_restore: Option<bool>,
     elevated: Option<bool>,
     last_transition_failure: Option<LayerId>,
+    sessions: Option<Vec<SessionView>>,
+    session_cleanup_pending: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -354,6 +363,27 @@ impl DiagnosticReport {
             RuntimeState::Unreachable => "Current choice: runtime unreachable.",
         };
         let mut text = String::from(choice);
+        if let Some(sessions) = self.runtime.sessions.as_ref() {
+            if !sessions.is_empty() {
+                text.push_str("\nTemporary protection sessions:");
+                for session in sessions {
+                    text.push_str(&format!(
+                        "\n- {}: {} s remaining, owner PID {}, {}.",
+                        session.reason,
+                        session.remaining_ms.div_ceil(1000),
+                        session.owner_pid,
+                        match session.intent {
+                            crate::power_intent::PowerIntent::SystemOnly =>
+                                "display timeout allowed",
+                            crate::power_intent::PowerIntent::SystemAndDisplay => "display kept on",
+                        }
+                    ));
+                }
+            }
+        }
+        if self.runtime.session_cleanup_pending == Some(true) {
+            text.push_str("\nSession cleanup pending: the requested state has not been fully reconciled; Wardoff will retry.");
+        }
         text.push_str("\nObserved layers:");
         for layer in &self.layers {
             text.push_str(&format!(
@@ -501,6 +531,14 @@ pub(crate) fn build_report(input: ReportInput) -> DiagnosticReport {
         RuntimeMode::Allow => Some(false),
         _ => None,
     };
+    let mode_requested = snapshot
+        .as_ref()
+        .and_then(|value| {
+            value.sessions.as_ref().map(|sessions| {
+                (value.manual_indefinite || !sessions.is_empty()) && !value.pending_wake_restore
+            })
+        })
+        .or(mode_requested);
     let observations: Vec<LayerSnapshot> = if let Some(snapshot) = snapshot.as_ref() {
         snapshot.layers.clone()
     } else {
@@ -617,6 +655,10 @@ pub(crate) fn build_report(input: ReportInput) -> DiagnosticReport {
             pending_wake_restore,
             elevated,
             last_transition_failure,
+            sessions: snapshot.as_ref().and_then(|value| value.sessions.clone()),
+            session_cleanup_pending: snapshot
+                .as_ref()
+                .and_then(|value| value.session_cleanup_pending),
         },
         context,
         layers,
@@ -667,6 +709,20 @@ fn snapshot_for_report(
 
 fn valid_snapshot(snapshot: &RuntimeSnapshot) -> bool {
     snapshot.schema_version == REPORT_SCHEMA_VERSION
+        && snapshot.sessions.as_ref().is_none_or(|sessions| {
+            let mut keys = HashSet::new();
+            sessions.len() <= MAX_SESSIONS
+                && sessions.iter().all(|session| {
+                    session.key.id != 0
+                        && session.key.runtime_id != [0; 16]
+                        && session.owner_pid != 0
+                        && session.revision != 0
+                        && (1..=MAX_DURATION_MS).contains(&session.remaining_ms)
+                        && validate_reason(&session.reason)
+                            .is_ok_and(|reason| reason == session.reason)
+                        && keys.insert(session.key)
+                })
+        })
         && snapshot.layers.len() == LAYER_IDS.len()
         && LAYER_IDS.iter().all(|id| {
             snapshot
@@ -832,6 +888,71 @@ pub(crate) fn parse_history(bytes: &[u8], truncated_prefix: bool) -> Vec<Histori
 mod tests {
     use super::*;
 
+    #[test]
+    fn session_diagnostics_keep_reason_remaining_and_cleanup_visible() {
+        let session = serde_json::json!({
+            "key": {"runtime_id": ([9u8; 16]), "generation": 0, "id": 1},
+            "owner_pid": 42, "reason": "Fixture background work", "intent": "system_only",
+            "remaining_ms": 2500, "revision": 1,
+        });
+        let mut wire = serde_json::to_value(snapshot(Observation::Active)).unwrap();
+        wire["manual_indefinite"] = false.into();
+        wire["sessions"] = serde_json::json!([session.clone()]);
+        wire["session_cleanup_pending"] = true.into();
+        let report = build_report(ReportInput {
+            mode: RuntimeMode::Block,
+            legacy_api: None,
+            snapshot: Some(serde_json::from_value(wire).unwrap()),
+            context: context(),
+            recent_failures: Vec::new(),
+        });
+        let json: serde_json::Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
+        assert_eq!(json["runtime"]["sessions"], serde_json::json!([session]));
+        assert_eq!(json["runtime"]["session_cleanup_pending"], true);
+        assert_eq!(json["runtime"]["manual_indefinite"], false);
+        assert!(report.human_text().contains("Fixture background work"));
+        assert!(report.human_text().contains("3 s remaining"));
+        assert!(report.human_text().contains("cleanup pending"));
+    }
+
+    #[test]
+    fn session_diagnostics_reject_invalid_or_oversized_live_session_data() {
+        let valid = serde_json::json!({
+            "key": {"runtime_id": ([9u8; 16]), "generation": 0, "id": 1},
+            "owner_pid": 42, "reason": "Fixture", "intent": "system_only",
+            "remaining_ms": 2500, "revision": 1,
+        });
+        for invalid in [
+            {
+                let mut value = valid.clone();
+                value["reason"] = "line\nbreak".into();
+                vec![value]
+            },
+            {
+                let mut value = valid.clone();
+                value["remaining_ms"] = u64::MAX.into();
+                vec![value]
+            },
+            {
+                let mut value = valid.clone();
+                value["owner_pid"] = 0.into();
+                vec![value]
+            },
+            vec![valid; 65],
+        ] {
+            let mut wire = serde_json::to_value(snapshot(Observation::Active)).unwrap();
+            wire["sessions"] = serde_json::json!(invalid);
+            let report = build_report(ReportInput {
+                mode: RuntimeMode::Block,
+                legacy_api: None,
+                snapshot: Some(serde_json::from_value(wire).unwrap()),
+                context: context(),
+                recent_failures: Vec::new(),
+            });
+            assert_eq!(report.runtime.evidence, RuntimeEvidence::Legacy);
+        }
+    }
+
     fn context() -> LocalContext {
         LocalContext::default()
     }
@@ -839,6 +960,8 @@ mod tests {
     fn snapshot(observation: Observation) -> RuntimeSnapshot {
         RuntimeSnapshot {
             schema_version: 1,
+            sessions: None,
+            session_cleanup_pending: None,
             elevated: Some(true),
             manual_indefinite: true,
             pending_wake_restore: false,

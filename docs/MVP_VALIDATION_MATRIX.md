@@ -54,7 +54,7 @@ Keep validation language conservative:
 | Inactive status | `wardoff --status` exits `1` and returns `{"state":"inactive"}` when no instance is running | No |
 | Hidden block startup | `Start-Process ... --block --hide` keeps the runtime alive | No |
 | Active status JSON | `wardoff --status` exits `0`, returns `state=block`, and includes `layers.local_shutdown` as a boolean | No |
-| Sleep/display request visibility | `powercfg /requests` contains `Wardoff Block mode: manual idle-power protection.` for the selected requests in Block; `allow` omits Wardoff's display request while `prevent` includes it. This does not prove a physical transition was prevented | Query may require elevation |
+| Sleep/display request visibility | `powercfg /requests` contains `Wardoff Block mode: idle-power protection.` for the selected requests in Block; `allow` omits Wardoff's display request while `prevent` includes it. This does not prove a physical transition was prevented | Query may require elevation |
 | Block/Allow/Block lifecycle | `layers.sleep` is true/false/true; requests disappear in Allow while the same runtime remains alive, then acquisition is reported again in Block | Query may require elevation |
 | Abrupt termination | The owned test runtime is killed directly from Block, without Allow; its requests disappear | Query may require elevation |
 | Structured logging | `%LOCALAPPDATA%\Wardoff\logs\wardoff.jsonl` exists, appends new lines, and contains valid JSON | No |
@@ -227,7 +227,7 @@ power plan merely to make a row pass; use an already suitable test setup.
    Wardoff requests. Establish the existing idle/display behavior without
    keyboard, mouse or remote-session activity that would reset the timers.
 3. Enter Block with each intent. Confirm `layers.sleep=true` and the reason
-   `Wardoff Block mode: manual idle-power protection.`. `prevent` must appear in
+   `Wardoff Block mode: idle-power protection.`. `prevent` must appear in
    both requests; `allow` must retain only the system request. Wait past the
    configured idle/display timeouts; record actual behavior, not just request
    listing. Repeat Block/Allow/Block and confirm bare Block reverts to the full
@@ -259,6 +259,37 @@ power plan merely to make a row pass; use an already suitable test setup.
 Power-request acquisition should also be exercised non-elevated; these APIs do
 not document a special elevation requirement. Elevation needed to inspect
 `powercfg /requests` is a diagnostic requirement, not a runtime requirement.
+
+## Owned-session acceptance
+
+The session API is a development building block for the planned panel and
+wrapper. Run state-changing acceptance only in the isolated desktop, with an
+exact source/artifact hash and no pre-existing Wardoff runtime or autostart task.
+Record standard/admin coverage separately. The protocol and bounds live in the
+[session plan](planning/reference/sessions-plan.md).
+
+- Use two retained fixture client processes. Acquire overlapping system-only
+  and full-pair sessions; ending one must preserve the other. A foreign client's
+  release/extend must fail without changing protection.
+- Lose an acquire reply and retry the same key/specification: one entry and its
+  original deadline remain. A short pipe disconnect keeps a live owner's session;
+  owner exit removes only that owner's intent within the maintenance interval
+  plus scheduling overhead. Expiry never terminates work or powers off the PC.
+- Cover zero/oversized duration, pending-ticket expiry, duplicate release,
+  stale revisions and old keys after Allow/runtime restart. Invalid input must
+  not enter logs, panic or allocate from an unbounded requested count.
+- Keep indefinite manual Block during session expiry/release/owner exit. Then
+  use Allow to cancel manual intent, all tickets/sessions and pending wake
+  restoration. Delayed old acquire/extend messages must fail; fixture work stays
+  alive. Inspect Doctor's reasons, remaining time and manual/cleanup fields.
+- In an already S3-capable guest, expire a session during a real tray Sleep
+  cycle. Resume restores only still-valid intent, including system-only manual
+  protection if its temporary full-pair contributor expired. Repeat without
+  manual intent and confirm Allow/no requests. Disclose physical-device gaps.
+- Verify actual tray Block remains available for session-only protection and
+  Allow can cancel a pending restore. Quit and verify native requests/processes,
+  owned tasks, request overrides and power-plan snapshots. Preserve raw receipts,
+  failures and untested hardware rows; no session desktop pass is implied yet.
 
 ## Acceptance checklist
 

@@ -891,7 +891,7 @@ try {
     if ($powercfgRequestsCheck.State -eq 'testable') {
         Invoke-TestCase 'powercfg /requests mentions Wardoff while blocking is active' {
             $result = $powercfgRequestsCheck.Result
-            $reason = 'Wardoff Block mode: manual idle-power protection.'
+            $reason = 'Wardoff Block mode: idle-power protection.'
             Assert-Condition ([regex]::Matches($result.Output, [regex]::Escape($reason)).Count -eq 2) 'Expected the Wardoff reason once for SYSTEM and once for DISPLAY.'
         }
     }

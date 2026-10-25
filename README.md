@@ -172,6 +172,7 @@ wardoff --version
 - `wardoff doctor` explains requested protection, observed activity and current limits; add `--json` for scripts
 - `wardoff --log` prints recent structured log entries
 - `wardoff --log --tail 10` prints the newest 10 structured log entries
+
 - `--tail` accepts 0 through 100000 lines; larger values return a readable error without allocating the requested capacity
 - `wardoff --autostart on|off` enables or disables the scheduled-task autostart entry
 - `wardoff --version` prints the package version as `wardoff <version>`
@@ -180,6 +181,13 @@ wardoff --version
 - If the tray is visible while display timeout is allowed, its Block tooltip explains the choice and `Block (keep display on)` restores the full pair. The icon remains red. This uses the existing Block action and adds no persistent setting or physical guarantee.
 - direct PowerShell invocations of `wardoff --help`, `--version`, `--status`, and `--log --tail N` now behave like normal console commands with real stdout, stderr, and exit codes
 
+Indefinite manual Block remains explicit: a temporary request ending cannot
+cancel it. Allow stops all Wardoff protection, including temporary sessions and
+pending wake restoration; it leaves work processes running. Doctor can show
+temporary-session reasons, remaining time, owner PIDs and pending cleanup.
+The owner-bound session API is currently a development building block; its
+native panel and command wrapper remain planned in the
+[reference roadmap](docs/planning/reference/work-sessions.md).
 Read-only commands stay non-elevated:
 
 - `--help` and `--version` short-circuit locally in clap

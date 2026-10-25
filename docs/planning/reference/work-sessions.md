@@ -8,7 +8,8 @@ planned contracts, not existing CLI features.
 
 ### RM-reference-004 Owned sessions and expiration
 
-Status: in progress (design). Depends on: RM-reference-003. Priority: P1. Size: L.
+Status: in progress (local implementation validated; desktop qualification
+pending). Depends on: RM-reference-003. Priority: P1. Size: L.
 
 Goal: two jobs can request protection without undoing each other's requests.
 
@@ -29,8 +30,9 @@ expiring or releasing an optional task/timer cannot cancel that manual request.
 old owner messages cannot silently rearm protection. Global stop leaves user
 work running. Expose reason and remaining duration; do not log sensitive arguments.
 
-Evidence: [implementation plan](sessions-plan.md); no session runtime acceptance
-yet. Notes: session ownership is a lifecycle contract within the
+Evidence: [implementation record](sessions-plan.md#implementation-record-2026-10-25):
+216 local tests, strict Clippy/release and independent review passed; no session
+runtime acceptance yet. Notes: session ownership is a lifecycle contract within the
 existing same-user security boundary, not a new hostile-local-user defense.
 
 ### RM-reference-005 Accessible tray and session panel

@@ -310,6 +310,8 @@ mod tests {
         };
         let status = status.with_diagnostics(RuntimeSnapshot {
             schema_version: 1,
+            sessions: None,
+            session_cleanup_pending: None,
             elevated: Some(false),
             manual_indefinite: true,
             pending_wake_restore: false,

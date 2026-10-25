@@ -8,6 +8,45 @@ use crate::cli::RequestedAction;
 use crate::ipc::{IpcRequest, PipeMode};
 use crate::power_intent::PowerIntent;
 
+pub(crate) mod sessions;
+
+/// Bounds the next native wait by the next maintenance deadline.
+pub(crate) fn session_maintenance_wait_ms(needed: bool, next_due: u64, now: u64) -> Option<u32> {
+    needed.then(|| next_due.saturating_sub(now).min(1000) as u32)
+}
+
+/// Resolves retry effects from current intentions, including a tray suspend pause.
+pub(crate) fn session_protection_target(
+    ledger: &sessions::SessionLedger,
+    wake_paused: bool,
+) -> Option<PowerIntent> {
+    if wake_paused {
+        None
+    } else {
+        ledger.effective_intent()
+    }
+}
+
+/// Keeps indefinite Block and global stop available alongside optional sessions.
+pub(crate) fn tray_intent_presentation(
+    mode: BlockerMode,
+    intent: PowerIntent,
+    manual: Option<PowerIntent>,
+    stoppable: bool,
+) -> TrayModePresentation {
+    let mut presentation = tray_mode_presentation(mode, intent);
+    if mode == BlockerMode::Block && manual != Some(PowerIntent::SystemAndDisplay) {
+        presentation.block_enabled = true;
+        presentation.block_text = if manual.is_none() {
+            "Block indefinitely"
+        } else {
+            "Block (keep display on)"
+        };
+    }
+    presentation.allow_enabled |= stoppable;
+    presentation
+}
+
 /// Selects whether startup creates a visible, hidden or absent tray surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TraySurface {
@@ -171,6 +210,18 @@ pub(crate) fn ipc_request_for(action: RequestedAction) -> IpcRequest {
 
 /// Adds restart guidance only for a legacy server rejecting the new command.
 pub(crate) fn control_error_message(request: &IpcRequest, message: String) -> String {
+    let session_command = match request {
+        IpcRequest::BeginSession => Some("begin_session"),
+        IpcRequest::AcquireSession { .. } => Some("acquire_session"),
+        IpcRequest::ExtendSession { .. } => Some("extend_session"),
+        IpcRequest::ReleaseSession { .. } => Some("release_session"),
+        _ => None,
+    };
+    if session_command
+        .is_some_and(|command| message.contains(&format!("unknown variant `{command}`")))
+    {
+        return "The running Wardoff instance does not support protection sessions. Restart Wardoff with this executable, then retry.".to_string();
+    }
     if matches!(request, IpcRequest::SetPowerIntent { .. })
         && message.contains("unknown variant")
         && message.contains("set_power_intent")
@@ -232,6 +283,134 @@ pub(crate) fn resolved_autostart_state_for_tray(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_maintenance_wait_cannot_postpone_an_already_near_deadline() {
+        use super::session_maintenance_wait_ms;
+        assert_eq!(session_maintenance_wait_ms(false, 150, 100), None);
+        assert_eq!(session_maintenance_wait_ms(true, 150, 100), Some(50));
+        assert_eq!(session_maintenance_wait_ms(true, 100, 150), Some(0));
+        assert_eq!(session_maintenance_wait_ms(true, u64::MAX, 0), Some(1000));
+    }
+    use super::{session_protection_target, sessions, tray_intent_presentation};
+
+    #[test]
+    fn session_cleanup_retry_uses_new_manual_or_session_intent() {
+        use sessions::{OwnerKey, SessionLedger, SessionSpec};
+        let mut ledger = SessionLedger::new([1; 16], None);
+        // A previous Allow cleanup failed. Its target must not be cached.
+        assert_eq!(session_protection_target(&ledger, false), None);
+        ledger.set_manual(Some(PowerIntent::SystemAndDisplay));
+        assert_eq!(
+            session_protection_target(&ledger, false),
+            Some(PowerIntent::SystemAndDisplay)
+        );
+        ledger.global_stop();
+        assert_eq!(session_protection_target(&ledger, false), None);
+        let owner = OwnerKey {
+            pid: 42,
+            creation_time: 9,
+        };
+        let key = ledger.begin(owner, 100).unwrap();
+        ledger
+            .acquire(
+                owner,
+                key,
+                SessionSpec {
+                    duration_ms: 100,
+                    intent: PowerIntent::SystemOnly,
+                    reason: "Fixture work".into(),
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            session_protection_target(&ledger, false),
+            Some(PowerIntent::SystemOnly)
+        );
+    }
+
+    #[test]
+    fn session_suspend_expiry_cannot_restore_a_stale_power_intent() {
+        use sessions::{OwnerKey, SessionLedger, SessionSpec};
+        let mut ledger = SessionLedger::new([1; 16], Some(PowerIntent::SystemOnly));
+        let owner = OwnerKey {
+            pid: 42,
+            creation_time: 9,
+        };
+        let key = ledger.begin(owner, 100).unwrap();
+        ledger
+            .acquire(
+                owner,
+                key,
+                SessionSpec {
+                    duration_ms: 100,
+                    intent: PowerIntent::SystemAndDisplay,
+                    reason: "Fixture presentation".into(),
+                },
+                100,
+            )
+            .unwrap();
+        assert_eq!(session_protection_target(&ledger, true), None);
+        assert_eq!(
+            session_protection_target(&ledger, false),
+            Some(PowerIntent::SystemAndDisplay)
+        );
+        ledger.expire(5000, |_| true);
+        assert_eq!(
+            session_protection_target(&ledger, false),
+            Some(PowerIntent::SystemOnly)
+        );
+        ledger.global_stop();
+        assert_eq!(session_protection_target(&ledger, false), None);
+    }
+
+    #[test]
+    fn session_tray_keeps_manual_block_and_pending_allow_available() {
+        let presentation = tray_intent_presentation(
+            BlockerMode::Block,
+            PowerIntent::SystemAndDisplay,
+            None,
+            true,
+        );
+        assert!(presentation.block_enabled);
+        assert_eq!(presentation.block_text, "Block indefinitely");
+        let paused = tray_intent_presentation(
+            BlockerMode::Allow,
+            PowerIntent::SystemAndDisplay,
+            Some(PowerIntent::SystemAndDisplay),
+            true,
+        );
+        assert!(paused.allow_enabled);
+        // A temporary full-pair contributor must not hide the action that
+        // changes an existing system-only manual choice to indefinite full-pair.
+        let temporary_display = tray_intent_presentation(
+            BlockerMode::Block,
+            PowerIntent::SystemAndDisplay,
+            Some(PowerIntent::SystemOnly),
+            true,
+        );
+        assert!(temporary_display.block_enabled);
+        assert_eq!(temporary_display.block_text, "Block (keep display on)");
+    }
+
+    #[test]
+    fn session_legacy_rejection_has_restart_guidance_without_changing_other_errors() {
+        let request = IpcRequest::BeginSession;
+        assert!(
+            control_error_message(&request, "unknown variant `begin_session`".into())
+                .to_lowercase()
+                .contains("restart")
+        );
+        assert_eq!(
+            control_error_message(&request, "access denied".into()),
+            "access denied"
+        );
+        assert_eq!(
+            control_error_message(&request, "unknown variant `other`".into()),
+            "unknown variant `other`"
+        );
+    }
+
     use super::{
         control_error_message, ipc_request_for, pending_wake_restore_for_tray_power_action,
         pending_wake_restore_ready_for_resume, resolved_autostart_state_for_tray,

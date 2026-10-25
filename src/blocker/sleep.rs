@@ -232,7 +232,7 @@ impl PowerApi for WindowsPowerApi {
     type Handle = HANDLE;
 
     fn create(&self) -> Result<HANDLE, String> {
-        let reason = w!("Wardoff Block mode: manual idle-power protection.");
+        let reason = w!("Wardoff Block mode: idle-power protection.");
         let context = REASON_CONTEXT {
             Version: POWER_REQUEST_CONTEXT_VERSION,
             Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,

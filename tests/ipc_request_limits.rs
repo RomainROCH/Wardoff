@@ -8,7 +8,7 @@ use std::os::windows::io::AsRawHandle;
 use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -38,11 +38,25 @@ mod cli {
 }
 
 mod logger {
+    use std::sync::Mutex;
+    static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     pub(crate) enum EventSource {
         Ipc,
     }
 
-    pub(crate) fn log_event(_: &str, _: EventSource, _: impl Into<String>, _: bool) {}
+    pub(crate) fn log_event(_: &str, _: EventSource, message: impl Into<String>, _: bool) {
+        EVENTS
+            .lock()
+            .expect("inert log capture")
+            .push(message.into());
+    }
+    pub(crate) fn contains(value: &str) -> bool {
+        EVENTS
+            .lock()
+            .expect("inert log capture")
+            .iter()
+            .any(|message| message.contains(value))
+    }
 }
 
 mod session_scope {
@@ -67,10 +81,19 @@ mod ipc;
 #[path = "../src/power_intent.rs"]
 mod power_intent;
 
+#[path = "../src/runtime_policy/sessions.rs"]
+pub(crate) mod session_ledger;
+mod runtime_policy {
+    pub(crate) use crate::session_ledger as sessions;
+}
+#[path = "../src/session_owner.rs"]
+mod session_owner;
+
 struct TestRuntime {
     server: ipc::IpcServer,
     ui_thread: Option<JoinHandle<()>>,
     dispatched: Arc<AtomicUsize>,
+    owners: Arc<Mutex<Vec<Option<session_ledger::OwnerKey>>>>,
 }
 
 impl TestRuntime {
@@ -79,6 +102,8 @@ impl TestRuntime {
         let (ready_tx, ready_rx) = mpsc::channel();
         let dispatched = Arc::new(AtomicUsize::new(0));
         let ui_dispatched = Arc::clone(&dispatched);
+        let owners = Arc::new(Mutex::new(Vec::new()));
+        let ui_owners = Arc::clone(&owners);
         let ui_thread = thread::spawn(move || {
             // PostThreadMessageW requires the target thread to own a message queue.
             let mut message = MSG::default();
@@ -89,6 +114,10 @@ impl TestRuntime {
                 .send(unsafe { GetCurrentThreadId() })
                 .expect("UI ready");
             for pending in request_rx {
+                ui_owners
+                    .lock()
+                    .expect("owner receipts")
+                    .push(pending.owner.as_ref().map(session_owner::SessionOwner::key));
                 ui_dispatched.fetch_add(1, Ordering::SeqCst);
                 let response = match pending.request {
                     ipc::IpcRequest::Status => ipc::IpcResponse::Status {
@@ -107,6 +136,7 @@ impl TestRuntime {
             server,
             ui_thread: Some(ui_thread),
             dispatched,
+            owners,
         }
     }
 
@@ -207,7 +237,40 @@ fn assert_error(payload: &[u8], expected: &str) {
 #[test]
 fn isolated_runtime_rejects_bad_clients_and_recovers() {
     let mut runtime = TestRuntime::start();
+    let before = runtime.dispatched.load(Ordering::SeqCst);
+    let status_path = session_scope::current_status_pipe_path().unwrap();
+    let rejected = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(status_path)
+        .expect_err("read-only status pipe must reject a control-capable client");
+    assert_eq!(rejected.raw_os_error(), Some(5));
+    assert_eq!(runtime.dispatched.load(Ordering::SeqCst), before);
     assert_normal_command();
+    assert_eq!(runtime.owners.lock().unwrap().last(), Some(&None));
+    // Caller fields cannot choose another process identity. The production
+    // server captures this connection's actual process object instead.
+    assert!(matches!(
+        exchange(b"{\"command\":\"begin_session\",\"owner_pid\":1,\"creation_time\":1}\n"),
+        Ok(ipc::IpcResponse::Ok)
+    ));
+    let owner = runtime
+        .owners
+        .lock()
+        .unwrap()
+        .last()
+        .copied()
+        .flatten()
+        .expect("captured owner");
+    assert_eq!(owner.pid, std::process::id());
+    assert_ne!(owner.creation_time, 0);
+    let sensitive_fixture = "fixture-argument-that-must-not-enter-logs";
+    let bad = format!("{{\"command\":\"acquire_session\",\"key\":{{\"runtime_id\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"generation\":0,\"id\":1}},\"spec\":{{\"duration_ms\":1000,\"reason\":\"Fixture\",\"intent\":\"{sensitive_fixture}\"}}}}\n");
+    assert_error(bad.as_bytes(), "malformed");
+    assert!(
+        !logger::contains(sensitive_fixture),
+        "malformed session content entered structured logs"
+    );
     assert!(matches!(
         exchange(b"{\"command\":\"set_power_intent\",\"intent\":\"system_only\"}\n"),
         Ok(ipc::IpcResponse::Ok)

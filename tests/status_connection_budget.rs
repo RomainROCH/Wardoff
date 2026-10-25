@@ -139,6 +139,14 @@ mod ipc;
 #[path = "../src/power_intent.rs"]
 mod power_intent;
 
+#[path = "../src/runtime_policy/sessions.rs"]
+pub(crate) mod session_ledger;
+mod runtime_policy {
+    pub(crate) use crate::session_ledger as sessions;
+}
+#[path = "../src/session_owner.rs"]
+mod session_owner;
+
 struct TestRuntime {
     server: ipc::IpcServer,
     ui_thread: Option<JoinHandle<()>>,

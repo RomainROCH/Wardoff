@@ -8,6 +8,8 @@ use crate::blocker::BlockerMode;
 use crate::cli::StatusOutput;
 use crate::logger::{self, EventSource};
 use crate::power_intent::PowerIntent;
+use crate::runtime_policy::sessions::{SessionKey, SessionSpec, SessionView};
+use crate::session_owner::SessionOwner;
 use crate::session_scope::{current_control_pipe_path, current_status_pipe_path};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -173,12 +175,37 @@ pub(crate) enum IpcRequest {
     SetMode { mode: PipeMode },
     /// Requests Block with an explicit idle-power intent; old servers reject it.
     SetPowerIntent { intent: PowerIntent },
+    /// Reserves an owner-bound, short-lived optional-session ticket.
+    BeginSession,
+    /// Acquires protection for an owner-bound ticket.
+    AcquireSession { key: SessionKey, spec: SessionSpec },
+    /// Changes the remaining duration of a live owner-bound session.
+    ExtendSession {
+        key: SessionKey,
+        expected_revision: u64,
+        duration_ms: u64,
+    },
+    /// Releases this owner's optional session without clearing other intentions.
+    ReleaseSession { key: SessionKey },
     /// Creates, updates, or removes the current-user autostart task.
     SetAutostart { enabled: bool },
     /// Returns the current runtime status snapshot.
     Status,
     /// Stops the background named-pipe server during orderly shutdown.
     ShutdownServer,
+}
+
+impl IpcRequest {
+    /// Identifies mutations requiring a kernel-captured process owner.
+    pub(crate) fn is_session_command(&self) -> bool {
+        matches!(
+            self,
+            Self::BeginSession
+                | Self::AcquireSession { .. }
+                | Self::ExtendSession { .. }
+                | Self::ReleaseSession { .. }
+        )
+    }
 }
 
 /// Represents the serialized replies returned over the named pipe.
@@ -189,6 +216,13 @@ pub(crate) enum IpcResponse {
     Ok,
     /// Returns the current runtime status snapshot.
     Status { status: StatusOutput },
+    /// Returns a ticket; protocol version 1 never falls back to manual Block.
+    SessionReady {
+        session_protocol: u32,
+        key: SessionKey,
+    },
+    /// Acknowledges an acquired or extended session and its current deadline.
+    SessionActive { session: SessionView },
     /// Returns an error string that the caller can surface to the user.
     Error { message: String },
 }
@@ -199,6 +233,8 @@ pub(crate) struct PendingRequest {
     pub(crate) request: IpcRequest,
     /// The one-shot sender used to return the UI-thread response.
     pub(crate) response_tx: Sender<IpcResponse>,
+    /// Captured from the connected pipe for session mutations, never caller JSON.
+    pub(crate) owner: Option<SessionOwner>,
 }
 
 /// Describes why an IPC client could not talk to the primary runtime.
@@ -334,7 +370,11 @@ impl IpcServer {
                     "Wardoff could not stop its IPC server cleanly: {message}"
                 ));
             }
-            Ok(IpcResponse::Status { .. }) => {
+            Ok(
+                IpcResponse::Status { .. }
+                | IpcResponse::SessionReady { .. }
+                | IpcResponse::SessionActive { .. },
+            ) => {
                 return Err(
                     "Wardoff received an unexpected status payload while stopping its IPC server."
                         .to_string(),
@@ -668,11 +708,23 @@ fn run_server_loop(
                 break;
             }
             Ok(request) => {
+                let owner = if request.is_session_command() {
+                    match SessionOwner::from_pipe(&pipe) {
+                        Ok(owner) => Some(owner),
+                        Err(message) => {
+                            let _ = write_response(&mut pipe, &IpcResponse::Error { message });
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
                 let (response_tx, response_rx) = mpsc::channel();
                 if request_tx
                     .send(PendingRequest {
                         request,
                         response_tx,
+                        owner,
                     })
                     .is_err()
                 {
@@ -726,11 +778,13 @@ fn run_server_loop(
                         message: error.clone(),
                     },
                 );
-                warn!("Wardoff rejected an invalid named-pipe request: {error}");
+                // Serde errors can echo caller-controlled enum values. Return
+                // detail to that caller, but never persist arbitrary request text.
+                warn!("Wardoff rejected an invalid named-pipe control request.");
                 logger::log_event(
                     "ipc_request_rejected",
                     EventSource::Ipc,
-                    format!("Wardoff rejected an IPC request: {error}"),
+                    "Wardoff rejected an invalid named-pipe control request.",
                     false,
                 );
             }
@@ -831,6 +885,7 @@ fn run_status_server_loop(
             .send(PendingRequest {
                 request: IpcRequest::Status,
                 response_tx,
+                owner: None,
             })
             .is_err()
         {
@@ -863,7 +918,11 @@ fn run_status_server_loop(
                     false,
                 );
             }
-            Ok(IpcResponse::Ok) => {
+            Ok(
+                IpcResponse::Ok
+                | IpcResponse::SessionReady { .. }
+                | IpcResponse::SessionActive { .. },
+            ) => {
                 warn!("Wardoff produced an empty reply for its read-only status pipe.");
                 logger::log_event(
                     "status_request_rejected",
@@ -1488,6 +1547,30 @@ impl Drop for LocalAllocatedWideString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_wire_commands_roundtrip_without_changing_legacy_frames() {
+        let key = serde_json::json!({"runtime_id": ([1u8; 16]), "generation": 1, "id": 2});
+        for frame in [
+            serde_json::json!({"command": "begin_session"}),
+            serde_json::json!({"command": "acquire_session", "key": key,
+                "spec": {"duration_ms": 60000, "intent": "system_only", "reason": "Background work"}}),
+            serde_json::json!({"command": "extend_session", "key": key,
+                "expected_revision": 1, "duration_ms": 120000}),
+            serde_json::json!({"command": "release_session", "key": key}),
+        ] {
+            let request: IpcRequest = serde_json::from_value(frame.clone())
+                .expect("session command should be recognized");
+            assert_eq!(serde_json::to_value(request).unwrap(), frame);
+        }
+        assert_eq!(
+            serde_json::to_string(&IpcRequest::SetMode {
+                mode: PipeMode::Allow
+            })
+            .unwrap(),
+            r#"{"command":"set_mode","mode":"allow"}"#
+        );
+    }
 
     #[test]
     fn explicit_power_intent_has_a_distinct_wire_command_and_validated_intent() {

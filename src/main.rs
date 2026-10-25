@@ -14,6 +14,7 @@ mod ipc;
 mod logger;
 mod power_intent;
 mod runtime_policy;
+mod session_owner;
 mod session_scope;
 mod tray;
 mod windows_util;
@@ -31,11 +32,14 @@ use crate::ipc::{
 };
 use crate::logger::EventSource;
 use crate::power_intent::PowerIntent;
+use crate::runtime_policy::sessions::{OwnerKey, SessionLedger};
 use crate::runtime_policy::{
     control_error_message, ipc_request_for, pending_wake_restore_for_tray_power_action,
     pending_wake_restore_ready_for_resume, resolved_autostart_state_for_tray, runtime_options_for,
-    PendingWakeRestore, RuntimeOptions, TraySurface,
+    session_maintenance_wait_ms, session_protection_target, PendingWakeRestore, RuntimeOptions,
+    TraySurface,
 };
+use crate::session_owner::{elapsed_millis, SessionOwner};
 use crate::tray::{
     spawn_tray_service, TrayAction, TrayServiceHandle, TrayVisibility, TRAY_ACTION_WAKE_MESSAGE,
 };
@@ -44,16 +48,19 @@ use crate::windows_util::{
     INTERNAL_DETACHED_RUNTIME_ARG, INTERNAL_ELEVATED_RELAUNCH_ARG,
 };
 use log::{error, info, warn};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::io;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
+use windows::Win32::Foundation::WAIT_FAILED;
+use windows::Win32::System::Com::CoCreateGuid;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, PeekMessageW, TranslateMessage, WaitMessage, MSG, PM_NOREMOVE, PM_REMOVE,
-    WM_QUIT,
+    DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, WaitMessage,
+    MSG, MWMO_INPUTAVAILABLE, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT, WM_QUIT,
 };
 
 const ELEVATED_RELAUNCH_MUTEX_RETRY_ATTEMPTS: usize = 20;
@@ -74,6 +81,11 @@ struct Application {
     started_at: Instant,
     forced_shutdown_cleanup_completed: bool,
     pending_block_restore_after_wake: Option<PendingWakeRestore>,
+    sessions: SessionLedger,
+    session_owners: BTreeMap<OwnerKey, SessionOwner>,
+    reconciliation_pending: bool,
+    last_reconciliation_failure: Option<String>,
+    next_session_maintenance_ms: u64,
     _primary_instance: InstanceGuard,
 }
 
@@ -82,6 +94,11 @@ fn bootstrap(
     primary_instance: InstanceGuard,
     options: RuntimeOptions,
 ) -> Result<Application, Box<dyn Error>> {
+    let runtime_id = unsafe { CoCreateGuid()? }.to_u128().to_le_bytes();
+    let sessions = SessionLedger::new(
+        runtime_id,
+        (options.initial_mode == BlockerMode::Block).then_some(options.power_intent),
+    );
     logger::initialize_structured_logging().map_err(other_error)?;
 
     let blocker_coordinator =
@@ -140,6 +157,11 @@ fn bootstrap(
         started_at: Instant::now(),
         forced_shutdown_cleanup_completed: false,
         pending_block_restore_after_wake: None,
+        sessions,
+        session_owners: BTreeMap::new(),
+        reconciliation_pending: false,
+        last_reconciliation_failure: None,
+        next_session_maintenance_ms: 0,
         _primary_instance: primary_instance,
     };
     application.refresh_autostart_tray_state();
@@ -184,11 +206,27 @@ fn run(mut application: Application) -> Result<(), Box<dyn Error>> {
     })
 }
 
+/// Completes a logical release independently of a recoverable cleanup failure.
+fn finish_session_release(
+    logical: Result<bool, String>,
+    reconcile: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if logical? {
+        // The caller retains cleanup failures for diagnostics/retry; a
+        // duplicate release performs no additional effects.
+        let _ = reconcile();
+    }
+    Ok(())
+}
+
 fn run_message_loop(application: &mut Application) -> Result<(), Box<dyn Error>> {
     let mut message = MSG::default();
 
     'message_loop: loop {
+        application.poll_session_maintenance();
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+            // A continuous stream of messages must not starve lease expiry.
+            application.poll_session_maintenance();
             if message.message == WM_QUIT {
                 break 'message_loop;
             }
@@ -217,7 +255,22 @@ fn run_message_loop(application: &mut Application) -> Result<(), Box<dyn Error>>
             break;
         }
 
-        unsafe { WaitMessage()? };
+        if let Some(timeout_ms) = session_maintenance_wait_ms(
+            application.sessions.has_entries() || application.reconciliation_pending,
+            application.next_session_maintenance_ms,
+            elapsed_millis(),
+        ) {
+            // The wait is only a wake-up mechanism. Expiry uses suspend-inclusive
+            // absolute GetTickCount64 deadlines and is swept on resume as well.
+            let result = unsafe {
+                MsgWaitForMultipleObjectsEx(None, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+            };
+            if result == WAIT_FAILED {
+                return Err(io::Error::last_os_error().into());
+            }
+        } else {
+            unsafe { WaitMessage()? };
+        }
     }
     Ok(())
 }
@@ -402,7 +455,9 @@ fn handle_secondary_status_request_via_control_pipe(
             Ok(0)
         }
         Ok(IpcResponse::Error { message }) => Err(Box::new(other_error(message))),
-        Ok(IpcResponse::Ok) => Err(Box::new(other_error(
+        Ok(
+            IpcResponse::Ok | IpcResponse::SessionReady { .. } | IpcResponse::SessionActive { .. },
+        ) => Err(Box::new(other_error(
             "Wardoff received an unexpected empty response for --status.".to_string(),
         ))),
         Err(ClientError::Unavailable) => Err(Box::new(other_error(
@@ -569,7 +624,11 @@ where
         Ok(IpcResponse::Error { message }) => Err(Box::new(other_error(control_error_message(
             &request, message,
         )))),
-        Ok(IpcResponse::Status { .. }) => Err(Box::new(other_error(
+        Ok(
+            IpcResponse::Status { .. }
+            | IpcResponse::SessionReady { .. }
+            | IpcResponse::SessionActive { .. },
+        ) => Err(Box::new(other_error(
             "Wardoff received a status payload for a control command.".to_string(),
         ))),
         Err(ClientError::Unavailable) => match claim_primary_instance().map_err(other_error)? {
@@ -606,12 +665,23 @@ fn tray_surface_label(surface: TraySurface) -> &'static str {
 impl Application {
     fn process_ipc_requests(&mut self) {
         while let Ok(pending_request) = self.ipc_requests.try_recv() {
-            let response = self.handle_ipc_request(pending_request.request);
+            self.maintain_sessions();
+            let response = self.handle_ipc_request(pending_request.request, pending_request.owner);
             let _ = pending_request.response_tx.send(response);
         }
     }
 
-    fn handle_ipc_request(&mut self, request: IpcRequest) -> IpcResponse {
+    fn handle_ipc_request(
+        &mut self,
+        request: IpcRequest,
+        owner: Option<SessionOwner>,
+    ) -> IpcResponse {
+        if request.is_session_command() {
+            return match self.handle_session_request(request, owner) {
+                Ok(response) => response,
+                Err(message) => IpcResponse::Error { message },
+            };
+        }
         match request {
             IpcRequest::SetPowerIntent { intent } => {
                 self.clear_pending_block_restore_after_wake();
@@ -701,6 +771,12 @@ impl Application {
             IpcRequest::Status => IpcResponse::Status {
                 status: self.status_output(),
             },
+            IpcRequest::BeginSession
+            | IpcRequest::AcquireSession { .. }
+            | IpcRequest::ExtendSession { .. }
+            | IpcRequest::ReleaseSession { .. } => IpcResponse::Error {
+                message: "Wardoff could not route a session command.".to_string(),
+            },
             IpcRequest::ShutdownServer => IpcResponse::Error {
                 message:
                     "Wardoff cannot route the internal shutdown request through the UI thread."
@@ -710,10 +786,20 @@ impl Application {
     }
 
     fn status_output(&self) -> StatusOutput {
-        let (layers, snapshot) = self.blocker_coordinator.capture_status(
+        let (layers, mut snapshot) = self.blocker_coordinator.capture_status(
             windows_util::is_process_elevated().ok(),
             self.pending_block_restore_after_wake.is_some(),
         );
+        snapshot.manual_indefinite = self.sessions.manual().is_some();
+        snapshot.sessions = Some(self.sessions.views(elapsed_millis()));
+        snapshot.session_cleanup_pending = Some(self.reconciliation_pending);
+        let target = session_protection_target(
+            &self.sessions,
+            self.pending_block_restore_after_wake.is_some(),
+        );
+        snapshot.power_requests.system.requested = Some(target.is_some());
+        snapshot.power_requests.display.requested =
+            Some(target == Some(PowerIntent::SystemAndDisplay));
         StatusOutput::active(
             self.blocker_coordinator.mode(),
             layers,
@@ -721,6 +807,177 @@ impl Application {
             self.blocker_coordinator.blocked_count(),
         )
         .with_diagnostics(snapshot)
+    }
+
+    fn handle_session_request(
+        &mut self,
+        request: IpcRequest,
+        owner: Option<SessionOwner>,
+    ) -> Result<IpcResponse, String> {
+        let owner = owner.ok_or("Wardoff session commands require an inspected process owner.")?;
+        if !owner.is_alive() {
+            return Err("The Wardoff session owner has exited.".to_string());
+        }
+        let owner_key = owner.key();
+        let now = elapsed_millis();
+        match request {
+            IpcRequest::BeginSession => {
+                let key = self.sessions.begin(owner_key, now)?;
+                self.session_owners.entry(owner_key).or_insert(owner);
+                // No Power Request is acquired by a pending ticket. Keep Allow
+                // available in the tray so it can cancel even an unclaimed ticket.
+                self.reconciliation_pending = true;
+                let _ = self.reconcile_current_intent(EventSource::Ipc);
+                Ok(IpcResponse::SessionReady {
+                    session_protocol: 1,
+                    key,
+                })
+            }
+            IpcRequest::AcquireSession { key, spec } => {
+                let mut draft = self.sessions.clone();
+                draft.acquire(owner_key, key, spec, now)?;
+                self.clear_pending_block_restore_after_wake();
+                self.commit_intent_draft(draft, EventSource::Ipc)?;
+                self.maintain_sessions();
+                let session = self
+                    .sessions
+                    .active_view(key, elapsed_millis())
+                    .ok_or("The session ended before protection could be acknowledged.")?;
+                Ok(IpcResponse::SessionActive { session })
+            }
+            IpcRequest::ExtendSession {
+                key,
+                expected_revision,
+                duration_ms,
+            } => {
+                let result =
+                    self.sessions
+                        .extend(owner_key, key, expected_revision, duration_ms, now);
+                self.reconciliation_pending = true;
+                self.maintain_sessions();
+                result?;
+                let session = self
+                    .sessions
+                    .active_view(key, elapsed_millis())
+                    .ok_or("The session ended before its extension could be acknowledged.")?;
+                Ok(IpcResponse::SessionActive { session })
+            }
+            IpcRequest::ReleaseSession { key } => {
+                let logical = self.sessions.release(owner_key, key);
+                finish_session_release(logical, || {
+                    self.reconciliation_pending = true;
+                    self.prune_sessions();
+                    self.reconcile_current_intent(EventSource::Ipc)
+                })?;
+                Ok(IpcResponse::Ok)
+            }
+            _ => Err("Wardoff received a non-session command on the session handler.".to_string()),
+        }
+    }
+
+    fn prune_sessions(&mut self) {
+        let owners = &self.session_owners;
+        if self.sessions.expire(elapsed_millis(), |key| {
+            owners.get(&key).is_some_and(SessionOwner::is_alive)
+        }) {
+            self.reconciliation_pending = true;
+        }
+        let retained = self.sessions.owners();
+        self.session_owners.retain(|key, _| retained.contains(key));
+    }
+
+    fn maintain_sessions(&mut self) {
+        self.next_session_maintenance_ms = elapsed_millis().saturating_add(1000);
+        self.prune_sessions();
+        if self.reconciliation_pending {
+            let _ = self.reconcile_current_intent(EventSource::Application);
+        }
+    }
+
+    fn poll_session_maintenance(&mut self) {
+        if (self.sessions.has_entries() || self.reconciliation_pending)
+            && elapsed_millis() >= self.next_session_maintenance_ms
+        {
+            self.maintain_sessions();
+        }
+    }
+
+    fn commit_intent_draft(
+        &mut self,
+        draft: SessionLedger,
+        source: EventSource,
+    ) -> Result<(), String> {
+        let intent = session_protection_target(&draft, false);
+        let mode = if intent.is_some() {
+            BlockerMode::Block
+        } else {
+            BlockerMode::Allow
+        };
+        let result = self.apply_configuration(
+            mode,
+            intent.unwrap_or(self.blocker_coordinator.power_intent()),
+            source,
+            &draft,
+        );
+        match result {
+            Ok(()) => {
+                self.sessions = draft;
+                self.reconciliation_pending = false;
+                self.last_reconciliation_failure = None;
+                Ok(())
+            }
+            Err(message) => {
+                // A failed draft is never the committed source of truth. Retry
+                // against the current ledger, including when it contains no intent.
+                self.reconciliation_pending = true;
+                Err(message)
+            }
+        }
+    }
+
+    fn reconcile_current_intent(&mut self, source: EventSource) -> Result<(), String> {
+        // Recompute on every attempt. Never cache an old cleanup target across
+        // a newer manual Block or newly acquired session.
+        let target = session_protection_target(
+            &self.sessions,
+            self.pending_block_restore_after_wake.is_some(),
+        );
+        let mode = if target.is_some() {
+            BlockerMode::Block
+        } else {
+            BlockerMode::Allow
+        };
+        let intent = target.unwrap_or(self.blocker_coordinator.power_intent());
+        let effects = self.blocker_coordinator.set_configuration(mode, intent);
+        let changed = matches!(&effects, Ok(true));
+        let tray = self.sync_tray(self.blocker_coordinator.mode());
+        let failure = match (effects, tray) {
+            (Ok(_), Ok(())) => None,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Some(error),
+            (Err(error), Err(tray_error)) => Some(format!("{error}; tray: {tray_error}")),
+        };
+        self.reconciliation_pending = failure.is_some();
+        if let Some(message) = failure {
+            if self.last_reconciliation_failure.as_ref() != Some(&message) {
+                logger::log_event("session_reconciliation_failed", source, &message, false);
+            }
+            self.last_reconciliation_failure = Some(message.clone());
+            Err(message)
+        } else {
+            self.last_reconciliation_failure = None;
+            if changed {
+                logger::log_event(
+                    "state_changed",
+                    source,
+                    format!(
+                        "Wardoff reconciled {} from its current protection choices.",
+                        configuration_label(mode, intent)
+                    ),
+                    true,
+                );
+            }
+            Ok(())
+        }
     }
 
     fn process_tray_actions(&mut self) -> bool {
@@ -820,41 +1077,52 @@ impl Application {
     }
 
     fn run_power_action(&mut self, action: PowerAction) -> Result<(), String> {
-        let previous_mode = self.blocker_coordinator.mode();
         let previous_intent = self.blocker_coordinator.power_intent();
+        let restore_mode = if self.sessions.effective_intent().is_some() {
+            BlockerMode::Block
+        } else {
+            BlockerMode::Allow
+        };
         self.pending_block_restore_after_wake =
-            pending_wake_restore_for_tray_power_action(previous_mode, previous_intent, action);
-        if let Err(error) = self.set_mode(BlockerMode::Allow, EventSource::Tray) {
+            pending_wake_restore_for_tray_power_action(restore_mode, previous_intent, action);
+        // Suspend pauses effects, not ownership. Explicit Allow has different,
+        // irrevocable global-cancellation semantics.
+        let presentation = self.sessions.clone();
+        if let Err(error) = self.apply_configuration(
+            BlockerMode::Allow,
+            previous_intent,
+            EventSource::Tray,
+            &presentation,
+        ) {
             self.clear_pending_block_restore_after_wake();
+            self.reconciliation_pending = true;
             return Err(error);
         }
-
         match execute_power_action(action) {
             Ok(()) => {
-                info!(
-                    "Wardoff switched to Allow mode and issued the requested {:?} power action.",
-                    action
-                );
+                if matches!(action, PowerAction::Shutdown | PowerAction::Reboot) {
+                    self.sessions.global_stop();
+                    self.session_owners.clear();
+                    self.clear_pending_block_restore_after_wake();
+                    self.reconciliation_pending = true;
+                    let _ = self.reconcile_current_intent(EventSource::Tray);
+                }
                 logger::log_event(
                     "power_action_issued",
                     EventSource::Tray,
                     format!(
-                        "Wardoff issued the requested {} power action after switching to Allow mode.",
+                        "Wardoff issued the requested {} power action after releasing protection.",
                         power_action_label(action)
                     ),
                     true,
                 );
-                if matches!(action, PowerAction::Sleep | PowerAction::Hibernate)
-                    && previous_mode == BlockerMode::Block
-                {
-                    info!(
-                        "Wardoff will restore Block mode automatically after wake because the tray requested {action:?} from Block mode."
-                    );
-                }
                 Ok(())
             }
             Err(message) => {
                 self.clear_pending_block_restore_after_wake();
+                self.prune_sessions();
+                self.reconciliation_pending = true;
+                let restored = self.reconcile_current_intent(EventSource::Tray);
                 logger::log_event(
                     "power_action_issued",
                     EventSource::Tray,
@@ -864,26 +1132,14 @@ impl Application {
                     ),
                     false,
                 );
-                if previous_mode == BlockerMode::Block {
-                    return match self.set_configuration(
-                        BlockerMode::Block, previous_intent, EventSource::Tray,
-                    ) {
-                        Ok(()) => Err(format!(
-                            "{message} Wardoff restored Block mode after the failed {:?} request.",
-                            action
-                        )),
-                        Err(restore_error) => Err(format!(
-                            "{message} Wardoff could not restore Block mode after the failed {:?} request and remains in {} mode: {restore_error}",
-                            action,
-                            mode_label(self.blocker_coordinator.mode())
-                        )),
-                    };
+                match restored {
+                    Ok(()) => Err(format!(
+                        "{message} Wardoff reapplied its still-valid protection choices."
+                    )),
+                    Err(error) => Err(format!(
+                        "{message} Wardoff could not reconcile its current protection: {error}"
+                    )),
                 }
-
-                Err(format!(
-                    "{message} Wardoff remains in {} mode.",
-                    mode_label(self.blocker_coordinator.mode())
-                ))
             }
         }
     }
@@ -903,6 +1159,28 @@ impl Application {
         intent: PowerIntent,
         source: EventSource,
     ) -> Result<(), String> {
+        self.clear_pending_block_restore_after_wake();
+        if mode == BlockerMode::Allow {
+            // Logical cancellation precedes cleanup and cannot be rolled back by
+            // a failed API or tray update. Work processes remain untouched.
+            self.sessions.global_stop();
+            self.session_owners.clear();
+            self.reconciliation_pending = true;
+            self.reconcile_current_intent(source)
+        } else {
+            let mut draft = self.sessions.clone();
+            draft.set_manual(Some(intent));
+            self.commit_intent_draft(draft, source)
+        }
+    }
+
+    fn apply_configuration(
+        &mut self,
+        mode: BlockerMode,
+        intent: PowerIntent,
+        source: EventSource,
+        presentation_ledger: &SessionLedger,
+    ) -> Result<(), String> {
         let previous_mode = self.blocker_coordinator.mode();
         let previous_intent = self.blocker_coordinator.power_intent();
         let changed = match self.blocker_coordinator.set_configuration(mode, intent) {
@@ -918,7 +1196,9 @@ impl Application {
             }
         };
 
-        if let Err(tray_error) = self.sync_tray(self.blocker_coordinator.mode()) {
+        if let Err(tray_error) =
+            self.sync_tray_for_ledger(self.blocker_coordinator.mode(), presentation_ledger)
+        {
             let rollback_result = self
                 .blocker_coordinator
                 .set_configuration(previous_mode, previous_intent);
@@ -1023,11 +1303,24 @@ impl Application {
         }
     }
 
-    fn sync_tray(&mut self, mode: BlockerMode) -> Result<(), String> {
+    fn sync_tray(&self, mode: BlockerMode) -> Result<(), String> {
+        self.sync_tray_for_ledger(mode, &self.sessions)
+    }
+
+    fn sync_tray_for_ledger(
+        &self,
+        mode: BlockerMode,
+        ledger: &SessionLedger,
+    ) -> Result<(), String> {
         match self.tray_service.as_ref() {
-            Some(tray_service) => {
-                tray_service.set_mode(mode, self.blocker_coordinator.power_intent())
-            }
+            Some(tray_service) => tray_service.set_mode(
+                mode,
+                self.blocker_coordinator.power_intent(),
+                ledger.manual(),
+                ledger.manual().is_some()
+                    || ledger.has_entries()
+                    || self.pending_block_restore_after_wake.is_some(),
+            ),
             None => Ok(()),
         }
     }
@@ -1094,6 +1387,9 @@ impl Application {
     }
 
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        self.sessions.global_stop();
+        self.session_owners.clear();
+        self.clear_pending_block_restore_after_wake();
         self.ipc_server.begin_shutdown();
         self.reject_pending_ipc_requests();
         let ipc_shutdown = self.ipc_server.shutdown().map_err(other_error);
@@ -1137,6 +1433,8 @@ impl Application {
         }
 
         self.forced_shutdown_cleanup_completed = true;
+        self.sessions.global_stop();
+        self.session_owners.clear();
         self.clear_pending_block_restore_after_wake();
         self.blocker_coordinator.forced_shutdown_cleanup();
         info!("Wardoff shutting down due to user-forced shutdown");
@@ -1161,86 +1459,58 @@ impl Application {
                 }
             }
             blocker::shutdown::PowerBroadcastEvent::Resume => {
-                // The tray path is still Allow here and reacquires through its
-                // existing restore. Renew only a runtime that stayed in Block.
-                if let Err(error) = self.blocker_coordinator.renew_sleep_requests_after_resume() {
-                    warn!("Could not renew idle-power requests after resume: {error}");
-                    logger::log_event("sleep_resume_failed", EventSource::Sleep, error, false);
+                // Prune before any acquisition: elapsed deadlines include sleep.
+                self.prune_sessions();
+                if self.pending_block_restore_after_wake.is_some() {
+                    self.restore_block_after_wake_if_needed();
+                } else {
+                    if self.reconciliation_pending {
+                        let _ = self.reconcile_current_intent(EventSource::Sleep);
+                    }
+                    if session_protection_target(&self.sessions, false).is_some()
+                        && self.blocker_coordinator.mode() == BlockerMode::Block
+                    {
+                        if let Err(error) =
+                            self.blocker_coordinator.renew_sleep_requests_after_resume()
+                        {
+                            warn!("Could not renew idle-power requests after resume: {error}");
+                            logger::log_event(
+                                "sleep_resume_failed",
+                                EventSource::Sleep,
+                                error,
+                                false,
+                            );
+                        }
+                    }
                 }
-                self.restore_block_after_wake_if_needed();
             }
         }
     }
 
     fn restore_block_after_wake_if_needed(&mut self) {
-        let Some((action, power_intent)) =
+        let Some((action, _)) =
             pending_wake_restore_ready_for_resume(self.pending_block_restore_after_wake)
         else {
             return;
         };
         self.clear_pending_block_restore_after_wake();
-        let previous_mode = self.blocker_coordinator.mode();
-
-        if let Err(error) = self
-            .blocker_coordinator
-            .set_configuration(BlockerMode::Block, power_intent)
-        {
-            let message = format!(
-                "Wardoff could not restore Block mode after the tray-initiated {} request woke the system: {error}",
-                power_action_label(action)
-            );
-            error!("{message}");
-            logger::log_event(
-                "block_restored_after_wake",
-                EventSource::Tray,
-                message,
-                false,
-            );
-            return;
-        }
-
-        if previous_mode != BlockerMode::Block {
-            logger::log_event(
-                "state_changed",
-                EventSource::Tray,
-                format!(
-                    "Wardoff switched from {} mode to Block mode.",
-                    mode_label(previous_mode)
-                ),
-                true,
-            );
-        }
-
-        match self.sync_tray(self.blocker_coordinator.mode()) {
-            Ok(()) => {
-                info!(
-                    "Wardoff restored Block mode after the tray-initiated {:?} request woke the system.",
-                    action
-                );
-                logger::log_event(
-                    "block_restored_after_wake",
-                    EventSource::Tray,
-                    format!(
-                        "Wardoff restored Block mode after the tray-initiated {} request woke the system.",
-                        power_action_label(action)
-                    ),
-                    true,
-                );
-            }
-            Err(tray_error) => {
-                let message = format!(
-                    "Wardoff restored Block mode after the tray-initiated {} request woke the system, but could not refresh the tray UI immediately: {tray_error}",
+        self.reconciliation_pending = true;
+        let result = self.reconcile_current_intent(EventSource::Sleep);
+        logger::log_event(
+            "block_restored_after_wake",
+            EventSource::Tray,
+            match &result {
+                Ok(()) => format!(
+                    "Wardoff reconciled still-valid protection after tray {} resume.",
                     power_action_label(action)
-                );
-                warn!("{message}");
-                logger::log_event(
-                    "block_restored_after_wake",
-                    EventSource::Tray,
-                    message,
-                    true,
-                );
-            }
-        }
+                ),
+                Err(error) => format!(
+                    "Wardoff could not reconcile protection after tray {} resume: {error}",
+                    power_action_label(action)
+                ),
+            },
+            result.is_ok(),
+        );
     }
 }
 
@@ -1427,5 +1697,37 @@ mod tests {
             "runtime loop failed: loop error; cleanup failed: shutdown error"
         );
         assert_eq!(events, ["loop", "shutdown"]);
+    }
+}
+
+#[cfg(test)]
+mod session_release_tests {
+    use super::finish_session_release;
+
+    #[test]
+    fn session_release_acknowledges_removal_despite_pending_cleanup() {
+        assert!(finish_session_release(Ok(true), || Err("Fixture tray failure".into())).is_ok());
+    }
+
+    #[test]
+    fn session_duplicate_release_is_an_acknowledged_noop() {
+        let mut called = false;
+        let result = finish_session_release(Ok(false), || {
+            called = true;
+            Err("Unrelated cleanup failure".into())
+        });
+        assert!(result.is_ok());
+        assert!(!called);
+    }
+
+    #[test]
+    fn session_foreign_release_never_reconciles_an_unowned_mutation() {
+        let mut called = false;
+        let result = finish_session_release(Err("Owner mismatch".into()), || {
+            called = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!called);
     }
 }

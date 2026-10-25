@@ -1,7 +1,7 @@
 use crate::blocker::BlockerMode;
 use crate::logger::{self, EventSource};
 use crate::power_intent::PowerIntent;
-use crate::runtime_policy::tray_mode_presentation;
+use crate::runtime_policy::{tray_intent_presentation, tray_mode_presentation};
 use log::info;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,6 +80,8 @@ enum TrayCommand {
     SetMode {
         mode: BlockerMode,
         power_intent: PowerIntent,
+        manual: Option<PowerIntent>,
+        stoppable: bool,
         result_tx: Sender<Result<(), String>>,
     },
     SetAutostart(bool),
@@ -194,7 +196,12 @@ impl TrayController {
             quit_item,
             autostart_enabled: Cell::new(false),
         };
-        controller.set_mode(BlockerMode::Block, PowerIntent::SystemAndDisplay)?;
+        controller.set_mode(
+            BlockerMode::Block,
+            PowerIntent::SystemAndDisplay,
+            Some(PowerIntent::SystemAndDisplay),
+            true,
+        )?;
 
         if visibility == TrayVisibility::Hidden {
             controller.hide_tray_icon()?;
@@ -214,8 +221,14 @@ impl TrayController {
     }
 
     /// Applies the current blocker mode to the tray icon, tooltip, and menu state.
-    pub fn set_mode(&mut self, mode: BlockerMode, power_intent: PowerIntent) -> Result<(), String> {
-        let presentation = tray_mode_presentation(mode, power_intent);
+    pub fn set_mode(
+        &mut self,
+        mode: BlockerMode,
+        power_intent: PowerIntent,
+        manual: Option<PowerIntent>,
+        stoppable: bool,
+    ) -> Result<(), String> {
+        let presentation = tray_intent_presentation(mode, power_intent, manual, stoppable);
         self.sync_menu_state(presentation);
 
         if self.visibility == TrayVisibility::Hidden {
@@ -313,12 +326,16 @@ impl TrayServiceHandle {
         &self,
         mode: BlockerMode,
         power_intent: PowerIntent,
+        manual: Option<PowerIntent>,
+        stoppable: bool,
     ) -> Result<(), String> {
         let (result_tx, result_rx) = mpsc::channel();
         self.command_tx
             .send(TrayCommand::SetMode {
                 mode,
                 power_intent,
+                manual,
+                stoppable,
                 result_tx,
             })
             .map_err(|_| "Wardoff lost contact with its tray thread.".to_string())?;
@@ -364,6 +381,8 @@ struct TrayThreadState {
     visibility: TrayVisibility,
     mode: BlockerMode,
     power_intent: PowerIntent,
+    manual: Option<PowerIntent>,
+    stoppable: bool,
     autostart_enabled: bool,
     controller: Option<TrayController>,
     creation_failure_reported: bool,
@@ -399,6 +418,8 @@ fn run_tray_thread(
         visibility,
         mode: initial_mode,
         power_intent: initial_power_intent,
+        manual: (initial_mode == BlockerMode::Block).then_some(initial_power_intent),
+        stoppable: initial_mode == BlockerMode::Block,
         autostart_enabled: false,
         controller: None,
         creation_failure_reported: false,
@@ -532,10 +553,14 @@ fn handle_tray_command(state: &mut TrayThreadState, command: TrayCommand) -> boo
         TrayCommand::SetMode {
             mode,
             power_intent,
+            manual,
+            stoppable,
             result_tx,
         } => {
             state.mode = mode;
             state.power_intent = power_intent;
+            state.manual = manual;
+            state.stoppable = stoppable;
             let result = apply_current_tray_state(state);
             if let Err(error) = result.as_ref() {
                 log_tray_update_failure_and_reset(
@@ -601,7 +626,12 @@ fn try_create_tray_controller(state: &mut TrayThreadState) {
     match create_tray_controller(state.visibility) {
         Ok(mut controller) => {
             controller.set_autostart_enabled(state.autostart_enabled);
-            match controller.set_mode(state.mode, state.power_intent) {
+            match controller.set_mode(
+                state.mode,
+                state.power_intent,
+                state.manual,
+                state.stoppable,
+            ) {
                 Ok(()) => {
                     if let Some(waiting_since) = state.waiting_since.take() {
                         if waiting_since.elapsed() >= TRAY_RETRY_INTERVAL {
@@ -634,7 +664,12 @@ fn apply_current_tray_state(state: &mut TrayThreadState) -> Result<(), String> {
     };
 
     controller.set_autostart_enabled(state.autostart_enabled);
-    controller.set_mode(state.mode, state.power_intent)
+    controller.set_mode(
+        state.mode,
+        state.power_intent,
+        state.manual,
+        state.stoppable,
+    )
 }
 
 fn reset_tray_controller(state: &mut TrayThreadState) {

@@ -119,8 +119,10 @@ cost. No adoption or revenue estimate is assumed.
   `88e63453c6c02d8150b86d9e29aaf842e1fe985d`; the Git durability gate passed.
   The feature-branch push triggered neither CI nor release. The offline guest
   was shut down gracefully after archiving and verifying the evidence.
-- Current: `RM-reference-004`, ownership and expiration design in the
-  [session implementation plan](sessions-plan.md).
+- Current: `RM-reference-004`, implemented and validated locally with 216 tests,
+  strict checks and independent review. The [session plan](sessions-plan.md)
+  retains actual RED failures/corrections; source checkpoint and isolated
+  desktop qualification precede phase acceptance and backup.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.

@@ -62,6 +62,39 @@ configuration behavior.
 system-only or system-and-display. It has no Windows effects, persistence, tray
 policy, or additional dependency.
 
+### Owned temporary sessions (intentional extension)
+
+The selected roadmap extends the former single-intent application with the pure
+ledger in `src/runtime_policy/sessions.rs`. Manual indefinite intent and at most
+64 pending/active owner-bound sessions aggregate to one coordinator configuration.
+The ledger owns identity/generation, bounded deadlines and revisions; the
+coordinator continues to own actual Windows layers. The contract is in the
+[session plan](planning/reference/sessions-plan.md). Panel and wrapper delivery
+are separate roadmap slices.
+
+`src/session_owner.rs` captures the connected pipe's kernel PID/Windows session,
+opens a query/synchronize-only process handle, and records creation identity.
+It observes exit through the retained handle and never terminates work. IPC
+queues this owner with each session mutation; caller JSON cannot choose it.
+Begin tickets, short-lived connections and same-key retry define lost-reply
+behavior. Session identity is invalidated by global Allow and by runtime restart.
+
+`Application` commits new intent after successful activation/UI synchronization.
+Release, expiry, owner loss and Allow are irrevocable logical removals. Their
+cleanup retries always derive a fresh target from the current ledger and wake
+pause, so stale cleanup cannot clear a newer request. Failed reconciliation is
+visible in Doctor. The message wait has a one-second maintenance timeout only
+while entries or failed cleanup need attention; it never refreshes requests on
+a timer. `GetTickCount64` deadlines include suspend and ignore wall-clock changes.
+Resume prunes deadlines/owners before restoring the current aggregate. Tray
+Sleep/Hibernate pause effects without turning manual intent into a global stop.
+The shared native reason no longer claims manual ownership of every request.
+
+Diagnostic schema 1 gains optional session and cleanup fields. Missing fields
+from older runtimes remain unknown. Legacy `--status` serialization is unchanged.
+Malformed request details are returned to their caller; arbitrary request text
+is not persisted in rejection logs. The same-user trust boundary is unchanged.
+
 ### `src/blocker/`
 
 Contains the layered protection logic.

@@ -193,6 +193,8 @@ impl BlockerCoordinator {
             Some(self.mode == BlockerMode::Block && self.power_intent.request_mask()[1]);
         let snapshot = RuntimeSnapshot {
             schema_version: 1,
+            sessions: None,
+            session_cleanup_pending: None,
             elevated,
             manual_indefinite: self.mode == BlockerMode::Block || pending_wake_restore,
             pending_wake_restore,

@@ -47,6 +47,7 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Read-only Windows inspection and child cleanup | [diagnostics_probe.rs](../src/diagnostics_probe.rs) | autostart identity/path checks; update presence; helper process tests |
 | Retained asynchronous layer observations | [blocker/observation.rs](../src/blocker/observation.rs) | local/update/remote worker lifecycles; coordinator single-capture status |
 | Startup mode, tray visibility, command mapping | [runtime_policy.rs](../src/runtime_policy.rs) | `run_main`, `handle_primary_runtime_request` in main |
+| Temporary sessions, ownership, deadlines and global cancellation | [runtime_policy/sessions.rs](../src/runtime_policy/sessions.rs), [session_owner.rs](../src/session_owner.rs) | [session contract](planning/reference/sessions-plan.md); main `handle_session_request`, `maintain_sessions`, `reconcile_current_intent`; `cargo test --bin wardoff session`; inert IPC ownership tests |
 | Elevation, console detach, relaunch | [windows_util.rs](../src/windows_util.rs) | `prepare_default_launch`, `prepare_runtime_console_launch` in main; smoke manifest/CLI checks |
 | Mode transitions, activation rollback | [blocker/mod.rs](../src/blocker/mod.rs) | `Application::set_mode` in main; affected layer |
 | Interactive shutdown and Windows callbacks | [blocker/shutdown.rs](../src/blocker/shutdown.rs) | main callbacks; VM-only shutdown acceptance |
@@ -55,7 +56,7 @@ crosses that boundary. Unit tests live in `#[cfg(test)]` modules beside the code
 | Remote abort / local ETW | [blocker/remote.rs](../src/blocker/remote.rs), [blocker/local.rs](../src/blocker/local.rs) | [abort.rs](../src/blocker/abort.rs); shutdown-layer limits |
 | Control/status transport, retries, access checks | [ipc.rs](../src/ipc.rs) | main `handle_ipc_request`; security audit residual risks |
 | Session names and singleton handoff | [session_scope.rs](../src/session_scope.rs), [instance.rs](../src/instance.rs) | main `forward_request_to_primary`; handoff acceptance |
-| Tray menu, Explorer restart, icon | [tray/mod.rs](../src/tray/mod.rs), [tray/icon.rs](../src/tray/icon.rs) | `runtime_policy::tray_mode_presentation`; main `handle_tray_action`; manual tray checks |
+| Tray menu, Explorer restart, icon | [tray/mod.rs](../src/tray/mod.rs), [tray/icon.rs](../src/tray/icon.rs) | `runtime_policy::tray_intent_presentation`; main `handle_tray_action`; manual tray checks |
 | Autostart / trusted executable path | [autostart.rs](../src/autostart.rs) | runtime policy checkbox fallback; elevated smoke checks |
 | JSONL events, rotation and tail | [logger/mod.rs](../src/logger/mod.rs) | [log_tail_cli.rs](../tests/log_tail_cli.rs) exercises real CLI with isolated log fixtures |
 | Release manifest and runtime linkage | [build.rs](../build.rs), [wardoff.manifest](../wardoff.manifest), [MSVC config](../.cargo/config.toml) | release build, PE imports and isolated smoke |

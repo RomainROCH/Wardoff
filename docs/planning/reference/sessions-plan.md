@@ -170,22 +170,23 @@ snapshot data as unavailable rather than presenting it as trusted live evidence.
 
 ## Execution and validation checkpoints
 
-- [ ] **1. Review and save this plan.** Resolve actionable review findings before
+- [x] **1. Review and save this plan.** Resolve actionable review findings before
   behavior changes. Run Docs and preserve the accepted plan in a local commit.
-- [ ] **2. Pure ledger RED/GREEN.** Delegate only
+- [x] **2. Pure ledger RED/GREEN.** Delegate only
   `src/runtime_policy/sessions.rs`. Test overlap, aggregation, manual precedence,
   pending expiry, ownership, reused PIDs, idempotent acquire/release, revisions,
   bounds, overflow, owner disappearance, cancellation and no rearming. Delegate
   execution to the validation lane; retain actual RED before implementation.
-- [ ] **3. Transport/owner RED/GREEN.** Root owns `src/ipc.rs`,
+- [x] **3. Transport/owner RED/GREEN.** Root owns `src/ipc.rs`,
   `src/session_owner.rs`, `Cargo.toml`'s existing Windows feature list and the
   module declaration. Validate wire compatibility, status-pipe rejection,
   unavailable/exited process, same-session identity and owned-handle cleanup.
-- [ ] **4. Application/diagnostics RED/GREEN.** Root owns application and wake
+- [x] **4. Application/diagnostics RED/GREEN.** Root owns application and wake
   integration, diagnostics and tray changes. Test cancellation versus failed
   effects/UI, failed cleanup followed by a new intent before retry, suspend
   expiry before restore, no periodic re-acquire and actual
-  process-lifetime behavior. Update focused existing lifecycle tests.
+  process-lifetime behavior. Update focused existing lifecycle tests. Local/inert
+  checks are complete; real runtime qualification remains in checkpoint 6.
 - [ ] **5. Review and Full.** Update architecture, README/development map and
   matrix owners. Obtain independent diff review; run Docs, developer checks,
   smoke safety and Full MSVC checks. Save exact source before VM qualification.
@@ -205,3 +206,40 @@ Stop dependent work for a material unresolved contract, a private-content gate,
 unknown resource ownership or unintended effects outside the isolated guest.
 Continue safe independent work; preserve failures and useful work. Hardware or
 volunteer gaps limit claims and do not authorize spending or unsolicited contact.
+
+## Implementation record 2026-10-25
+
+The reviewed plan was saved at `bfca3e2`. Actual test checkpoints retained their
+initial compiler failures separately from behavioral RED. Ledger/native-owner
+and wire RED preceded implementation. A revision-overflow regression exposed a
+deadline mutation on failure; validating revision before mutation corrected it.
+Doctor/session bounds, retry-current-intent and tray-accessibility policy tests
+also ran RED before GREEN. The inert production-IPC fixture demonstrated that
+caller fields cannot select its process owner. It also exposed caller-controlled
+enum text in rejection logs; rejection logging now uses a fixed message while
+the caller still receives the detailed error.
+
+The first complete Cargo run passed 209 top-level tests (plus the existing
+nested shutdown helper); its one ignored diagnostic child is exercised through
+its parent regression. This is local/inert evidence, not session runtime
+acceptance. A further RED covers native-wait deadlines: new messages must not
+postpone the next expiry check. Full checks and isolated desktop qualification
+are still pending at this record.
+
+The original free delegation lane was unavailable. After local native-worker
+quota exhaustion, the root continued implementation and validation without a
+paid fallback; the authorized native Luna review lane remained available.
+Independent code review found a stale extension acknowledgement and release
+errors after logical removal. Three actual RED tests reproduced the issues.
+Acquire/extend now recheck a live view after maintenance; logical releases stay
+acknowledged while failed cleanup remains visible/retryable, and duplicate
+release invokes no effects. Review of the corrected paths passed. A further
+tray regression preserves the manual full-pair action while a temporary session
+supplies display protection over a system-only manual choice.
+
+Final local Full checks passed: 216 top-level tests, one ignored diagnostic child
+exercised by its parent, strict Clippy and release build. The inert status pipe
+also rejects write-capable clients with access denied and no dispatched command.
+Developer checks and all seven smoke-safety fixtures passed. No protection
+runtime or state-changing acceptance ran on the host. Source checkpoint and
+offline Windows qualification follow; the phase is not accepted yet.
