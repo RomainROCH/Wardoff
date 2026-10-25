@@ -198,8 +198,28 @@ impl SessionLedger {
         if entry.owner != owner {
             return Err("session owner mismatch".to_string());
         }
-        self.entries.remove(&key);
-        Ok(true)
+        self.cancel_session(key)
+    }
+
+    /// Cancels a current key without changing manual intent or peer sessions.
+    ///
+    /// This is for trusted in-process controls. Pipe clients must keep using
+    /// `release`, which checks process ownership before delegating here.
+    pub(crate) fn cancel_session(&mut self, key: SessionKey) -> Result<bool, String> {
+        validate_current_key(self, key)?;
+        Ok(self.entries.remove(&key).is_some())
+    }
+
+    /// Cancels all tickets/sessions while preserving the manual intent.
+    ///
+    /// Advancing even an empty generation invalidates old starts. Exhaustion
+    /// disables admission instead of allowing generation reuse.
+    pub(crate) fn cancel_sessions(&mut self) {
+        self.entries.clear();
+        match self.generation.checked_add(1) {
+            Some(next) => self.generation = next,
+            None => self.admission_disabled = true,
+        }
     }
 
     /// Removes expired tickets, expired sessions, and sessions whose owners exited.
@@ -291,11 +311,7 @@ impl SessionLedger {
     /// Cancels all intents and entries and advances the runtime generation.
     pub(crate) fn global_stop(&mut self) {
         self.manual = None;
-        self.entries.clear();
-        match self.generation.checked_add(1) {
-            Some(next) => self.generation = next,
-            None => self.admission_disabled = true,
-        }
+        self.cancel_sessions();
     }
 }
 
@@ -382,6 +398,185 @@ mod tests {
             intent,
             reason: reason.to_string(),
         }
+    }
+
+    #[test]
+    fn trusted_single_cancellation_preserves_manual_and_peer_sessions() {
+        for manual in [
+            None,
+            Some(PowerIntent::SystemOnly),
+            Some(PowerIntent::SystemAndDisplay),
+        ] {
+            let mut ledger = SessionLedger::new([30; 16], manual);
+            let selected = ledger.begin(owner(80), 10).unwrap();
+            let peer = ledger.begin(owner(81), 10).unwrap();
+            ledger
+                .acquire(
+                    owner(80),
+                    selected,
+                    spec(100, PowerIntent::SystemOnly, "selected"),
+                    10,
+                )
+                .unwrap();
+            ledger
+                .acquire(
+                    owner(81),
+                    peer,
+                    spec(200, PowerIntent::SystemAndDisplay, "peer"),
+                    10,
+                )
+                .unwrap();
+            let peer_before = ledger.active_view(peer, 20).unwrap();
+
+            assert!(ledger.cancel_session(selected).unwrap());
+            assert!(!ledger.cancel_session(selected).unwrap());
+            assert_eq!(ledger.manual(), manual);
+            assert!(ledger.active_view(selected, 20).is_none());
+            assert_eq!(ledger.active_view(peer, 20).unwrap(), peer_before);
+            assert_eq!(ledger.owners(), vec![owner(81)]);
+            assert_eq!(
+                ledger.effective_intent(),
+                Some(PowerIntent::SystemAndDisplay)
+            );
+            assert!(ledger.cancel_session(peer).unwrap());
+            assert_eq!(ledger.effective_intent(), manual);
+        }
+    }
+
+    #[test]
+    fn trusted_pending_cancellation_cannot_be_acquired_again() {
+        let mut ledger = SessionLedger::new([31; 16], Some(PowerIntent::SystemOnly));
+        let cancelled = ledger.begin(owner(82), 10).unwrap();
+        let peer = ledger.begin(owner(83), 10).unwrap();
+        assert!(ledger.cancel_session(cancelled).unwrap());
+        assert!(!ledger.cancel_session(cancelled).unwrap());
+        assert!(ledger
+            .acquire(
+                owner(82),
+                cancelled,
+                spec(100, PowerIntent::SystemAndDisplay, "cancelled"),
+                11,
+            )
+            .is_err());
+        assert!(ledger.entries.contains_key(&peer));
+        assert_eq!(ledger.owners(), vec![owner(83)]);
+        assert_eq!(ledger.manual(), Some(PowerIntent::SystemOnly));
+        let fresh = ledger.begin(owner(82), 11).unwrap();
+        assert_ne!(fresh.id, cancelled.id);
+        assert_eq!(fresh.generation, cancelled.generation);
+    }
+
+    #[test]
+    fn trusted_cancel_all_preserves_manual_and_invalidates_active_and_pending_keys() {
+        for manual in [
+            None,
+            Some(PowerIntent::SystemOnly),
+            Some(PowerIntent::SystemAndDisplay),
+        ] {
+            let mut ledger = SessionLedger::new([32; 16], manual);
+            let active = ledger.begin(owner(84), 10).unwrap();
+            let pending = ledger.begin(owner(85), 10).unwrap();
+            ledger
+                .acquire(
+                    owner(84),
+                    active,
+                    spec(100, PowerIntent::SystemAndDisplay, "active"),
+                    10,
+                )
+                .unwrap();
+            let generation = ledger.generation;
+
+            ledger.cancel_sessions();
+            assert_eq!(ledger.manual(), manual);
+            assert_eq!(ledger.effective_intent(), manual);
+            assert!(!ledger.has_entries());
+            assert!(ledger.owners().is_empty());
+            assert_eq!(ledger.generation, generation + 1);
+            assert!(ledger.release(owner(84), active).is_err());
+            assert!(ledger.extend(owner(84), active, 1, 200, 11).is_err());
+            assert!(ledger
+                .acquire(
+                    owner(85),
+                    pending,
+                    spec(100, PowerIntent::SystemOnly, "old ticket"),
+                    11,
+                )
+                .is_err());
+            let fresh = ledger.begin(owner(84), 11).unwrap();
+            assert_ne!(fresh.generation, active.generation);
+            assert!(ledger
+                .acquire(
+                    owner(84),
+                    fresh,
+                    spec(100, PowerIntent::SystemOnly, "fresh"),
+                    11,
+                )
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn trusted_cancellation_checks_epoch_and_keeps_owner_release_restricted() {
+        let mut ledger = SessionLedger::new([33; 16], Some(PowerIntent::SystemOnly));
+        let key = ledger.begin(owner(86), 10).unwrap();
+        ledger
+            .acquire(
+                owner(86),
+                key,
+                spec(100, PowerIntent::SystemAndDisplay, "protected"),
+                10,
+            )
+            .unwrap();
+        let before = ledger.views(20);
+        let mut another_runtime = key;
+        another_runtime.runtime_id = [34; 16];
+        let mut another_generation = key;
+        another_generation.generation += 1;
+        assert!(ledger.cancel_session(another_runtime).is_err());
+        assert!(ledger.cancel_session(another_generation).is_err());
+        assert!(ledger.release(owner(87), key).is_err());
+        assert_eq!(ledger.views(20), before);
+        assert!(ledger.release(owner(86), key).unwrap());
+        assert_eq!(ledger.manual(), Some(PowerIntent::SystemOnly));
+    }
+
+    #[test]
+    fn trusted_empty_cancellation_advances_generation_and_overflow_stays_cancelled() {
+        let mut ledger = SessionLedger::new([35; 16], Some(PowerIntent::SystemAndDisplay));
+        let generation = ledger.generation;
+        ledger.cancel_sessions();
+        assert_eq!(ledger.generation, generation + 1);
+        assert_eq!(ledger.manual(), Some(PowerIntent::SystemAndDisplay));
+
+        ledger.generation = u64::MAX;
+        let active = ledger.begin(owner(88), 10).unwrap();
+        let pending = ledger.begin(owner(89), 10).unwrap();
+        ledger
+            .acquire(
+                owner(88),
+                active,
+                spec(100, PowerIntent::SystemOnly, "last generation"),
+                10,
+            )
+            .unwrap();
+        ledger.cancel_sessions();
+        ledger.cancel_sessions();
+        assert_eq!(ledger.generation, u64::MAX);
+        assert!(ledger.admission_disabled);
+        assert!(!ledger.has_entries());
+        assert_eq!(ledger.manual(), Some(PowerIntent::SystemAndDisplay));
+        assert!(ledger.begin(owner(90), 11).is_err());
+        assert!(ledger
+            .acquire(
+                owner(89),
+                pending,
+                spec(100, PowerIntent::SystemOnly, "old pending"),
+                11,
+            )
+            .is_err());
+        ledger.global_stop();
+        assert_eq!(ledger.manual(), None);
+        assert_eq!(ledger.effective_intent(), None);
     }
 
     #[test]

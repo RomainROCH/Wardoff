@@ -1,7 +1,8 @@
 # Accessible session controls: core design
 
-Slice: `RM-reference-005`. Started: 2026-10-25. Status: cancellation core reviewed;
-native view design and implementation are not ready yet.
+Slice: `RM-reference-005`. Started: 2026-10-25. Status: cancellation core
+implemented, reviewed and validated locally; native view design and
+implementation are not ready yet.
 
 ## Goal and authority
 
@@ -121,8 +122,31 @@ identity or ports as evidence of a new launch. Push only after phase acceptance.
 
 - [x] Inspect the accepted ledger, owner and tray/application boundaries.
 - [x] Independently review this cancellation core before behavior-preserving edits.
-- [ ] Ledger cancellation RED/GREEN, review, Full and local checkpoint.
+- [x] Ledger cancellation RED/GREEN, review, Full and local checkpoint.
 - [ ] Complete and review the native view design and execution brief.
 - [ ] Implement and validate native controls and application integration.
 - [ ] Complete source-bound desktop/accessibility qualification and record limits.
 - [ ] Save the accepted phase remotely, verify its exact SHA and continue to 007.
+
+## Core checkpoint, 2026-10-25
+
+Plan checkpoint: `581d6b3`. Five new cancellation cases first failed behaviorally
+against no-op stubs (0 passed, 5 failed), separately from the initial missing-method
+compiler errors. The implementation then passed all 24 ledger cases and
+independent source review. Full passed documentation (38 files), formatting,
+locked compilation, strict Clippy and release build. Cargo reported 231 top-level
+test executions plus the existing nested shutdown helper; the five new cases
+are included by three test targets. The existing ignored diagnostic child stays
+covered through its parent regression.
+
+The checked ledger source SHA-256 is
+`9196E229DC72EB410DC549A7231EE57C5906F9345491867A55B8960BD75C6DEC`.
+This checkpoint changes only cancellation factoring and tests: no transport,
+tray, native view, startup default or user-visible protection behavior changed.
+It is not acceptance of slice 005. No protection runtime ran on the host.
+
+Failed validation wrappers remain evidence, not code failures or successful
+Full runs: one lacked execution permission; another converted ordinary Cargo
+stderr into a terminating PowerShell error. Native OS stream capture then ran the
+unchanged check script to exit 0 with an unchanged source hash. Preserve native
+exit status when automating checks; do not suppress stderr or weaken the checks.

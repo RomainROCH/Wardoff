@@ -39,8 +39,8 @@ existing same-user security boundary, not a new hostile-local-user defense.
 
 ### RM-reference-005 Accessible tray and session panel
 
-Status: selected for design; implementation pending. Depends on:
-RM-reference-004. Priority: P1. Size: L.
+Status: in progress (cancellation core validated locally; native view pending).
+Depends on: RM-reference-004. Priority: P1. Size: L.
 
 Goal: ordinary users can use Block/Allow directly, or optionally start a timed
 session, understand it and stop it.
@@ -60,8 +60,9 @@ default shutdown on expiry. Include English/French critical controls with
 reviewable strings; test high contrast, scaling and Explorer restart. Do not
 change default launch behavior without an explicit compatibility decision.
 
-Evidence: [core design draft](controls-plan.md); implementation and view
-qualification remain pending. Notes: do not turn this into a settings application
+Evidence: [core checkpoint](controls-plan.md#core-checkpoint-2026-10-25);
+native view design, implementation and qualification remain pending.
+Notes: do not turn this into a settings application
 or an embedded browser runtime. Keep implementation details out of the human workflow.
 
 ### RM-reference-006 Command-scoped protection
