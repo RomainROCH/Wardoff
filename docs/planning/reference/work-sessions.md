@@ -60,8 +60,9 @@ default shutdown on expiry. Include English/French critical controls with
 reviewable strings; test high contrast, scaling and Explorer restart. Do not
 change default launch behavior without an explicit compatibility decision.
 
-Evidence: none. Notes: do not turn this into a settings application or an embedded
-browser runtime. Keep implementation details out of the human workflow.
+Evidence: [core design draft](controls-plan.md); implementation and view
+qualification remain pending. Notes: do not turn this into a settings application
+or an embedded browser runtime. Keep implementation details out of the human workflow.
 
 ### RM-reference-006 Command-scoped protection
 

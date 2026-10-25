@@ -131,8 +131,8 @@ cost. No adoption or revenue estimate is assumed.
 - Owned-session backup: `origin/codex/reference-baseline` was verified at
   `866cf85723f5df0783fc4eb09fd10e7e096405e1`; the Git durability gate passed.
   No PR, CI run, tag or release was triggered by this feature-branch push.
-- Current: `RM-reference-005`, selected for design; native controls and their
-  acceptance remain pending.
+- Current: `RM-reference-005`, with a [core design draft](controls-plan.md);
+  native controls, their view design and acceptance remain pending.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
