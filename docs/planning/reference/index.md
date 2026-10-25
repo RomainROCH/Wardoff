@@ -44,7 +44,8 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 The local baseline has tray/CLI, layered shutdown protection, Power Requests,
 JSONL logs, IPC and autostart. It also has bounded log tails and local validation
 scripts, read-only Doctor and explicit system-only/full-pair idle-power choices.
-Owned sessions, timers, a session panel and a command wrapper remain planned.
+The owned-session API is accepted locally. Its session panel, user-facing timers
+and command wrapper remain planned.
 The 2026-10-23 remote inspection found `origin/main` at `8c45977`, containing both the
 developer tooling (`39aadd2`) and IPC request-bound fix (`6039955`) by exact
 ancestry. PR 6 remains a draft against the older `dev` even though its commits
@@ -119,10 +120,15 @@ cost. No adoption or revenue estimate is assumed.
   `88e63453c6c02d8150b86d9e29aaf842e1fe985d`; the Git durability gate passed.
   The feature-branch push triggered neither CI nor release. The offline guest
   was shut down gracefully after archiving and verifying the evidence.
-- Current: `RM-reference-004`, implemented and validated locally with 216 tests,
-  strict checks and independent review. The [session plan](sessions-plan.md)
-  retains actual RED failures/corrections; source checkpoint and isolated
-  desktop qualification precede phase acceptance and backup.
+- Current: `RM-reference-004`, accepted locally from source `85125f2`. Full checks
+  passed 216 tests; standard/admin runs each passed 19 session cases, with smoke
+  14/14 (seven skips) and 18/18 (three skips). Actual tray controls, Explorer
+  recreation, two real S3 expiry cycles and normal Quit passed. The
+  [acceptance record](sessions-plan.md#acceptance-2026-10-25) retains exact hashes,
+  failed/inconclusive attempts and hardware limits. Final inventory found no
+  fixture runtimes/tasks or native requests; the offline guest's process and
+  all five reserved ports were verified closed after the evidence transfer.
+- Next: verify the 004 feature-branch backup, then start `RM-reference-005`.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
@@ -130,7 +136,7 @@ cost. No adoption or revenue estimate is assumed.
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
 | [Foundations](foundations.md) | complete and backed up | 3/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24), [003: power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24) |
-| [Work sessions](work-sessions.md) | 004 in progress | 0/4 | [004: implementation plan](sessions-plan.md) |
+| [Work sessions](work-sessions.md) | 004 accepted locally; backup pending | 1/4 | [004: acceptance](sessions-plan.md#acceptance-2026-10-25) |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 
 ## Deferred choices

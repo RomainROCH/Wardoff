@@ -289,7 +289,12 @@ Record standard/admin coverage separately. The protocol and bounds live in the
 - Verify actual tray Block remains available for session-only protection and
   Allow can cancel a pending restore. Quit and verify native requests/processes,
   owned tasks, request overrides and power-plan snapshots. Preserve raw receipts,
-  failures and untested hardware rows; no session desktop pass is implied yet.
+  failures and untested hardware rows.
+
+The [2026-10-25 session acceptance](planning/reference/sessions-plan.md#acceptance-2026-10-25)
+records standard/admin API and smoke, actual tray/Explorer/Quit, and two observed
+VM S3 expiry cycles for one exact source/artifact. Physical-device idle/display
+effectiveness, physical S3, Hibernate and Modern Standby remain untested.
 
 ## Acceptance checklist
 

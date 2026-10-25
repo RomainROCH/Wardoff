@@ -1,7 +1,7 @@
 # Owned sessions implementation plan
 
-Slice: `RM-reference-004`. Started: 2026-10-24. Status: design reviewed;
-implementation in progress. Independent review accepted the corrected plan:
+Slice: `RM-reference-004`. Started: 2026-10-24. Status: accepted locally on
+2026-10-25; phase backup pending. Independent review accepted the corrected plan:
 cleanup retries derive their target from the current ledger and wake pause,
 so a failed old cleanup cannot clear a newer intent.
 
@@ -18,10 +18,10 @@ Continue on `codex/reference-baseline`; preserve other worktrees and hooks.
 
 ## Facts and design
 
-Today the application owns one mode and one power intent, and waits indefinitely
-for messages. IPC has one request per connection and authenticates the user via
-its existing session-scoped pipe ACL. It does not capture a client process.
-Wake restoration remembers a previous mode/intent; that alone cannot distinguish
+At the design baseline, the application owned one mode and one power intent and
+waited indefinitely for messages. IPC used one request per connection and
+authenticated the user via its session-scoped pipe ACL without capturing a client
+process. Wake restoration remembered a previous mode/intent; that alone could not distinguish
 manual protection from a session that expired while Windows slept.
 
 Use a pure bounded ledger at `src/runtime_policy/sessions.rs`, an owned process
@@ -187,10 +187,10 @@ snapshot data as unavailable rather than presenting it as trusted live evidence.
   expiry before restore, no periodic re-acquire and actual
   process-lifetime behavior. Update focused existing lifecycle tests. Local/inert
   checks are complete; real runtime qualification remains in checkpoint 6.
-- [ ] **5. Review and Full.** Update architecture, README/development map and
+- [x] **5. Review and Full.** Update architecture, README/development map and
   matrix owners. Obtain independent diff review; run Docs, developer checks,
   smoke safety and Full MSVC checks. Save exact source before VM qualification.
-- [ ] **6. Isolated desktop qualification.** Coordinate free local resources;
+- [x] **6. Isolated desktop qualification.** Coordinate free local resources;
   reuse the owned offline guest only after checking its identity. Run exact
   source-bound standard/admin smoke and a session fixture: overlap, owner exit,
   foreign release, duplicate/lost reply, manual preservation, Allow cancellation,
@@ -243,3 +243,71 @@ also rejects write-capable clients with access denied and no dispatched command.
 Developer checks and all seven smoke-safety fixtures passed. No protection
 runtime or state-changing acceptance ran on the host. Source checkpoint and
 offline Windows qualification follow; the phase is not accepted yet.
+
+## Acceptance, 2026-10-25
+
+Accepted implementation source: `85125f2c6089b9dc42e52879c9ff19fe2355d7c0`,
+following plan checkpoint `bfca3e2`. The exact 0.2.1 MSVC executable is
+2,188,800 bytes, SHA-256
+`CFABB6D94919D2D3D3A5AEC3FB3B309F1E198AC9BC4626DC6AEF179ECB9CBA3E`.
+No Rust change was made during desktop qualification. Final local Full passed
+216 top-level tests, strict Clippy, formatting, locked compilation and release
+build. The ignored diagnostic child is exercised by its parent regression.
+Developer checks, all seven inert smoke-safety fixtures and independent diff
+review also passed.
+
+The offline Windows 11 IoT Enterprise LTSC evaluation guest ran build 26100 and
+Windows PowerShell 5.1.26100.1591. Both suites used signed-in session 1: limited
+UAC token type 3 and full administrator token type 2. The backing image was
+opened read-only by the hypervisor; no guest network adapter was present.
+The host ran no protection runtime or state-changing acceptance.
+
+| Check | Observed result |
+| --- | --- |
+| Standard owned-session API | 19/19 cases passed; same-binary smoke 14/14, seven expected skips |
+| Administrator equivalent | 19/19 cases passed; same-binary smoke 18/18, three expected skips, including actual protected-fixture autostart creation/removal |
+| Independent owners and overlap | Foreign release/extend rejected; releasing or losing one owner preserved the other complete key/PID and intent |
+| Retry, limits and cancellation | Lost-reply acquire retained one original deadline; duplicate release, checked revision, duration bounds, pending expiry and Allow invalidation passed without killing fixture work |
+| Manual preservation | Session release/expiry preserved indefinite manual intent; actual enabled tray actions selected manual full-pair protection and retained it after session release |
+| Session-only real Sleep/expiry | Session was still valid on observed S3 entry; after 305 seconds of passive observed suspension and explicit no-input wake, the same runtime/creation identity reported Allow, no sessions and native SYSTEM=0/DISPLAY=0; owner still alive |
+| Manual system-only plus temporary full pair | Equivalent 305-second S3 cycle; before user input, the same runtime retained manual system-only Block with native SYSTEM=1/DISPLAY=0, no session or pending restoration/cleanup, and a live owner |
+| Explorer recreation | New shell identity observed while runtime PID/path/session/creation and the original session key/owner survived; the recreated tray's enabled Block action then worked with a fresh explicit session |
+| Actual tray Quit with an active session | Normal exit 0, owned handle reaped, owner still alive at the acknowledgement, native SYSTEM=0/DISPLAY=0 afterwards; driver/task exits 0 and verified task deletion |
+| Settings, integrity and final inventory | Power-plan/request-override/task snapshots and candidate hash unchanged; zero fixture runtimes, harness tasks, Wardoff autostart or native requests remained |
+
+Native category counts are visible reason entries, not measurements of Windows'
+internal reference counts. These results establish this candidate's VM/API
+behavior. Physical display/idle effectiveness, real-device S3, Hibernate and
+Modern Standby remain untested. Explicit Sleep/Hibernate and Windows policy can
+override idle-power requests; no forced zero-second shutdown guarantee is added.
+The new protocol is a development API for 005/006, not a shipped session CLI.
+
+Failed and incomplete attempts remain separate evidence. Early standard
+fixtures stopped before API requests because a cold fixture-client startup
+took 6,282 ms; only the harness startup allowance changed to 15 seconds, leaving
+the five-second RPC budget intact. Another partial fixture passed all 19 session
+cases before a legacy-artifact path exceeded Windows' path limit. The complete
+standard/admin v4 suites passed after shortening that fixture path. GUI
+preflight byte and duplicate-archive-entry failures occurred before starting a
+protection runtime.
+
+The first 60-second sleep attempt does not prove expiry during observed S3 and
+is not counted above. The two accepted cycles used fresh five-minute sessions,
+required observed S3 before their deadlines, and rejected any wake/input during
+the passive interval. An initial 40-second Explorer observation ended before
+the replacement shell was observed; subsequent read-only evidence confirmed
+the same restart and preserved session, without repeating the restart. The
+later tray-action check used a fresh session after the original expired.
+No observation window is promoted into a Windows latency guarantee.
+
+Raw successful and failed guest evidence is retained privately as 662 files in
+a verified 504,211-byte archive, SHA-256
+`67AC681AF7C34B270C96CB9843F310BD36D415894B7F246144738709CF698DD5`.
+The frozen private manifest covers 495 files and a separate archive preserves
+51 host protocol sources. These are local evidence, not public support exports.
+After transfer, Windows shutdown was requested without a force flag; the
+original VM process identity and all five reserved ports were independently
+verified absent/closed. No guest-shutdown QMP event was captured, so resource
+closure is recorded separately from that missing event. The hypervisor was not
+terminated forcibly and no paid resource was used. Verify the authorized phase
+backup before 005.

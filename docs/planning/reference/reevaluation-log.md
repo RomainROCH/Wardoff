@@ -2,6 +2,24 @@
 
 ## Out-of-scope and unforeseen findings
 
+### 2026-10-25 - Owned sessions preserve the manual choice
+
+- Status: accepted locally; linked IDs: RM-reference-004, RM-reference-005 and
+  RM-reference-007.
+- Evidence: [session acceptance](sessions-plan.md#acceptance-2026-10-25) binds
+  216 local tests, standard/admin ownership and regression checks, actual tray,
+  Explorer and Quit, and two passive real-S3 expiry cycles to source `85125f2`.
+  The expired temporary full-pair contributor did not replace or cancel manual
+  system-only Block at wake. Allow invalidated old messages without killing work.
+- Decision: keep the selected order. After verifying the phase backup, deliver
+  the native accessible controls in 005 using the accepted ledger; keep simple
+  indefinite Block/Allow central. Preserve hardware gaps for 007/009 without
+  buying hardware, cloud capacity or signing.
+- Limits: cold fixture startup, long paths and observation windows produced
+  retained failed/inconclusive attempts. Use explicit readiness and source-bound
+  raw receipts; never count a late observation as proof of expiry during sleep.
+  No broad Windows latency or protection guarantee follows from these VM cases.
+
 ### 2026-10-24 - M1 acceptance preserves the manual contract
 
 - Status: accepted locally; linked IDs: RM-reference-001, RM-reference-002,

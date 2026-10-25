@@ -31,8 +31,9 @@ smoke, and tray checks. Slice 001 is accepted and backed up on the working branc
 Slice 002 has passed its [diagnostic acceptance](docs/planning/reference/diagnostics-plan.md#acceptance-2026-10-24)
 and verified phase backup. Slice 003 passed its
 [power-intent acceptance](docs/planning/reference/power-intent-plan.md#acceptance-2026-10-24).
-Its phase backup was verified at `88e6345`. Owned sessions in slice 004 are now
-selected for [design and implementation](docs/planning/reference/sessions-plan.md).
+Its phase backup was verified at `88e6345`. Slice 004 passed its
+[owned-session acceptance](docs/planning/reference/sessions-plan.md#acceptance-2026-10-25)
+locally; its phase backup is the remaining gate before starting slice 005.
 Later features remain planned until their acceptance passes.
 
 ## Current repository status
