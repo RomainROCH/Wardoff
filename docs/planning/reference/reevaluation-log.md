@@ -4,7 +4,7 @@
 
 ### 2026-10-25 - Owned sessions preserve the manual choice
 
-- Status: accepted locally; linked IDs: RM-reference-004, RM-reference-005 and
+- Status: accepted and backed up; linked IDs: RM-reference-004, RM-reference-005 and
   RM-reference-007.
 - Evidence: [session acceptance](sessions-plan.md#acceptance-2026-10-25) binds
   216 local tests, standard/admin ownership and regression checks, actual tray,

@@ -9,7 +9,7 @@ remain planned rather than existing CLI features.
 
 ### RM-reference-004 Owned sessions and expiration
 
-Status: accepted locally; phase backup pending. Depends on: RM-reference-003.
+Status: accepted and backed up. Depends on: RM-reference-003.
 Priority: P1. Size: L.
 
 Goal: two jobs can request protection without undoing each other's requests.
@@ -39,7 +39,8 @@ existing same-user security boundary, not a new hostile-local-user defense.
 
 ### RM-reference-005 Accessible tray and session panel
 
-Status: pending. Depends on: RM-reference-004. Priority: P1. Size: L.
+Status: selected for design; implementation pending. Depends on:
+RM-reference-004. Priority: P1. Size: L.
 
 Goal: ordinary users can use Block/Allow directly, or optionally start a timed
 session, understand it and stop it.

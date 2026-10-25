@@ -1,7 +1,7 @@
 # Owned sessions implementation plan
 
 Slice: `RM-reference-004`. Started: 2026-10-24. Status: accepted locally on
-2026-10-25; phase backup pending. Independent review accepted the corrected plan:
+2026-10-25 and backed up. Independent review accepted the corrected plan:
 cleanup retries derive their target from the current ledger and wake pause,
 so a failed old cleanup cannot clear a newer intent.
 
@@ -197,7 +197,7 @@ snapshot data as unavailable rather than presenting it as trusted live evidence.
   expiry and native request cleanup. Qualify suspend expiry where the same VM
   supports it; physical-device rows remain untested. Never use the host runtime
   or another agent's tasks/processes. Archive protocol source and raw receipts.
-- [ ] **7. Save the phase and continue.** Record source/artifact hashes, results,
+- [x] **7. Save the phase and continue.** Record source/artifact hashes, results,
   failures/skips and cleanup. Run the private publication gate, push only the
   authorized feature branch without tags, verify its exact remote SHA and Git
   durability, then select 005. Do not merge dev/main or trigger a release.
@@ -311,3 +311,12 @@ verified absent/closed. No guest-shutdown QMP event was captured, so resource
 closure is recorded separately from that missing event. The hypervisor was not
 terminated forcibly and no paid resource was used. Verify the authorized phase
 backup before 005.
+
+## Verified phase backup
+
+Acceptance commit `866cf85723f5df0783fc4eb09fd10e7e096405e1` was pushed to
+`origin/codex/reference-baseline` on 2026-10-25 and its exact remote SHA was
+re-read successfully. The Git durability gate passed. The repository is public,
+the branch has no open PR, and this branch-only push triggered neither the
+dev/main CI nor the tag-only release workflow. No tags, PR, merge or release
+were created. Slice 005 is now selected for design under the existing scope.

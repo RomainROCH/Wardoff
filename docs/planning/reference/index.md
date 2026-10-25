@@ -44,7 +44,7 @@ Do not change Windows power plans or lock policies to manufacture a passing test
 The local baseline has tray/CLI, layered shutdown protection, Power Requests,
 JSONL logs, IPC and autostart. It also has bounded log tails and local validation
 scripts, read-only Doctor and explicit system-only/full-pair idle-power choices.
-The owned-session API is accepted locally. Its session panel, user-facing timers
+The owned-session API is accepted and backed up. Its session panel, user-facing timers
 and command wrapper remain planned.
 The 2026-10-23 remote inspection found `origin/main` at `8c45977`, containing both the
 developer tooling (`39aadd2`) and IPC request-bound fix (`6039955`) by exact
@@ -92,8 +92,8 @@ cost. No adoption or revenue estimate is assumed.
 
 ## Current slice and progress
 
-- Completed locally: `RM-reference-001`, `RM-reference-002` and
-  `RM-reference-003`, accepted on 2026-10-23 and 2026-10-24.
+- Completed and backed up: `RM-reference-001` through `RM-reference-004`,
+  accepted on 2026-10-23 through 2026-10-25.
 - Tested integration: merge `a44c89a`, portable-linkage fix `5249c17` and smoke
   path-ownership correction `d04df86`.
 - Local Full, clean-Windows CLI startup and desktop smoke passed. Elevated smoke
@@ -120,7 +120,7 @@ cost. No adoption or revenue estimate is assumed.
   `88e63453c6c02d8150b86d9e29aaf842e1fe985d`; the Git durability gate passed.
   The feature-branch push triggered neither CI nor release. The offline guest
   was shut down gracefully after archiving and verifying the evidence.
-- Current: `RM-reference-004`, accepted locally from source `85125f2`. Full checks
+- Owned-session acceptance: `RM-reference-004`, source `85125f2`. Full checks
   passed 216 tests; standard/admin runs each passed 19 session cases, with smoke
   14/14 (seven skips) and 18/18 (three skips). Actual tray controls, Explorer
   recreation, two real S3 expiry cycles and normal Quit passed. The
@@ -128,7 +128,11 @@ cost. No adoption or revenue estimate is assumed.
   failed/inconclusive attempts and hardware limits. Final inventory found no
   fixture runtimes/tasks or native requests; the offline guest's process and
   all five reserved ports were verified closed after the evidence transfer.
-- Next: verify the 004 feature-branch backup, then start `RM-reference-005`.
+- Owned-session backup: `origin/codex/reference-baseline` was verified at
+  `866cf85723f5df0783fc4eb09fd10e7e096405e1`; the Git durability gate passed.
+  No PR, CI run, tag or release was triggered by this feature-branch push.
+- Current: `RM-reference-005`, selected for design; native controls and their
+  acceptance remain pending.
 - Later slices remain pending and advance in the selected dependency order.
 - The completed gate does not imply physical-power certification or publication.
   No paid resource was used.
@@ -136,7 +140,7 @@ cost. No adoption or revenue estimate is assumed.
 | Section | Status | Progress | Evidence |
 | --- | --- | --- | --- |
 | [Foundations](foundations.md) | complete and backed up | 3/3 | [001: integration and desktop evidence](baseline-2026-10-23.md), [002: diagnostic acceptance](diagnostics-plan.md#acceptance-2026-10-24), [003: power-intent acceptance](power-intent-plan.md#acceptance-2026-10-24) |
-| [Work sessions](work-sessions.md) | 004 accepted locally; backup pending | 1/4 | [004: acceptance](sessions-plan.md#acceptance-2026-10-25) |
+| [Work sessions](work-sessions.md) | 004 complete and backed up; 005 selected | 1/4 | [004: acceptance](sessions-plan.md#acceptance-2026-10-25) |
 | [Adoption and evidence](adoption.md) | pending | 0/3 | none |
 
 ## Deferred choices

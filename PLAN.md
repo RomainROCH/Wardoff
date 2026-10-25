@@ -33,7 +33,8 @@ and verified phase backup. Slice 003 passed its
 [power-intent acceptance](docs/planning/reference/power-intent-plan.md#acceptance-2026-10-24).
 Its phase backup was verified at `88e6345`. Slice 004 passed its
 [owned-session acceptance](docs/planning/reference/sessions-plan.md#acceptance-2026-10-25)
-locally; its phase backup is the remaining gate before starting slice 005.
+and its phase backup was verified at `866cf85`. Slice 005 is selected for
+native accessible controls; its implementation and acceptance remain pending.
 Later features remain planned until their acceptance passes.
 
 ## Current repository status
