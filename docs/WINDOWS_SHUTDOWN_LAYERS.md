@@ -42,7 +42,9 @@ Source: `src/blocker/shutdown.rs`
 - calls `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` during setup
 - calls `ShutdownBlockReasonCreate(...)` when Block mode is enabled
 - returns `FALSE` from `WM_QUERYENDSESSION` while Layer 1 is active
-- counts successful Layer 1 interceptions through `record_blocked_event()`
+- logs the refusal separately; returning `FALSE` alone never increments `blocked_count`
+- counts a Layer 1 cancellation only after the same window receives `WM_ENDSESSION(FALSE)` following a refusal; this observes cancellation, not its exclusive cause
+- retains query and end-message parameters, including logoff, critical, close-app and unknown flag bits, in diagnostics
 - supports a forced-shutdown cleanup callback through `WM_ENDSESSION`
 
 ### Why the two-window design exists
@@ -233,6 +235,17 @@ When Wardoff enters Block mode, `BlockerCoordinator` currently attempts to activ
 If activation fails, the coordinator rolls back the partial startup to avoid leaving the runtime in a mixed state.
 
 When Windows forces session shutdown anyway, `src/main.rs` invokes `forced_shutdown_cleanup()` so long-running workers can stop without trying to keep the machine blocked during final teardown.
+
+`WM_ENDSESSION(TRUE)` is logged as session end proceeding, including when Wardoff
+previously refused it, without incrementing the Layer 1 counter. Cleanup diagnostics
+do not attribute that result to a human: the initiator is unknown. The existing
+`wParam != 0 && SM_SHUTTINGDOWN` cleanup guard is unchanged. The shared counter
+also includes successful aborts from other layers; it does not deduplicate one
+system attempt across layers. Missing end messages leave a refusal unconfirmed.
+The JSONL events are `session_end_refused` / `session_end_allowed` for the query,
+`session_end_cancelled` / `session_end_proceeding` for its reported outcome, and
+`application_session_end_cleanup_started` when cleanup starts. They replace the
+premature Layer 1 `shutdown_blocked` and `application_forced_shutdown` diagnostics.
 
 ## MVP boundary versus repository contents
 

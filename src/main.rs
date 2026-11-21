@@ -1041,11 +1041,11 @@ impl Application {
         self.forced_shutdown_cleanup_completed = true;
         self.clear_pending_block_restore_after_wake();
         self.blocker_coordinator.forced_shutdown_cleanup();
-        info!("Wardoff shutting down due to user-forced shutdown");
+        info!("Wardoff starting cleanup after Windows reported session end in progress; initiator unknown");
         logger::log_event(
-            "application_forced_shutdown",
+            "application_session_end_cleanup_started",
             EventSource::Application,
-            "Wardoff shutting down due to user-forced shutdown",
+            "Wardoff starting cleanup after Windows reported session end in progress; initiator unknown",
             true,
         );
     }

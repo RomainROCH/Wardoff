@@ -25,6 +25,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Mode Full
 The [development guide](docs/DEVELOPMENT.md#validation) lists individual commands,
 focused test filters, documentation checks and troubleshooting.
 
+The MSVC target configuration requests static CRT linkage for the single-executable
+distribution. `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override those target flags;
+retain `-C target-feature=+crt-static` when setting either. Inspect the resulting
+executable's imports before calling it portable: the source setting does not
+prove that the built bytes avoid external `VCRUNTIME*.dll` / `MSVCP*.dll` imports
+or start in a clean Windows environment. Windows system DLLs remain dependencies.
+
 ## Runtime validation is separate
 
 The [validation matrix](docs/MVP_VALIDATION_MATRIX.md) owns runtime acceptance.
